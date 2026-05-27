@@ -35,6 +35,16 @@ if [ "${ARCH}" = "aarch64" ]; then
   PKG_EMUS+=" box64 portmaster"
 fi
 
+# gfn-electron (GeForce NOW client, native arm64 Electron). Bundled in the image
+# (no on-device download, unlike the old OpenNOW). Its own device-gated statement
+# so this personal feature cherry-picks cleanly over upstream emulator-list churn.
+# Its launchers/ES wiring live in the makeinstall_target Steam block further down.
+case "${DEVICE}" in
+  SM8250|SM8550|SM8650|SM8750)
+    PKG_EMUS+=" gfn-electron"
+    ;;
+esac
+
 ### Emulators or cores for specific devices
 case "${DEVICE}" in
   H700|RK3326)
@@ -736,6 +746,11 @@ makeinstall_target() {
       install_script "Uninstall Heroic Games Launcher.sh"
       install_script "Scan Heroic Games.sh"
       add_es_system heroic
+      ## gfn-electron (GeForce NOW client, native arm64 Electron, bundled)
+      add_emu_core geforcenow geforcenow geforcenow true
+      install_script "Install GeForce NOW.sh"
+      install_script "Uninstall GeForce NOW.sh"
+      add_es_system geforcenow
       ;;
   esac
 
