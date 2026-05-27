@@ -169,6 +169,54 @@
         <image>./images/heroic.svg</image>
     </game>
     <game>
+        <path>./Install OpenNOW.sh</path>
+        <name>Install OpenNOW</name>
+        <desc>Downloads and installs OpenNOW, the GeForce NOW client. After installing, restart EmulationStation and launch it from the OpenNOW section in the main menu. The first NVIDIA login opens in an on-device browser - no SSH or second computer needed.</desc>
+        <developer>OpenCloudGaming</developer>
+        <publisher>OpenCloudGaming</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/opennow.svg</image>
+    </game>
+    <game>
+        <path>./Update OpenNOW.sh</path>
+        <name>Update OpenNOW</name>
+        <desc>Pulls the latest OpenNOW (GeForce NOW client) arm64 AppImage from github.com/OpenCloudGaming/OpenNOW, keeping the previous one for rollback. A size and ELF integrity check runs before the new build is activated. Idempotent: skips if you already have the latest release.</desc>
+        <developer>OpenCloudGaming</developer>
+        <publisher>OpenCloudGaming</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/opennow.svg</image>
+    </game>
+    <game>
+        <path>./Rollback OpenNOW.sh</path>
+        <name>Rollback OpenNOW</name>
+        <desc>Reverts the managed OpenNOW install. If a previous version was kept it swaps current and previous; otherwise it leaves the current install unchanged. Use this if a freshly updated OpenNOW misbehaves.</desc>
+        <developer>OpenCloudGaming</developer>
+        <publisher>OpenCloudGaming</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/opennow.svg</image>
+    </game>
+    <game>
+        <path>./Uninstall OpenNOW.sh</path>
+        <name>Uninstall OpenNOW</name>
+        <desc>Removes the OpenNOW client. The OpenNOW section disappears from the main menu after restarting EmulationStation.</desc>
+        <developer>ROCKNIX</developer>
+        <publisher>ROCKNIX</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/opennow.svg</image>
+    </game>
+    <game>
         <path>./Start AetherSX2.sh</path>
         <name>Start AetherSX2</name>
         <desc>Opens the AetherSX2 GUI (PS2) to enable global configuration changes to be made directly to the emulator. It's recommended to have a mouse 
