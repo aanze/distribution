@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- OpenNOW (GeForce NOW client) Tools-menu icon for ROCKNIX. -->
+<svg viewBox="0 0 512 384" width="512" height="384" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <path fill="#ffffff" fill-rule="evenodd" d="
+    M 96 208
+    a 128 128 0 1 0 256 0
+    a 128 128 0 1 0 -256 0
+    Z
+    M 188 144
+    L 188 272
+    L 296 208
+    Z" />
+  <g fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round">
+    <path d="M 360 96 A 40 40 0 0 1 400 136" />
+    <path d="M 360 56 A 80 80 0 0 1 440 136" />
+    <path d="M 360 16 A 120 120 0 0 1 480 136" />
+  </g>
+</svg>
