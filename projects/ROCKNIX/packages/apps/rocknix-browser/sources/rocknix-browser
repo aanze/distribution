@@ -1,0 +1,124 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# rocknix-browser - open a URL in a real on-device browser.
+#
+#   rocknix-browser <url>     download Firefox (if needed) and open <url>
+#   rocknix-browser --ensure  just make sure the browser is installed
+#
+# Firefox arm64 is fetched once from Mozilla into /storage and reused. The
+# Wayland/sway + on-screen-keyboard handling mirrors the Heroic launcher so the
+# login form is usable without a physical keyboard.
+
+source /etc/profile
+
+BROWSER_BASE="/storage/.local/share/rocknix-browser"
+FIREFOX_DIR="${BROWSER_BASE}/firefox"
+FIREFOX_BIN="${FIREFOX_DIR}/firefox"
+PROFILE_DIR="${BROWSER_BASE}/profile"
+FIREFOX_URL="https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64-aarch64&lang=en-US"
+
+WVKBD_PID=""
+TOUCHKB_WAS_ACTIVE=0
+
+ensure_browser() {
+  if [ -x "${FIREFOX_BIN}" ]; then
+    return 0
+  fi
+  echo "Downloading the on-device browser (Firefox arm64), one-time setup..."
+  mkdir -p "${BROWSER_BASE}"
+  local tarball="${BROWSER_BASE}/firefox.tar.xz"
+  if ! wget -c -t 5 -O "${tarball}" "${FIREFOX_URL}"; then
+    echo "ERROR: could not download the browser." >&2
+    rm -f "${tarball}"
+    return 1
+  fi
+  # Mozilla's tarball extracts to a top-level "firefox/" directory.
+  rm -rf "${FIREFOX_DIR}"
+  if ! tar -xJf "${tarball}" -C "${BROWSER_BASE}"; then
+    echo "ERROR: could not extract the browser." >&2
+    rm -f "${tarball}"
+    return 1
+  fi
+  rm -f "${tarball}"
+  [ -x "${FIREFOX_BIN}" ]
+}
+
+start_keyboard() {
+  # Show wvkbd on the focused output. Use wvkbd's clean built-in dark styling
+  # ("Sans 22" sized to the cells); the Heroic-style color overrides + -fn 48
+  # rendered an ugly grey board with oversized letters that spilled the cells.
+  if systemctl is-active --quiet touchkeyboard.service; then
+    TOUCHKB_WAS_ACTIVE=1
+    systemctl stop touchkeyboard.service >/dev/null 2>&1 || true
+  fi
+  killall wvkbd-mobintl >/dev/null 2>&1 || true
+  sleep 0.2
+  local out
+  out="$(swaymsg -t get_outputs -r 2>/dev/null | jq -r '.[] | select(.focused == true) | .name' | head -n1)"
+  local args=(-L 380 -fn "Sans 22" -l simple)
+  [ -n "${out}" ] && args+=(--output "${out}")
+  /usr/bin/wvkbd-mobintl "${args[@]}" >/dev/null 2>&1 &
+  WVKBD_PID=$!
+  sleep 0.25
+  kill -USR2 "${WVKBD_PID}" 2>/dev/null || true
+}
+
+cleanup() {
+  [ -n "${WVKBD_PID}" ] && kill "${WVKBD_PID}" 2>/dev/null || true
+  if [ "${TOUCHKB_WAS_ACTIVE}" = "1" ]; then
+    systemctl start touchkeyboard.service >/dev/null 2>&1 || true
+  fi
+  if [ "${DEVICE_HAS_DUAL_SCREEN}" = "true" ]; then
+    swaymsg 'seat seat1 fallback false' >/dev/null 2>&1 || true
+  fi
+  # Restore the caller's exit-combo target (we appended firefox to it).
+  if [ -n "${PREV_KILL}" ]; then set_kill set "${PREV_KILL}"; else set_kill stop; fi
+}
+
+case "$1" in
+  --ensure)
+    ensure_browser
+    exit $?
+    ;;
+  "")
+    echo "usage: rocknix-browser { --ensure | <url> }" >&2
+    exit 1
+    ;;
+esac
+
+URL="$1"
+
+if ! ensure_browser; then
+  exit 1
+fi
+
+# Add firefox to whatever the calling app registered for the exit combo, so
+# L1+START+SELECT closes the browser; cleanup() restores the original target.
+PREV_KILL="$(cat /tmp/.process-kill-data 2>/dev/null || true)"
+trap cleanup EXIT
+set_kill set "${PREV_KILL} firefox"
+
+if [ "${DEVICE_HAS_DUAL_SCREEN}" = "true" ]; then
+  swaymsg 'seat seat1 fallback true' >/dev/null 2>&1 || true
+fi
+
+# Firefox is a native-Wayland window while the caller (e.g. OpenNOW) is XWayland,
+# so sway tiles them side by side. Force Firefox fullscreen so it covers the
+# caller: set a rule up front, then poll until the window maps as a fallback.
+swaymsg 'for_window [app_id="firefox"] fullscreen enable' >/dev/null 2>&1 || true
+( for _ in $(seq 1 20); do
+    if swaymsg -t get_tree 2>/dev/null | grep -q '"app_id": *"firefox"'; then
+      swaymsg '[app_id="firefox"] fullscreen enable' >/dev/null 2>&1
+      break
+    fi
+    sleep 0.5
+  done ) &
+
+start_keyboard
+
+export MOZ_ENABLE_WAYLAND=1
+export MOZ_DBUS_REMOTE=1
+mkdir -p "${PROFILE_DIR}"
+"${FIREFOX_BIN}" --no-remote --profile "${PROFILE_DIR}" "${URL}"
