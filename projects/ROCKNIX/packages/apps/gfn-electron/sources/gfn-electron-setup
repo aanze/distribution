@@ -1,0 +1,96 @@
+#!/bin/bash
+
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Enable/disable the GeForce NOW (geforcenow) main-menu section.
+#
+# The client itself (gfn-electron) is bundled in the image (/usr/share/gfn-electron),
+# so there is NOTHING to download. "install" drops the launcher + a gamelist into the
+# ROM folder (EmulationStation shows the section while that folder has a launcher; the
+# gamelist also makes the section appear in the Steamlike Theme Manager, which
+# discovers systems by gamelist.xml). The section is also created automatically on
+# boot (mode "boot", from the autostart) so a fresh flash already has it.
+#
+#   gfn-electron-setup install | uninstall | boot
+#
+# "uninstall" drops a marker so the boot autostart does NOT re-create the section;
+# "install" clears it. Your NVIDIA login/config under /storage/.config/gfn-electron
+# is always kept.
+
+source /etc/profile
+
+MODE="${1:-install}"
+GFN_DIR="/storage/roms/geforcenow"
+LAUNCHER="${GFN_DIR}/GeForce NOW.sh"
+GAMELIST="${GFN_DIR}/gamelist.xml"
+MARK="/storage/.config/gfn-electron/.disabled"
+
+# Silently create the launcher + a seed gamelist. Returns 1 if the client is
+# missing from the image. Idempotent.
+create_section() {
+  [ -x /usr/share/gfn-electron/geforcenow-electron ] || return 1
+  mkdir -p "${GFN_DIR}"
+  cat > "${LAUNCHER}" <<'EOF'
+#!/bin/bash
+exec /usr/bin/start_gfn-electron.sh
+EOF
+  chmod +x "${LAUNCHER}"
+  if [ ! -f "${GAMELIST}" ]; then
+    cat > "${GAMELIST}" <<'EOF'
+<?xml version="1.0"?>
+<gameList>
+    <game>
+        <path>./GeForce NOW.sh</path>
+        <name>GeForce NOW</name>
+        <desc>Stream PC games from the cloud with NVIDIA GeForce NOW. First login: NVIDIA account or Discord. On-screen keyboard: hold the left Home button + tap the screen. Exit with L1 + START + SELECT.</desc>
+        <developer>NVIDIA</developer>
+        <publisher>hmlendea</publisher>
+        <genre>Cloud Gaming</genre>
+        <players>1</players>
+    </game>
+</gameList>
+EOF
+  fi
+  return 0
+}
+
+case "${MODE}" in
+  install)
+    echo "=== Enable GeForce NOW ==="
+    if ! create_section; then
+      echo "ERROR: the GeForce NOW client is missing from this image."
+      echo "(/usr/share/gfn-electron/geforcenow-electron not found)"
+      sleep 8; exit 1
+    fi
+    rm -f "${MARK}"
+    echo "GeForce NOW is ready."
+    echo "Restart EmulationStation to see the GeForce NOW section in the main menu."
+    echo "First login: use your NVIDIA account or Discord (not Google)."
+    echo "On-screen keyboard: hold the left Home button + tap the screen."
+    sleep 8
+    ;;
+  uninstall)
+    echo "=== Remove GeForce NOW ==="
+    rm -f "${LAUNCHER}" "${GAMELIST}"
+    rmdir "${GFN_DIR}" 2>/dev/null || true
+    mkdir -p "$(dirname "${MARK}")"
+    : > "${MARK}"     # keep the section hidden across reboots (no auto re-add)
+    echo "Removed the GeForce NOW launcher; it will not re-appear on boot."
+    echo "Your NVIDIA login/config under /storage/.config/gfn-electron is kept."
+    echo "The section disappears after restarting EmulationStation."
+    echo "Run 'Install GeForce NOW' to bring it back."
+    sleep 8
+    ;;
+  boot)
+    # Auto-preinstall on boot so a fresh flash already shows the section, unless
+    # the user explicitly removed it. Silent + fast (runs before ES).
+    [ -f "${MARK}" ] && exit 0
+    [ -x "${LAUNCHER}" ] && exit 0
+    create_section >/dev/null 2>&1 || true
+    ;;
+  *)
+    echo "usage: gfn-electron-setup { install | uninstall | boot }" >&2
+    exit 1
+    ;;
+esac
