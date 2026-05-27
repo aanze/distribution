@@ -1,0 +1,9 @@
+# gfn-electron (GeForce NOW client, native arm64 Electron). Bundled in the
+# image (no on-device download, unlike the old OpenNOW). Drop-in snippet (see
+# the pkg-emus.d loop in package.mk): file-add only, no shared-file edits.
+# ES wiring lives in the matching gfn-electron.wiring file.
+case "${DEVICE}" in
+  SM8250|SM8550|SM8650|SM8750)
+    PKG_EMUS+=" gfn-electron"
+    ;;
+esac

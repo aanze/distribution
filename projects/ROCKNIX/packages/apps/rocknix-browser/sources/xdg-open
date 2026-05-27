@@ -1,0 +1,41 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Minimal, universal xdg-open for ROCKNIX (which ships no desktop environment
+# and thus no real xdg-open). Any application that calls `xdg-open <url|file>`
+# to open a web page gets a real on-device browser instead of a silent failure.
+#
+# This is what lets OpenNOW's NVIDIA OAuth login complete on the device: the
+# login URL is opened here, the user signs in, and the redirect to OpenNOW's
+# localhost listener closes the loop locally.
+
+target="$1"
+
+if [ -z "${target}" ]; then
+  echo "usage: xdg-open { file | URL }" >&2
+  exit 1
+fi
+
+case "${target}" in
+  http://*|https://*|ftp://*|file://*|www.*)
+    exec /usr/bin/rocknix-browser "${target}"
+    ;;
+  *://*)
+    # Other URI scheme we don't specifically handle: still try the browser.
+    exec /usr/bin/rocknix-browser "${target}"
+    ;;
+  *)
+    # A local path. Open it in the browser if it looks like web content,
+    # otherwise there is nothing sensible to do without a DE.
+    case "${target}" in
+      *.html|*.htm|*.xhtml|*.svg|*.pdf)
+        exec /usr/bin/rocknix-browser "file://${target}"
+        ;;
+      *)
+        echo "xdg-open: no handler for '${target}'" >&2
+        exit 4
+        ;;
+    esac
+    ;;
+esac
