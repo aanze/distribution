@@ -1,0 +1,9 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Preinstall the GeForce NOW (geforcenow) main-menu section on boot so a fresh
+# flash already shows it WITHOUT the user having to run "Install GeForce NOW".
+# Runs before EmulationStation (common autostart). Respects an explicit
+# "Uninstall GeForce NOW" (marker file) and is a no-op once the launcher exists.
+/usr/bin/gfn-electron-setup boot
