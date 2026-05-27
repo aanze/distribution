@@ -14,4 +14,8 @@ makeinstall_target() {
     cp -rf * ${INSTALL}/usr/share/themes/${PKG_NAME}
     rm -rf ${INSTALL}/usr/share/themes/${PKG_NAME}/_inc/systems/{artwork-circuit,artwork-classic,artwork-nintendont,artwork-noir,artwork-outline}
     sed -i '/<include name="\(noir\|nintendont\|circuit\|outline\)"/d' ${INSTALL}/usr/share/themes/${PKG_NAME}/theme.xml
+    # ROCKNIX add-on: system logo for GeForce NOW (gfn-electron), not present
+    # upstream. The theme resolves carousel logos by convention
+    # (logos/${system.theme}.svg).
+    cp -f ${PKG_DIR}/sources/geforcenow.svg ${INSTALL}/usr/share/themes/${PKG_NAME}/_inc/systems/logos/geforcenow.svg
 }
