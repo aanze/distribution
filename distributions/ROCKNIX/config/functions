@@ -120,6 +120,9 @@ EOF
 
 add_es_system() {
   RUNCMD='/usr/bin/runemu.sh %ROM% -P%SYSTEM% --core=%CORE% --emulator=%EMULATOR% --controllers="%CONTROLLERSCONFIG%"'
+  # .conf files are sourced into this shell, so any SYSTEM_COMMAND they set
+  # would leak to subsequent systems whose .conf doesn't define one.
+  unset SYSTEM_COMMAND
   if [ -e "${ROOT}/config/emulators/${1}.conf" ]
   then
     . ${ROOT}/config/emulators/${1}.conf
