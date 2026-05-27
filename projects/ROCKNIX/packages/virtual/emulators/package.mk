@@ -29,6 +29,16 @@ LIBRETRO_CORES="81-lr a5200-lr arduous-lr atari800-lr b2-lr beetle-gba-lr beetle
                 snes9x2010-lr stella-lr supersnes9x-lr swanstation-lr tgbdual-lr theodore-lr tic80-lr uae4arm uzem-lr vba-next-lr       \
                 vbam-lr vecx-lr vice-lr vircon32-lr virtualjaguar-lr xmil-lr wasm4-lr yabasanshiro-lr"
 
+# OpenNOW (GeForce NOW client). Added as its own device-gated statement rather
+# than editing the crowded per-device PKG_EMUS lines below, so this personal
+# feature cherry-picks cleanly over upstream emulator-list churn (e.g. pcsx2-sa).
+# Its launchers/ES wiring live in the makeinstall_target Steam block further down.
+case "${DEVICE}" in
+  SM8250|SM8550|SM8650|SM8750)
+    PKG_EMUS+=" opennow"
+    ;;
+esac
+
 ### Emulators or cores for specific devices
 case "${DEVICE}" in
   H700|RK3326)
@@ -718,6 +728,13 @@ makeinstall_target() {
       install_script "Uninstall Heroic Games Launcher.sh"
       install_script "Scan Heroic Games.sh"
       add_es_system heroic
+      ## OpenNOW (GeForce NOW client)
+      add_emu_core opennow opennow opennow true
+      install_script "Install OpenNOW.sh"
+      install_script "Update OpenNOW.sh"
+      install_script "Rollback OpenNOW.sh"
+      install_script "Uninstall OpenNOW.sh"
+      add_es_system opennow
       ;;
   esac
 
