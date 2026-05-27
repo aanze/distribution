@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+"""
+opennow-touchmouse-daemon
+
+Exclusively grabs the touchscreen evdev device and re-emits it as a virtual
+mouse via uinput, so applications that only understand a mouse (e.g. the
+GeForce NOW Steam interstitial shown by OpenNOW on some games) become usable
+on a handheld that has no mouse but does have a touchscreen.
+
+  - Single-finger tap (<300 ms, total movement <15 px) -> BTN_LEFT click
+  - Single-finger drag                                  -> relative cursor move
+  - Extra simultaneous fingers are ignored
+
+The grab is released and the virtual mouse is destroyed on SIGTERM/SIGINT, so
+the touchscreen returns to its normal Wayland behavior as soon as the daemon
+exits (its wrapper launcher kills it when OpenNOW closes).
+
+Pure Python 3 + ctypes/fcntl; no extra packages needed.
+"""
+import fcntl
+import os
+import select
+import signal
+import struct
+import sys
+import time
+
+# evdev event codes (from <linux/input-event-codes.h>)
+EV_SYN, EV_KEY, EV_REL, EV_ABS = 0, 1, 2, 3
+SYN_REPORT = 0
+REL_X, REL_Y = 0, 1
+BTN_LEFT = 0x110
+ABS_MT_SLOT        = 0x2f
+ABS_MT_POSITION_X  = 0x35
+ABS_MT_POSITION_Y  = 0x36
+ABS_MT_TRACKING_ID = 0x39
+
+# ioctls (computed from _IO/_IOW macros in <asm-generic/ioctl.h>)
+EVIOCGRAB      = 0x40044590   # _IOW('E', 0x90, int)
+UI_SET_EVBIT   = 0x40045564   # _IOW('U', 100, int)
+UI_SET_KEYBIT  = 0x40045565
+UI_SET_RELBIT  = 0x40045566
+UI_DEV_CREATE  = 0x00005501   # _IO('U', 1)
+UI_DEV_DESTROY = 0x00005502
+UI_DEV_SETUP   = 0x405c5503   # _IOW('U', 3, uinput_setup [92 bytes])
+BUS_VIRTUAL    = 0x06
+
+# struct input_event { struct timeval time; __u16 type; __u16 code; __s32 value; }
+EVENT_FMT  = "qqHHi"
+EVENT_SIZE = struct.calcsize(EVENT_FMT)  # 24 on 64-bit
+
+# Tap thresholds
+TAP_MAX_MS = 300
+TAP_MAX_PX = 15
+
+# Touchscreen vs display rotation. Most handhelds mount the touch panel in
+# portrait native, then the compositor rotates the display 90 deg to present
+# it as landscape - so raw touch (dx, dy) needs the same rotation applied to
+# match what the user perceives. Pick the value that matches your device:
+#   0   - no rotation (touch native matches display)
+#   90  - display rotated 90 deg clockwise from touch native
+#   180 - display rotated 180 deg
+#   270 - display rotated 270 deg clockwise (= 90 deg counter-clockwise)
+# Default 270 = correct for AYN Odin 3 (SM8750). Override per device via the
+# OPENNOW_TM_ROTATE env var, set by the launcher wrapper if needed.
+ROTATE = int(os.environ.get("OPENNOW_TM_ROTATE", "270"))
+if ROTATE not in (0, 90, 180, 270):
+    ROTATE = 270
+
+
+def rotate_delta(dx, dy):
+    """Map raw touch (dx, dy) to display (REL_X, REL_Y) per ROTATE."""
+    if ROTATE == 90:
+        return (-dy, dx)
+    if ROTATE == 180:
+        return (-dx, -dy)
+    if ROTATE == 270:
+        return (dy, -dx)
+    return (dx, dy)
+
+
+def find_touchscreen():
+    """Return the /dev/input/eventN path of a multi-touch screen, or None."""
+    try:
+        with open("/proc/bus/input/devices") as f:
+            blocks = f.read().split("\n\n")
+    except OSError:
+        return None
+    for blk in blocks:
+        lines = blk.splitlines()
+        ev_line  = next((l for l in lines if l.startswith("B: EV=")),  "")
+        abs_line = next((l for l in lines if l.startswith("B: ABS=")), "")
+        if not ev_line or not abs_line:
+            continue
+        try:
+            ev_mask  = int(ev_line.split("=", 1)[1],  16)
+            abs_mask = int(abs_line.split("=", 1)[1], 16)
+        except ValueError:
+            continue
+        if not (ev_mask & (1 << EV_ABS)):
+            continue
+        if not (abs_mask & (1 << ABS_MT_POSITION_X)):
+            continue
+        handlers = next((l for l in lines if l.startswith("H: Handlers=")), "")
+        for tok in handlers.split("=", 1)[1].split() if handlers else []:
+            if tok.startswith("event"):
+                return "/dev/input/" + tok
+    return None
+
+
+def create_virtual_mouse():
+    """Open /dev/uinput, register a virtual relative mouse, return its fd."""
+    fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_REL)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_SYN)
+    fcntl.ioctl(fd, UI_SET_KEYBIT, BTN_LEFT)
+    fcntl.ioctl(fd, UI_SET_RELBIT, REL_X)
+    fcntl.ioctl(fd, UI_SET_RELBIT, REL_Y)
+    # uinput_setup: input_id (4 u16) + name[80] + u32 ff_effects_max = 92 bytes
+    setup = struct.pack("HHHH80sI",
+                        BUS_VIRTUAL, 0x1209, 0x000a, 0x0001,
+                        b"OpenNOW Touch Mouse", 0)
+    fcntl.ioctl(fd, UI_DEV_SETUP, setup)
+    fcntl.ioctl(fd, UI_DEV_CREATE)
+    return fd
+
+
+def emit(fd, etype, code, value):
+    os.write(fd, struct.pack(EVENT_FMT, 0, 0, etype, code, value))
+
+
+def main():
+    touch = find_touchscreen()
+    if not touch:
+        print("opennow-touchmouse-daemon: no multi-touch screen found, exiting",
+              file=sys.stderr)
+        sys.exit(0)
+    print(f"opennow-touchmouse-daemon: grabbing {touch}", file=sys.stderr)
+
+    tfd = os.open(touch, os.O_RDONLY)
+    fcntl.ioctl(tfd, EVIOCGRAB, 1)
+    ufd = create_virtual_mouse()
+
+    def cleanup(*_):
+        for action in (
+            lambda: fcntl.ioctl(tfd, EVIOCGRAB, 0),
+            lambda: fcntl.ioctl(ufd, UI_DEV_DESTROY),
+            lambda: os.close(tfd),
+            lambda: os.close(ufd),
+        ):
+            try:
+                action()
+            except Exception:
+                pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT,  cleanup)
+
+    # Multi-touch protocol B state. We only track one "primary" finger - the
+    # first one that touches down while no other finger is active.
+    slots = {}            # slot_id -> {"x0","y0","t0","moved"}
+    cur_slot = 0
+    primary = None        # slot_id currently driving the mouse, or None
+    last_x = last_y = None
+    acc_dx = acc_dy = 0   # accumulate per SYN_REPORT cycle, rotate, then emit
+
+    while True:
+        select.select([tfd], [], [])
+        data = os.read(tfd, EVENT_SIZE * 64)
+        for i in range(0, len(data), EVENT_SIZE):
+            _, _, etype, code, value = struct.unpack(EVENT_FMT,
+                                                     data[i:i + EVENT_SIZE])
+            if etype == EV_ABS:
+                if code == ABS_MT_SLOT:
+                    cur_slot = value
+                elif code == ABS_MT_TRACKING_ID:
+                    if value == -1:
+                        s = slots.pop(cur_slot, None)
+                        if s and cur_slot == primary:
+                            primary = None
+                            dt_ms = (time.monotonic() - s["t0"]) * 1000
+                            if dt_ms < TAP_MAX_MS and not s["moved"]:
+                                emit(ufd, EV_KEY, BTN_LEFT, 1)
+                                emit(ufd, EV_SYN, SYN_REPORT, 0)
+                                emit(ufd, EV_KEY, BTN_LEFT, 0)
+                                emit(ufd, EV_SYN, SYN_REPORT, 0)
+                            last_x = last_y = None
+                            acc_dx = acc_dy = 0
+                    else:
+                        slots[cur_slot] = {"x0": None, "y0": None,
+                                           "t0": time.monotonic(),
+                                           "moved": False}
+                        if primary is None:
+                            primary = cur_slot
+                elif code == ABS_MT_POSITION_X and cur_slot in slots:
+                    s = slots[cur_slot]
+                    if s["x0"] is None:
+                        s["x0"] = value
+                    if cur_slot == primary:
+                        if last_x is not None:
+                            acc_dx += value - last_x
+                        last_x = value
+                        if abs(value - s["x0"]) > TAP_MAX_PX:
+                            s["moved"] = True
+                elif code == ABS_MT_POSITION_Y and cur_slot in slots:
+                    s = slots[cur_slot]
+                    if s["y0"] is None:
+                        s["y0"] = value
+                    if cur_slot == primary:
+                        if last_y is not None:
+                            acc_dy += value - last_y
+                        last_y = value
+                        if abs(value - s["y0"]) > TAP_MAX_PX:
+                            s["moved"] = True
+            elif etype == EV_SYN and code == SYN_REPORT:
+                if acc_dx or acc_dy:
+                    rdx, rdy = rotate_delta(acc_dx, acc_dy)
+                    if rdx:
+                        emit(ufd, EV_REL, REL_X, rdx)
+                    if rdy:
+                        emit(ufd, EV_REL, REL_Y, rdy)
+                    acc_dx = acc_dy = 0
+                emit(ufd, EV_SYN, SYN_REPORT, 0)
+
+
+if __name__ == "__main__":
+    main()
