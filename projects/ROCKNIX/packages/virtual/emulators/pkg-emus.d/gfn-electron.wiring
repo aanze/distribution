@@ -1,0 +1,11 @@
+  ## gfn-electron (GeForce NOW client, native arm64 Electron, bundled).
+  ## Drop-in ES wiring (see the pkg-emus.d loop at the top of
+  ## makeinstall_target): file-add only, no shared-file edits.
+  case ${DEVICE} in
+    SM8250|SM8550|SM8650|SM8750)
+      add_emu_core geforcenow geforcenow geforcenow true
+      install_script "Install GeForce NOW.sh"
+      install_script "Uninstall GeForce NOW.sh"
+      add_es_system geforcenow
+      ;;
+  esac
