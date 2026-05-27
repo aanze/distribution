@@ -1,0 +1,24 @@
+    <game>
+        <path>./Install GeForce NOW.sh</path>
+        <name>Install GeForce NOW</name>
+        <desc>Enables GeForce NOW (gfn-electron), a native-arm64 GeForce NOW client bundled in the image - no download needed. After enabling, restart EmulationStation and launch it from the GeForce NOW section in the main menu. First login: use your NVIDIA account or Discord (Google sign-in is blocked inside Electron). On-screen keyboard: hold the left Home button + tap the screen.</desc>
+        <developer>hmlendea</developer>
+        <publisher>hmlendea</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/geforcenow.png</image>
+    </game>
+    <game>
+        <path>./Uninstall GeForce NOW.sh</path>
+        <name>Uninstall GeForce NOW</name>
+        <desc>Hides the GeForce NOW (gfn-electron) section by removing its launcher. The bundled client stays in the image and your NVIDIA login under /storage/.config/gfn-electron is kept. The section disappears after restarting EmulationStation.</desc>
+        <developer>ROCKNIX</developer>
+        <publisher>ROCKNIX</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/geforcenow.png</image>
+    </game>
