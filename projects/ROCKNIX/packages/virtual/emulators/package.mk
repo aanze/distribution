@@ -55,18 +55,18 @@ case "${DEVICE}" in
   SM8250)
     [ "${ENABLE_32BIT}" == "true" ] && EMUS_32BIT="box86 daedalusx64-sa desmume-lr gpsp-lr pcsx_rearmed-lr"
     PKG_EMUS+=" aethersx2-sa azahar-sa bigpemu-sa cemu-sa dolphin-sa heroic mednafen melonds-sa nanoboyadvance-sa rpcs3-sa supermodel-sa \
-                xemu-sa skyemu-sa steam vita3k-sa"
+                xemu-sa skyemu-sa steam opennow vita3k-sa"
     LIBRETRO_CORES+=" beetle-psx-lr beetle-saturn-lr bsnes-lr bsnes-hd-lr dolphin-lr kronos-lr"
     ;;
   SM8550)
     [ "${ENABLE_32BIT}" == "true" ] && EMUS_32BIT="box86 daedalusx64-sa desmume-lr gpsp-lr pcsx_rearmed-lr"
     PKG_EMUS+=" aethersx2-sa ares-sa azahar-sa bigpemu-sa cemu-sa dolphin-sa drastic-sa gopher64-sa heroic mednafen melonds-sa nanoboyadvance-sa rpcs3-sa supermodel-sa \
-                xemu-sa skyemu-sa steam vita3k-sa"
+                xemu-sa skyemu-sa steam opennow vita3k-sa"
     LIBRETRO_CORES+=" beetle-psx-lr beetle-saturn-lr bsnes-lr bsnes-hd-lr dolphin-lr kronos-lr"
     ;;
   SM8650|SM8750)
     PKG_EMUS+=" aethersx2-sa ares-sa azahar-sa bigpemu-sa cemu-sa dolphin-sa gopher64-sa heroic mednafen melonds-sa nanoboyadvance-sa rpcs3-sa supermodel-sa \
-                xemu-sa skyemu-sa steam vita3k-sa"
+                xemu-sa skyemu-sa steam opennow vita3k-sa"
     LIBRETRO_CORES+=" beetle-psx-lr beetle-saturn-lr bsnes-lr bsnes-hd-lr dolphin-lr kronos-lr"
     ;;
   S922X)
@@ -718,6 +718,13 @@ makeinstall_target() {
       install_script "Uninstall Heroic Games Launcher.sh"
       install_script "Scan Heroic Games.sh"
       add_es_system heroic
+      ## OpenNOW (GeForce NOW client)
+      add_emu_core opennow opennow opennow true
+      install_script "Install OpenNOW.sh"
+      install_script "Update OpenNOW.sh"
+      install_script "Rollback OpenNOW.sh"
+      install_script "Uninstall OpenNOW.sh"
+      add_es_system opennow
       ;;
   esac
 
