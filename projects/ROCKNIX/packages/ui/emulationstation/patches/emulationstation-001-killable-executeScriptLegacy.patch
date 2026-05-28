@@ -1,0 +1,90 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] ApiSystem: make executeScriptLegacy interruptible by the global kill hotkey
+
+ApiSystem::executeScriptLegacy() runs external commands synchronously via
+popen()/fgets() on the UI thread. If the child blocks (e.g. `moonlight pair`
+without a server IP enters mDNS autodiscovery and never returns, or waits
+indefinitely for a PIN ack), the ES UI freezes with no recovery short of SSH.
+
+rocknix already exposes a global "panic" kill hotkey (L1 + Start + Select)
+handled by the input_sense daemon, which killalls whatever name is stored
+in /tmp/.process-kill-data. The wrapper scripts (start_*.sh) populate that
+file via `set_kill set "<binary>"` before exec'ing the long-running process,
+but ES menu actions launched via executeScriptLegacy bypass those wrappers
+and never register anything.
+
+Register the main binary of the command line in /tmp/.process-kill-data for
+the duration of the popen call, then restore the previous content (or
+remove the file if it didn't exist) on every exit path via a RAII guard.
+This makes hanging menu commands killable via the existing hotkey without
+disturbing game-launch registration (game launches go through
+Platform::ProcessStartInfo::run() / system(), not this function, and are
+serialised against menu commands on ES's single UI thread).
+
+---
+--- a/es-app/src/ApiSystem.cpp	2026-05-28 17:59:08.003653426 +0200
++++ b/es-app/src/ApiSystem.cpp	2026-05-28 17:59:39.543437425 +0200
+@@ -1733,6 +1733,25 @@
+ 	return res;
+ }
+ 
++// Extract the main binary name from a shell command for /tmp/.process-kill-data
++// registration. Skips leading "VAR=value" env assignments and strips any path
++// prefix so that the result matches what `killall` expects.
++static std::string apisystem_extract_main_binary(const std::string& command) {
++	std::istringstream iss(command);
++	std::string token;
++	while (iss >> token) {
++		// Leading env-var assignments (e.g. QT_QPA_PLATFORM=wayland) precede the
++		// binary in shell command syntax: skip them.
++		if (token.find('=') != std::string::npos && token.find('/') == std::string::npos)
++			continue;
++		// Strip any directory component: killall matches by basename.
++		size_t slash = token.find_last_of('/');
++		if (slash != std::string::npos) token = token.substr(slash + 1);
++		return token;
++	}
++	return "";
++}
++
+ std::vector<std::string> ApiSystem::executeScriptLegacy(const std::string& command) {
+ 	std::vector<std::string> vec;
+ 	executeScriptLegacy(command, [&vec](const std::string& line) {
+@@ -1746,6 +1765,37 @@
+ 	std::cout << "ApiSystem::executeScriptLegacy -> " << command << std::endl;
+ 	LOG(LogInfo) << "ApiSystem::executeScriptLegacy -> " << command;
+ 
++	// Register the main binary so rocknix' global L1+Start+Select kill hotkey
++	// (handled by the input_sense daemon) can interrupt blocking children of
++	// this synchronous popen. Save/restore the previous content to avoid
++	// clobbering a registration set by a start_*.sh wrapper.
++	struct KillReg {
++		std::string prev;
++		bool prev_existed;
++		bool armed;
++		KillReg(const std::string& bin) : prev_existed(false), armed(false) {
++			std::ifstream in("/tmp/.process-kill-data");
++			if (in.good()) {
++				std::stringstream ss; ss << in.rdbuf();
++				prev = ss.str();
++				prev_existed = true;
++			}
++			if (!bin.empty()) {
++				std::ofstream f("/tmp/.process-kill-data", std::ios::trunc);
++				if (f.good()) { f << bin << std::endl; armed = true; }
++			}
++		}
++		~KillReg() {
++			if (!armed) return;
++			if (prev_existed) {
++				std::ofstream f("/tmp/.process-kill-data", std::ios::trunc);
++				if (f.good()) f << prev;
++			} else {
++				std::remove("/tmp/.process-kill-data");
++			}
++		}
++	} killReg(apisystem_extract_main_binary(command));
++
+ 	FILE *pipe = popen(command.c_str(), "r");
+ 	if (pipe == NULL)
+ 	{
