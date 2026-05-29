@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+
+# Workaround for an intermittent freeze of the AYN Odin3 gamepad after wake.
+# Cause: the rsinput device on the qcom-geni serial bus hits a kernel WARN in
+# qcom_geni_serial_suspend and, on resume, InputPlumber keeps holding the
+# (now stale) source devnode in /dev/inputplumber/sources/. It never re-grabs
+# the freshly re-probed input device, so the virtual pad goes silent.
+#
+# rsinput is listed in /usr/config/modules.bad so the sleep hook unloads it
+# pre-suspend and reloads it post-resume; this script then restarts IP so it
+# drops the stale CompositeDevice and re-attaches to the new source.
+
+systemctl restart inputplumber
