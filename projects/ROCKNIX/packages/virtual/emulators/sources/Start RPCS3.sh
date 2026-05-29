@@ -23,7 +23,21 @@ for FOLDER_LINK in "${FOLDER_LINKS[@]}"; do
   ln -sf "$TARGET_FOLDER" "$SOURCE_FOLDER"
 done
 
+# Resolve the RPCS3 binary: managed update first, then auto-rollback copy,
+# then factory bundled. Matches start_rpcs3.sh's resolution order so the Tools
+# GUI and the per-game launcher always run the same binary.
+RPCS3_BIN="/usr/bin/rpcs3-sa"
+for candidate in \
+  /storage/.local/share/rpcs3-sa/current.AppImage \
+  /storage/.local/share/rpcs3-sa/previous.AppImage \
+  /usr/bin/rpcs3-sa; do
+  if [ -x "${candidate}" ]; then
+    RPCS3_BIN="${candidate}"
+    break
+  fi
+done
+
 export QT_QPA_PLATFORM=xcb
 set_kill set "-9 rpcs3"
 sway_fullscreen "RPCS3" "class" &
-/usr/bin/rpcs3-sa
+"${RPCS3_BIN}"
