@@ -411,6 +411,30 @@ it's recommended to have a mouse and keyboard to modify settings.</desc>
         <image>./images/rpcs3.svg</image>
     </game>
     <game>
+        <path>./Update RPCS3.sh</path>
+        <name>Update RPCS3</name>
+        <desc>Downloads the latest official RPCS3 arm64 AppImage from github.com/RPCS3/rpcs3-binaries-linux-arm64 and installs it without touching the factory bundled binary. A sanity probe runs before activation, the previous AppImage is kept for rollback, and the factory bundled /usr/bin/rpcs3-sa remains as a final fallback. Idempotent: skips if already up to date. Note that a brand-new upstream build may require newer system libraries than this firmware ships; if so the probe aborts the install or you can run "Rollback RPCS3".</desc>
+        <developer>RPCS3 Team</developer>
+        <publisher>ROCKNIX</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/rpcs3.svg</image>
+    </game>
+    <game>
+        <path>./Rollback RPCS3.sh</path>
+        <name>Rollback RPCS3</name>
+        <desc>Reverts the managed RPCS3 install. If a previous version is kept it swaps current and previous; otherwise it deletes the managed AppImage and the factory bundled /usr/bin/rpcs3-sa takes over. Use this if a freshly updated RPCS3 crashes when launching a game.</desc>
+        <developer>ROCKNIX</developer>
+        <publisher>ROCKNIX</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/rpcs3.svg</image>
+    </game>
+    <game>
         <path>./Start ScummVM.sh</path>
         <name>Start ScummVM</name>
         <desc>Opens the ScummVM GUI to enable global configuration changes to be made directly to the emulator. It's recommended to have a mouse and keyboard available to modify settings. ScummVM is a program which allows you to run certain classic graphical adventure and role-playing games, provided you already have their data files. The clever part about this: ScummVM just replaces the executables shipped with the games, allowing you to play them on systems for which they were never designed! ScummVM is a complete rewrite of these games' executables and is not an emulator.</desc>
