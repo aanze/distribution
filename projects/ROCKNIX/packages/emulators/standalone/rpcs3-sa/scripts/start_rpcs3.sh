@@ -5,6 +5,21 @@
 
 . /etc/profile
 
+# Resolve the RPCS3 binary in this order:
+#   1. /storage/.local/share/rpcs3-sa/current.AppImage  (managed by "Update RPCS3")
+#   2. /storage/.local/share/rpcs3-sa/previous.AppImage (auto-rollback)
+#   3. /usr/bin/rpcs3-sa                                (factory bundled)
+RPCS3_BIN="/usr/bin/rpcs3-sa"
+for candidate in \
+  /storage/.local/share/rpcs3-sa/current.AppImage \
+  /storage/.local/share/rpcs3-sa/previous.AppImage \
+  /usr/bin/rpcs3-sa; do
+  if [ -x "${candidate}" ]; then
+    RPCS3_BIN="${candidate}"
+    break
+  fi
+done
+
 # Check if rpcs3 exists in .config
 if [ ! -d "/storage/.config/rpcs3" ]; then
   cp -r "/usr/config/rpcs3" "/storage/.config/"
@@ -209,12 +224,13 @@ CONFIG_YML: ${CONFIG_YML}
 EOF
 
 # Run rpcs3
+echo "RPCS3 BIN: ${RPCS3_BIN}" >> /var/log/rpcs3-sa.log
 if [ "$SUI" = "true" ]; then
   export QT_QPA_PLATFORM=wayland
   set_kill set "-9 rpcs3"
-  ${EMUPERF} /usr/bin/rpcs3-sa
+  ${EMUPERF} "${RPCS3_BIN}"
 else
   export QT_QPA_PLATFORM=xcb
   set_kill set "-9 rpcs3"
-  ${EMUPERF} /usr/bin/rpcs3-sa --no-gui "$GAME_PATH"
+  ${EMUPERF} "${RPCS3_BIN}" --no-gui "$GAME_PATH"
 fi
