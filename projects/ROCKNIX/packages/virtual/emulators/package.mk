@@ -1170,6 +1170,8 @@ makeinstall_target() {
       add_emu_core ps3 rpcs3 rpcs3-sa true
       add_es_system ps3
       install_script "Start RPCS3.sh"
+      install_script "Update RPCS3.sh"
+      install_script "Rollback RPCS3.sh"
       ;;
   esac
 
