@@ -1,0 +1,182 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Personal OTA updater for Anze's ROCKNIX builds.
+#
+# Mirrors the contract of the stock `rocknix-update` script, but pulls the
+# update package from the personal GitHub releases at
+# github.com/aanze/distribution instead of the official update.rocknix.org
+# endpoint. Staging + apply-on-reboot are identical to stock: it drops the
+# verified ROCKNIX-<device>.<arch>-<date>.tar (+ .sha256) into /storage/.update
+# and the busybox init updater flashes it on the next boot.
+#
+# Modes:
+#   check            print the available version and exit 0 if an update is
+#                    available (used by ES ApiSystem::canUpdate); else exit 1
+#   update | <none>  download + verify the latest package into /storage/.update
+#   releases         list the available release versions
+
+. /etc/profile
+
+REPO="aanze/distribution"
+API="https://api.github.com/repos/${REPO}/releases"
+FORCE="$(get_setting updates.force)"
+
+UPDATE_DIR="/storage/.update"
+
+# Match the artifact this device should flash, e.g. ROCKNIX-SM8750.aarch64-20260530.tar
+ASSET_RE="ROCKNIX-${HW_DEVICE}[.]${HW_ARCH}-[0-9]\{8\}[.]tar$"
+
+# Fetch the JSON of the latest *published* release (drafts/prereleases excluded
+# by GitHub's /latest endpoint). Anonymous access (60 req/h) is plenty.
+get_latest_json() {
+    curl -s -S -L \
+        -H "Accept: application/vnd.github+json" \
+        "${API}/latest"
+}
+
+# Extract all browser_download_url values from a release JSON blob.
+asset_urls() {
+    grep -o '"browser_download_url"[ ]*:[ ]*"[^"]*"' \
+        | sed 's/.*"\(https*:[^"]*\)".*/\1/'
+}
+
+# Resolve the .tar asset URL for this device from the latest release.
+get_tar_url() {
+    get_latest_json | asset_urls | grep "${ASSET_RE}" | head -n 1
+}
+
+# Derive the version (YYYYMMDD) from a package filename / url.
+version_of() {
+    basename "$1" | sed 's/.*-\([0-9]\{8\}\)\.tar$/\1/'
+}
+
+# Returns 0 if remote version is newer than the running OS_VERSION, or if a
+# forced update is requested. OS_VERSION on these builds is the YYYYMMDD date.
+is_newer() {
+    remote="$1"
+    custom_force="${2:-$FORCE}"
+    [ "$custom_force" = "1" ] && return 0
+    case "${OS_VERSION}${remote}" in
+        *[!0-9]*) return 0 ;;   # non-numeric version: don't block, let user decide
+    esac
+    [ "$remote" -gt "$OS_VERSION" ]
+}
+
+# Returns 0 if there is at least required_mB free at target_path.
+check_disk_space() {
+    target_path="$1"
+    required_mB="$2"
+    available_mB=$(df -m "$target_path" | awk 'NR==2 {print $4}')
+    [ "${available_mB:-0}" -ge "$required_mB" ]
+}
+
+download_file() {
+    curl --progress-bar -S -L "$1" -o "$2"
+}
+
+main_update() {
+    custom_force="${1:-$FORCE}"
+
+    tar_url=$(get_tar_url)
+    case "$tar_url" in
+        http://*|https://*) ;;
+        *) echo "No update package found for ${HW_DEVICE}.${HW_ARCH}."; exit 1 ;;
+    esac
+
+    version=$(version_of "$tar_url")
+    if ! is_newer "$version" "$custom_force"; then
+        echo "Already up to date (version ${OS_VERSION})."
+        exit 1
+    fi
+
+    if ! check_disk_space "/storage" "2048"; then
+        echo "Not enough free space on /storage (need at least 2GB)."
+        exit 1
+    fi
+
+    mkdir -p "$UPDATE_DIR" || { echo "Failed to create ${UPDATE_DIR}."; exit 1; }
+
+    # Clear any previously staged package so the init updater can't pick a stale tar.
+    rm -f "${UPDATE_DIR}"/*.tar "${UPDATE_DIR}"/*.tar.sha256 2>/dev/null
+
+    filename=$(basename "$tar_url")
+    update_file="${UPDATE_DIR}/${filename}"
+    checksum_file="${update_file}.sha256"
+
+    echo "Downloading ${filename} (version ${version})..."
+    if ! download_file "$tar_url" "$update_file"; then
+        echo "Failed to download update file."
+        rm -f "$update_file"
+        exit 1
+    fi
+
+    echo "Downloading checksum..."
+    if ! download_file "${tar_url}.sha256" "$checksum_file"; then
+        echo "Failed to download checksum file."
+        rm -f "$update_file"
+        exit 1
+    fi
+
+    echo "Verifying the downloaded update..."
+    expected_checksum=$(awk '{print $1}' "$checksum_file")
+    actual_checksum=$(sha256sum "$update_file" | awk '{print $1}')
+    if [ "$expected_checksum" = "$actual_checksum" ]; then
+        echo "Checksum verified successfully. Reboot to apply the update."
+        set_setting updates.force 0
+        sync
+    else
+        echo "Checksum verification failed. Removing downloaded files."
+        rm -f "$update_file" "$checksum_file"
+        exit 1
+    fi
+}
+
+# Network connectivity check (matches rocknix-update).
+if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+    echo "Network connection unavailable."
+    exit 1
+fi
+
+mode="$1"
+
+# An 8-digit argument forces a specific version (kept for parity with rocknix-update).
+if echo "$mode" | grep -q '^[0-9]\{8\}$'; then
+    echo "Forcing update to version $mode..."
+    main_update 1
+    exit 0
+fi
+
+case "$mode" in
+    check)
+        tar_url=$(get_tar_url)
+        case "$tar_url" in
+            http://*|https://*)
+                version=$(version_of "$tar_url")
+                if is_newer "$version"; then
+                    echo "$version"
+                    exit 0
+                fi
+                echo "No update available."
+                exit 1
+                ;;
+            *)
+                echo "No update available."
+                exit 1
+                ;;
+        esac
+        ;;
+    releases)
+        echo "Available releases:"
+        curl -s -S -L -H "Accept: application/vnd.github+json" "${API}" \
+            | grep -o '"tag_name"[ ]*:[ ]*"[^"]*"' \
+            | sed 's/.*"\([^"]*\)".*/  \1/'
+        exit 0
+        ;;
+    update|"")
+        main_update
+        ;;
+    *)
+        echo "Usage: $0 [check|update|releases|<version>]"
+        exit 1
+        ;;
+esac
