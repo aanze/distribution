@@ -1,0 +1,179 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] Updates menu: add "UPDATE TO AANZE NIGHTLY" entry
+
+Add a second software-update action directly under the stock START UPDATE
+entry in the "UPDATES & DOWNLOADS" > "SOFTWARE UPDATES" menu, targeting the
+personal nightly releases published at github.com/aanze/distribution instead
+of the official update.rocknix.org endpoint.
+
+Rather than duplicate the whole download/verify/progress/reboot UX, the patch
+parameterises the single hardcoded "rocknix-update" command string through the
+existing flow:
+
+  - ApiSystem::updateSystem() and ApiSystem::canUpdate() gain an optional
+    `updatecommand` argument (default "rocknix-update"), so behaviour for all
+    existing callers is unchanged.
+  - GuiUpdate (and its inner ThreadedUpdater) gain an optional `updateCommand`
+    that is threaded through to canUpdate()/updateSystem().
+  - GuiMenu pushes `new GuiUpdate(mWindow, "aanze-update")` for the new entry.
+
+The aanze-update backend script mirrors rocknix-update's contract (`check`
+prints the available version and exits 0 when an update is available; the
+default mode stages the verified tarball into /storage/.update and returns 0),
+so staging + apply-on-reboot via the busybox init updater are identical to the
+official path.
+
+---
+diff --git a/es-app/src/ApiSystem.cpp b/es-app/src/ApiSystem.cpp
+index a5b8e9be..72cca7a6 100644
+--- a/es-app/src/ApiSystem.cpp
++++ b/es-app/src/ApiSystem.cpp
+@@ -188,11 +188,10 @@ bool ApiSystem::setOverclock(std::string mode)
+ }
+ 
+ // BusyComponent* ui
+-std::pair<std::string, int> ApiSystem::updateSystem(const std::function<void(const std::string)>& func)
++std::pair<std::string, int> ApiSystem::updateSystem(const std::function<void(const std::string)>& func, const std::string& updatecommand)
+ {
+ 	LOG(LogDebug) << "ApiSystem::updateSystem";
+ 
+-	std::string updatecommand = "rocknix-update";
+ 
+ 	FILE *pipe = popen(updatecommand.c_str(), "r");
+ 	if (pipe == nullptr)
+@@ -325,11 +324,11 @@ bool ApiSystem::ping()
+     return true;
+ }
+ 
+-bool ApiSystem::canUpdate(std::vector<std::string>& output) 
++bool ApiSystem::canUpdate(std::vector<std::string>& output, const std::string& updatecommand)
+ {
+ 	LOG(LogDebug) << "ApiSystem::canUpdate";
+ 
+-	FILE *pipe = popen("rocknix-update check", "r");
++	FILE *pipe = popen((updatecommand + " check").c_str(), "r");
+ 	if (pipe == NULL)
+ 		return false;
+ 
+diff --git a/es-app/src/ApiSystem.h b/es-app/src/ApiSystem.h
+index 03a1bb90..e84f6158 100644
+--- a/es-app/src/ApiSystem.h
++++ b/es-app/src/ApiSystem.h
+@@ -197,14 +197,14 @@ public:
+ 
+     bool setOverclock(std::string mode);
+ 
+-    virtual std::pair<std::string, int> updateSystem(const std::function<void(const std::string)>& func = nullptr);
++    virtual std::pair<std::string, int> updateSystem(const std::function<void(const std::string)>& func = nullptr, const std::string& updatecommand = "rocknix-update");
+ 
+     std::pair<std::string, int> backupSystem(BusyComponent* ui, std::string device);
+     std::pair<std::string, int> installSystem(BusyComponent* ui, std::string device, std::string architecture);
+     std::pair<std::string, int> scrape(BusyComponent* ui);
+ 
+     virtual bool ping();
+-    virtual bool canUpdate(std::vector<std::string>& output);
++    virtual bool canUpdate(std::vector<std::string>& output, const std::string& updatecommand = "rocknix-update");
+ 	virtual void setReadyFlag(bool ready = true);
+ 	virtual bool isReadyFlagSet();
+ 
+diff --git a/es-app/src/guis/GuiMenu.cpp b/es-app/src/guis/GuiMenu.cpp
+index 96bea5a3..dfc1a0ab 100644
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -1308,6 +1308,22 @@ void GuiMenu::openUpdatesSettings()
+ 				mWindow->pushGui(new GuiUpdate(mWindow));
+ 			}
+ 		});
++
++		// Start update from Anze's personal nightly releases (github.com/aanze/distribution).
++		// Reuses the stock GuiUpdate/ApiSystem flow but points it at the "aanze-update"
++		// backend instead of "rocknix-update"; staging + apply-on-reboot are identical.
++		updateGui->addEntry(_("UPDATE TO AANZE NIGHTLY"), true, [this]
++		{
++			if (GuiUpdate::state == GuiUpdateState::State::UPDATER_RUNNING)
++				mWindow->pushGui(new GuiMsgBox(mWindow, _("UPDATER IS ALREADY RUNNING")));
++			else
++			{
++				if (!checkNetwork())
++					return;
++
++				mWindow->pushGui(new GuiUpdate(mWindow, "aanze-update"));
++			}
++		});
+ 	}
+ 
+ 	mWindow->pushGui(updateGui);
+diff --git a/es-app/src/guis/GuiUpdate.cpp b/es-app/src/guis/GuiUpdate.cpp
+index ace47925..bb02999d 100644
+--- a/es-app/src/guis/GuiUpdate.cpp
++++ b/es-app/src/guis/GuiUpdate.cpp
+@@ -14,7 +14,7 @@ GuiUpdateState::State GuiUpdate::state = GuiUpdateState::State::NO_UPDATE;
+ class ThreadedUpdater
+ {
+ public:
+-	ThreadedUpdater(Window* window) : mWindow(window)
++	ThreadedUpdater(Window* window, const std::string& updateCommand = "rocknix-update") : mWindow(window), mUpdateCommand(updateCommand)
+ 	{
+ 		GuiUpdate::state = GuiUpdateState::State::UPDATER_RUNNING;
+ 
+@@ -57,7 +57,7 @@ public:
+ 				mWndNotification->updatePercent(-1);
+ 				mWndNotification->updateText(info);
+ 			}
+-		});
++		}, mUpdateCommand);
+ 
+ 		if (updateStatus.second == 0)
+ 		{
+@@ -84,10 +84,11 @@ private:
+ 	std::thread*				mHandle;
+ 	AsyncNotificationComponent* mWndNotification;
+ 	Window*						mWindow;
++	std::string mUpdateCommand;
+ };
+ 
+ 
+-GuiUpdate::GuiUpdate(Window* window) : GuiComponent(window), mBusyAnim(window)
++GuiUpdate::GuiUpdate(Window* window, const std::string& updateCommand) : GuiComponent(window), mBusyAnim(window), mUpdateCommand(updateCommand)
+ {
+ 	LOG(LogInfo) << "Starting GuiUpdate";
+ 
+@@ -110,7 +111,7 @@ void GuiUpdate::threadPing()
+ 	if (ApiSystem::getInstance()->ping())
+ 	{
+ 		std::vector<std::string> msgtbl;
+-		if (ApiSystem::getInstance()->canUpdate(msgtbl))
++		if (ApiSystem::getInstance()->canUpdate(msgtbl, mUpdateCommand))
+ 		{
+ 			if (msgtbl.size() == 1)
+ 				mUpdateVersion = msgtbl[0];
+@@ -177,7 +178,7 @@ void GuiUpdate::update(int deltaTime)
+ 					mLoading = true;
+ 
+ 					mState = -1;
+-					new ThreadedUpdater(mWindow);
++					new ThreadedUpdater(mWindow, mUpdateCommand);
+ 
+ 				}, _("NO"), [this] { mState = -1; }));
+ 			}
+diff --git a/es-app/src/guis/GuiUpdate.h b/es-app/src/guis/GuiUpdate.h
+index a4a6be0e..fddea10a 100644
+--- a/es-app/src/guis/GuiUpdate.h
++++ b/es-app/src/guis/GuiUpdate.h
+@@ -21,7 +21,7 @@ class GuiUpdate : public GuiComponent
+ public:
+ 	static GuiUpdateState::State state;
+ 
+-    GuiUpdate(Window *window);
++    GuiUpdate(Window *window, const std::string& updateCommand = "rocknix-update");
+     virtual ~GuiUpdate();
+ 
+     void render(const Transform4x4f &parentTrans) override;
+@@ -34,6 +34,7 @@ private:
+     bool mLoading;
+     int mState;
+ 	std::string mUpdateVersion;
++	std::string mUpdateCommand;
+ 
+     std::pair<std::string, int> mResult;
+ 
