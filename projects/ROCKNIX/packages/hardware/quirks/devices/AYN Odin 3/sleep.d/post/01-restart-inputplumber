@@ -2,25 +2,24 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
 
-# Belt-and-suspenders safety net for the AYN Odin3 rsinput suspend freeze.
-# Primary prevention is `rsinput` in /usr/config/modules.bad — the sleep hook
-# unloads it pre-suspend so the qcom-geni serial port has no active client and
-# qcom_geni_serial_suspend cannot WARN; on resume `modules start` reloads
-# rsinput, the new input4 is auto-discovered by IP, and the controller works.
+# Two-part workaround for the intermittent AYN Odin3 gamepad freeze after wake:
 #
-# If despite that the WARN still appears in this cycle's kernel log, the GENI
-# serial bus is unrecoverable from userspace (tested 2026-05-31: even sysfs
-# unbind/rebind cannot reset it — only a reboot does). The most we can do is
-# kick IP so its CompositeDevice state is fresh; the underlying freeze will
-# still require a manual reboot. The IP restart at least guarantees IP is not
-# the bottleneck, so the user gets a faster, cleaner diagnosis than a silent
-# stale-fd freeze.
+#   1. `rsinput` is listed in /usr/config/modules.bad so the sleep hook unloads
+#      it pre-suspend. This clears the qcom-geni serial port of any active
+#      client and prevents qcom_geni_serial_suspend from WARN'ing — verified
+#      2026-05-31 that once that WARN fires the bus is wedged at a level no
+#      userspace recovery (modprobe / sysfs unbind) can reset; only a reboot
+#      does. So prevention has to be airtight.
+#
+#   2. THIS quirk restarts InputPlumber unconditionally after `modules start`
+#      has reloaded rsinput. Without an explicit restart, IP's evdev discovery
+#      thread races with the unload/reload sequence: on roughly every other
+#      wake it sees ENODEV on its existing fd but fails to tear down the stale
+#      CompositeDevice, so it never picks up the freshly re-probed event4 and
+#      the controller appears dead until the *next* suspend/wake cycle finally
+#      clears the state (logs verified 2026-05-31 — see commit message).
+#
+# Cost: a visible "controller disconnected → connected" toast at every wake.
+# This is the deliberate trade-off chosen by the user over the freeze.
 
-LAST_SLEEP_FILE="/run/.last_sleep_time"
-[ -e "${LAST_SLEEP_FILE}" ] || exit 0
-LAST_SLEEP=$(stat -c %Y "${LAST_SLEEP_FILE}" 2>/dev/null) || exit 0
-
-if journalctl -k --since "@${LAST_SLEEP}" --no-pager 2>/dev/null \
-     | grep -q "qcom_geni_serial_suspend"; then
-  systemctl restart inputplumber
-fi
+systemctl restart inputplumber
