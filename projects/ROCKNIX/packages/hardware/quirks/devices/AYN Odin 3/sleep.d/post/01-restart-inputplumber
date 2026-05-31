@@ -2,15 +2,19 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
 
-# Conditional recovery for an intermittent freeze of the AYN Odin3 gamepad
-# after wake: the qcom-geni serial driver sometimes hits a WARN in
-# qcom_geni_serial_suspend with rsinput attached, after which InputPlumber
-# keeps a stale fd on /dev/inputplumber/sources/event4 and the virtual pad
-# goes silent until a hard reboot.
+# Belt-and-suspenders safety net for the AYN Odin3 rsinput suspend freeze.
+# Primary prevention is `rsinput` in /usr/config/modules.bad — the sleep hook
+# unloads it pre-suspend so the qcom-geni serial port has no active client and
+# qcom_geni_serial_suspend cannot WARN; on resume `modules start` reloads
+# rsinput, the new input4 is auto-discovered by IP, and the controller works.
 #
-# Restart IP only when that WARN appeared during the current suspend cycle.
-# In the (much more common) clean-wake case IP stays untouched and the user
-# does not see the controller disconnect/reconnect toast.
+# If despite that the WARN still appears in this cycle's kernel log, the GENI
+# serial bus is unrecoverable from userspace (tested 2026-05-31: even sysfs
+# unbind/rebind cannot reset it — only a reboot does). The most we can do is
+# kick IP so its CompositeDevice state is fresh; the underlying freeze will
+# still require a manual reboot. The IP restart at least guarantees IP is not
+# the bottleneck, so the user gets a faster, cleaner diagnosis than a silent
+# stale-fd freeze.
 
 LAST_SLEEP_FILE="/run/.last_sleep_time"
 [ -e "${LAST_SLEEP_FILE}" ] || exit 0
