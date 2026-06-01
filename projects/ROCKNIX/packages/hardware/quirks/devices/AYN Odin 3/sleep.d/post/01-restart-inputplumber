@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+
+# Two-part workaround for the intermittent AYN Odin3 gamepad freeze after wake:
+#
+#   1. `rsinput` is listed in /usr/config/modules.bad so the sleep hook unloads
+#      it pre-suspend. This clears the qcom-geni serial port of any active
+#      client and prevents qcom_geni_serial_suspend from WARN'ing — verified
+#      2026-05-31 that once that WARN fires the bus is wedged at a level no
+#      userspace recovery (modprobe / sysfs unbind) can reset; only a reboot
+#      does. So prevention has to be airtight.
+#
+#   2. THIS quirk restarts InputPlumber unconditionally after `modules start`
+#      has reloaded rsinput. Without an explicit restart, IP's evdev discovery
+#      thread races with the unload/reload sequence: on roughly every other
+#      wake it sees ENODEV on its existing fd but fails to tear down the stale
+#      CompositeDevice, so it never picks up the freshly re-probed event4 and
+#      the controller appears dead until the *next* suspend/wake cycle finally
+#      clears the state (logs verified 2026-05-31 — see commit message).
+#
+# Cost: a visible "controller disconnected → connected" toast at every wake.
+# This is the deliberate trade-off chosen by the user over the freeze.
+
+systemctl restart inputplumber
