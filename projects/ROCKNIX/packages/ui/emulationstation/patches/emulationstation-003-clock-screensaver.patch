@@ -1,0 +1,242 @@
+diff --git a/es-app/src/SystemScreenSaver.cpp b/es-app/src/SystemScreenSaver.cpp
+index 7d6e5c35..347a5441 100644
+--- a/es-app/src/SystemScreenSaver.cpp
++++ b/es-app/src/SystemScreenSaver.cpp
+@@ -25,6 +25,8 @@
+ #include "utils/Randomizer.h"
+ #include "Paths.h"
+ #include "ApiSystem.h"
++#include "resources/Font.h"
++#include "math/Vector2f.h"
+ 
+ #define FADE_TIME					(500)
+ #define DATE_TIME_UPDATE_INTERVAL	(100)
+@@ -61,6 +63,10 @@ SystemScreenSaver::~SystemScreenSaver()
+ 
+ bool SystemScreenSaver::allowSleep()
+ {
++	// The clock screensaver is animated, so ES must keep rendering it.
++	if (Settings::getInstance()->getString("ScreenSaverBehavior") == "clock")
++		return false;
++
+ 	return (mVideoScreensaver == nullptr && mImageScreensaver == nullptr);
+ }
+ 
+@@ -194,7 +200,17 @@ void SystemScreenSaver::startScreenSaver()
+ 			PowerSaver::runningScreenSaver(true);
+ 			mTimer = 0;
+ 			return;
+-		}	
++		}
++	}
++	else if (screensaver_behavior == "clock")
++	{
++		// Floating-clock screensaver: keep the panel obviously on while
++		// drifting the time/date around to avoid OLED burn-in.
++		mState = STATE_SCREENSAVER_ACTIVE;
++		mCurrentGame = NULL;
++		mClockInitialized = false;
++		PowerSaver::runningScreenSaver(true);
++		return;
+ 	}
+ 
+ 	// No videos. Just use a standard screensaver
+@@ -287,12 +303,118 @@ void SystemScreenSaver::renderScreenSaver()
+ 	{
+ 		std::string screensaver_behavior = Settings::getInstance()->getString("ScreenSaverBehavior");
+ 
++		if (screensaver_behavior == "clock")
++		{
++			renderClockScreenSaver();
++			return;
++		}
++
+ 		Renderer::setMatrix(Transform4x4f::Identity());
+ 		unsigned char color = screensaver_behavior == "dim" ? 0x000000A0 : 0x000000FF;
+ 		Renderer::drawRect(0.0f, 0.0f, Renderer::getScreenWidth(), Renderer::getScreenHeight(), color, color);
+ 	}
+ }
+ 
++void SystemScreenSaver::updateClockScreenSaver(int deltaTime)
++{
++	const float screenW = (float)Renderer::getScreenWidth();
++	const float screenH = (float)Renderer::getScreenHeight();
++
++	// Conservative block size so the drift never pushes the text off-screen;
++	// the exact text size is measured again at render time.
++	const float blockW = screenW * 0.45f;
++	const float blockH = screenH * 0.24f;
++	const float minX = screenW * 0.04f;
++	const float minY = screenH * 0.04f;
++	const float maxX = screenW - blockW - minX;
++	const float maxY = screenH - blockH - minY;
++
++	if (!mClockInitialized)
++	{
++		mClockInitialized = true;
++		mClockPosX = (screenW - blockW) * 0.5f;
++		mClockPosY = (screenH - blockH) * 0.5f;
++		// Slow diagonal drift (~20 px/s), OLED-friendly.
++		mClockVelX = screenH * 0.00002f;
++		mClockVelY = screenH * 0.000017f;
++	}
++
++	mClockPosX += mClockVelX * (float)deltaTime;
++	mClockPosY += mClockVelY * (float)deltaTime;
++
++	// Bounce off the margins (DVD-logo style).
++	if (mClockPosX <= minX)      { mClockPosX = minX; mClockVelX = -mClockVelX; }
++	else if (mClockPosX >= maxX) { mClockPosX = maxX; mClockVelX = -mClockVelX; }
++
++	if (mClockPosY <= minY)      { mClockPosY = minY; mClockVelY = -mClockVelY; }
++	else if (mClockPosY >= maxY) { mClockPosY = maxY; mClockVelY = -mClockVelY; }
++}
++
++void SystemScreenSaver::renderClockScreenSaver()
++{
++	const float screenW = (float)Renderer::getScreenWidth();
++	const float screenH = (float)Renderer::getScreenHeight();
++
++	// Opaque black background — minimal lit pixels for the OLED.
++	Renderer::setMatrix(Transform4x4f::Identity());
++	Renderer::drawRect(0.0f, 0.0f, screenW, screenH, 0x000000FF, 0x000000FF);
++
++	if (!mClockInitialized)
++		updateClockScreenSaver(0);
++
++	// Reuse the shared screensaver date/time format settings.
++	std::string timeFormat = Settings::getInstance()->getString("ScreenSaverTimeFormat");
++	std::string dateFormat = Settings::getInstance()->getString("ScreenSaverDateFormat");
++	if (timeFormat.empty()) timeFormat = "%H:%M";
++	if (dateFormat.empty()) dateFormat = "%Y-%m-%d";
++
++	time_t now = time(nullptr);
++	struct tm* lt = localtime(&now);
++	char timeBuf[64] = { 0 };
++	char dateBuf[64] = { 0 };
++	if (lt != nullptr)
++	{
++		strftime(timeBuf, sizeof(timeBuf), timeFormat.c_str(), lt);
++		strftime(dateBuf, sizeof(dateBuf), dateFormat.c_str(), lt);
++	}
++
++	auto timeFont = Font::get((int)(screenH * 0.13f));
++	auto dateFont = Font::get((int)(screenH * 0.05f));
++	if (timeFont == nullptr || dateFont == nullptr)
++		return;
++
++	Vector2f timeSize = timeFont->sizeText(timeBuf);
++	Vector2f dateSize = dateFont->sizeText(dateBuf);
++
++	const float blockCenterX = mClockPosX + (screenW * 0.45f) * 0.5f;
++	const float gap = screenH * 0.015f;
++
++	const float timeX = blockCenterX - timeSize.x() * 0.5f;
++	const float timeY = mClockPosY;
++	const float dateX = blockCenterX - dateSize.x() * 0.5f;
++	const float dateY = timeY + timeSize.y() + gap;
++
++	// Dimmed grey — clearly readable but easy on the OLED.
++	const unsigned int timeColor = 0xC0C0C0FF;
++	const unsigned int dateColor = 0x909090FF;
++
++	Renderer::setMatrix(Transform4x4f::Identity());
++
++	TextCache* timeCache = timeFont->buildTextCache(timeBuf, timeX, timeY, timeColor);
++	if (timeCache != nullptr)
++	{
++		timeFont->renderTextCache(timeCache);
++		delete timeCache;
++	}
++
++	TextCache* dateCache = dateFont->buildTextCache(dateBuf, dateX, dateY, dateColor);
++	if (dateCache != nullptr)
++	{
++		dateFont->renderTextCache(dateCache);
++		delete dateCache;
++	}
++}
++
+ unsigned long SystemScreenSaver::countGameListNodes(bool video)
+ {
+ 	if (video && mGamesWithVideosLoaded)
+@@ -483,10 +605,19 @@ void SystemScreenSaver::update(int deltaTime)
+ 	}
+ 	else if (mState == STATE_SCREENSAVER_ACTIVE)
+ 	{
+-		// Update the timer that swaps the videos
+-		mTimer += deltaTime;
+-		if (mTimer > mVideoChangeTime)
+-			nextVideo();
++		if (Settings::getInstance()->getString("ScreenSaverBehavior") == "clock")
++		{
++			// Drift the clock; never call nextVideo() here (it would
++			// re-enter startScreenSaver and reset the clock position).
++			updateClockScreenSaver(deltaTime);
++		}
++		else
++		{
++			// Update the timer that swaps the videos
++			mTimer += deltaTime;
++			if (mTimer > mVideoChangeTime)
++				nextVideo();
++		}
+ 	}
+ 
+ 	// If we have a loaded video then update it
+diff --git a/es-app/src/SystemScreenSaver.h b/es-app/src/SystemScreenSaver.h
+index 03cf6bee..164fa32b 100644
+--- a/es-app/src/SystemScreenSaver.h
++++ b/es-app/src/SystemScreenSaver.h
+@@ -100,7 +100,12 @@ private:
+ 	std::string pickRandomCustomImage(bool video = false);
+ 	
+ 	std::string	selectGameMedia(FileData* game, bool video = false);
+-	
++
++	// Floating-clock screensaver (OLED burn-in protection): drifts the
++	// time/date around a black screen so no pixel stays static.
++	void		updateClockScreenSaver(int deltaTime);
++	void		renderClockScreenSaver();
++
+ 	enum STATE {
+ 		STATE_INACTIVE,
+ 		STATE_FADE_OUT_WINDOW,
+@@ -128,6 +133,13 @@ private:
+ 	int 			mVideoChangeTime;
+ 	bool			mLoadingNext;
+ 
++	// Clock screensaver drift state (pixels; velocity in px/ms)
++	bool			mClockInitialized = false;
++	float			mClockPosX = 0.0f;
++	float			mClockPosY = 0.0f;
++	float			mClockVelX = 0.0f;
++	float			mClockVelY = 0.0f;
++
+ };
+ 
+ #endif // ES_APP_SYSTEM_SCREEN_SAVER_H
+diff --git a/es-app/src/guis/GuiGeneralScreensaverOptions.cpp b/es-app/src/guis/GuiGeneralScreensaverOptions.cpp
+index d64c8c48..7251bcca 100644
+--- a/es-app/src/guis/GuiGeneralScreensaverOptions.cpp
++++ b/es-app/src/guis/GuiGeneralScreensaverOptions.cpp
+@@ -15,6 +15,7 @@
+ #define fake_gettext_black			_("black")
+ #define fake_gettext_randomvideo	_("random video")
+ #define fake_gettext_slideshow		_("slideshow")
++#define fake_gettext_clock			_("clock")
+ #define fake_gettext_suspend		_("suspend")
+ 
+ #define fake_gettext_always			_("always")
+@@ -45,9 +46,9 @@ GuiGeneralScreensaverOptions::GuiGeneralScreensaverOptions(Window* window, int s
+ 	auto ctlBehavior = std::make_shared< OptionListComponent<std::string> >(mWindow, _("SCREENSAVER TYPE"), false);
+ 
+ 	if (ApiSystem::getInstance()->isScriptingSupported(ApiSystem::SUSPEND))
+-		ctlBehavior->addRange({ "dim", "black", "random video", "slideshow", "suspend" }, ssBehavior);
++		ctlBehavior->addRange({ "dim", "black", "random video", "slideshow", "clock", "suspend" }, ssBehavior);
+ 	else
+-		ctlBehavior->addRange({ "dim", "black", "random video", "slideshow" }, ssBehavior);
++		ctlBehavior->addRange({ "dim", "black", "random video", "slideshow", "clock" }, ssBehavior);
+ 
+ 	addWithLabel(_("SCREENSAVER TYPE"), ctlBehavior, selectItem == 1);
+ 	ctlBehavior->setSelectedChangedCallback([this](const std::string& name)
