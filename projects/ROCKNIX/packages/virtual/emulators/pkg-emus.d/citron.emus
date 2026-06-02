@@ -1,0 +1,8 @@
+# Nintendo Switch (Citron). Drop-in snippet (see the pkg-emus.d loop in
+# package.mk): file-add only, no shared-file edits. ES wiring lives in the
+# matching citron.wiring file.
+case "${DEVICE}" in
+  SM8550|SM8650|SM8750)
+    PKG_EMUS+=" citron-sa"
+    ;;
+esac
