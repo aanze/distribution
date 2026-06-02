@@ -1,0 +1,175 @@
+#!/bin/bash
+
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Manage the on-demand Citron (Nintendo Switch) AppImage install.
+#
+# Citron is not on GitHub's main org; the community CI mirror publishes nightly
+# Linux builds (incl. arm64) under a rolling tag:
+#   https://github.com/citron-neo/CI/releases  (tag: nightly-linux)
+# The arm64 asset is named:
+#   citron_nightly-<hash>-linux-aarch64.AppImage   (+ a .zsync we ignore)
+# Because the tag is rolling, the embedded <hash> in the asset filename is what
+# we record as the installed version for idempotency.
+#
+# The AppImage is installed into the writable storage tree so it survives and
+# can be updated between system releases; the system image bundles nothing:
+#   /storage/.local/share/citron-sa/current.AppImage   (active)
+#   /storage/.local/share/citron-sa/previous.AppImage  (rollback copy)
+#
+# Modes:  install | update | rollback | uninstall   (install == update)
+#
+# Safety:
+#   - Atomic install (download to .part, rename only after sanity checks).
+#   - Integrity: minimum size + ELF magic bytes (AppImages are ELF).
+#   - The previous good AppImage is kept for rollback.
+#   - Lock dir prevents concurrent runs.
+#   - Idempotent: skips the download if the latest asset is already installed.
+
+source /etc/profile
+
+MODE="${1:-update}"
+
+CITRON_BASE="/storage/.local/share/citron-sa"
+CURRENT="${CITRON_BASE}/current.AppImage"
+PREVIOUS="${CITRON_BASE}/previous.AppImage"
+PART="${CITRON_BASE}/download.part"
+VERSION_FILE="${CITRON_BASE}/.installed-version"
+LOCK_DIR="/tmp/citron-update.lock"
+RELEASES_API="https://api.github.com/repos/citron-neo/CI/releases/tags/nightly-linux"
+
+cleanup() {
+  rm -f "${PART}"
+  rmdir "${LOCK_DIR}" 2>/dev/null || true
+}
+
+fail() {
+  echo ""
+  echo "ERROR: $*"
+  echo ""
+  echo "The currently installed Citron has NOT been modified."
+  cleanup
+  sleep 15
+  exit 1
+}
+
+mkdir -p "${CITRON_BASE}"
+
+### ----------------------------------------------------------------- rollback
+if [ "${MODE}" = "rollback" ]; then
+  echo "=== Citron rollback ==="
+  if [ -f "${PREVIOUS}" ]; then
+    TMP="${CITRON_BASE}/.swap.AppImage"
+    mv -f "${CURRENT}" "${TMP}" 2>/dev/null
+    mv -f "${PREVIOUS}" "${CURRENT}"
+    if [ -f "${TMP}" ]; then
+      mv -f "${TMP}" "${PREVIOUS}"
+    else
+      rm -f "${PREVIOUS}"
+    fi
+    rm -f "${VERSION_FILE}"
+    echo "Swapped to the previous Citron AppImage."
+  elif [ -f "${CURRENT}" ]; then
+    rm -f "${CURRENT}" "${VERSION_FILE}"
+    echo "No previous version kept; removed the managed Citron install."
+    echo "Run 'Install Citron' to fetch it again."
+  else
+    echo "Nothing to roll back - Citron is not installed."
+  fi
+  sleep 8
+  exit 0
+fi
+
+### ---------------------------------------------------------------- uninstall
+if [ "${MODE}" = "uninstall" ]; then
+  echo "=== Uninstall Citron ==="
+  rm -f "${CURRENT}" "${PREVIOUS}" "${PART}" "${VERSION_FILE}"
+  echo "Removed the Citron AppImage(s)."
+  echo "Your keys, saves and config under /storage/roms/bios/citron and"
+  echo "/storage/.config/citron were kept. The Nintendo Switch section will"
+  echo "disappear once its ROM folder is empty (or restart EmulationStation)."
+  sleep 8
+  exit 0
+fi
+
+### ------------------------------------------------------------ install/update
+if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
+  echo "A Citron install/update is already running. Retry in a few seconds."
+  sleep 5
+  exit 1
+fi
+trap cleanup EXIT
+
+echo "=== Citron installer/updater ==="
+echo "Source: ${RELEASES_API}"
+echo ""
+
+if [ -f "${VERSION_FILE}" ]; then
+  echo "Currently installed: $(cat "${VERSION_FILE}")"
+else
+  echo "No managed install yet."
+fi
+echo ""
+
+echo "Querying the latest arm64 nightly..."
+META="$(curl -fsSL "${RELEASES_API}")" || fail "could not reach the GitHub API. Check your network."
+
+# Pick the aarch64 AppImage asset, excluding the .zsync delta file.
+ASSET_URL="$(echo "${META}" \
+  | grep -oE '"browser_download_url": *"[^"]*"' \
+  | sed -E 's/.*"(https[^"]+)".*/\1/' \
+  | grep -iE 'linux-aarch64\.AppImage$' \
+  | head -n1)"
+[ -n "${ASSET_URL}" ] || fail "no linux-aarch64 .AppImage found in the nightly-linux release."
+
+# The asset filename embeds the build hash; use it as the version marker.
+ASSET_NAME="${ASSET_URL##*/}"
+LATEST_VER="${ASSET_NAME}"
+
+echo "Latest available: ${ASSET_NAME}"
+echo ""
+
+if [ -f "${VERSION_FILE}" ] && [ "$(cat "${VERSION_FILE}")" = "${LATEST_VER}" ] && [ -x "${CURRENT}" ]; then
+  echo "Already up to date. Nothing to do."
+  sleep 5
+  exit 0
+fi
+
+echo "Downloading: ${ASSET_URL}"
+rm -f "${PART}"
+wget -c -t 5 -O "${PART}" "${ASSET_URL}" || fail "download failed."
+
+# Integrity: non-trivial size + ELF magic bytes. The arm64 build is ~85 MB, so
+# anything under 40 MB is a truncated download or an error page.
+SIZE="$(stat -c%s "${PART}" 2>/dev/null || echo 0)"
+if [ "${SIZE}" -lt 40000000 ]; then
+  fail "downloaded file is suspiciously small (${SIZE} bytes)."
+fi
+MAGIC="$(head -c4 "${PART}" | od -An -tx1 | tr -d ' \n')"
+if [ "${MAGIC}" != "7f454c46" ]; then
+  fail "downloaded file is not an ELF binary (magic=${MAGIC})."
+fi
+
+chmod +x "${PART}"
+
+# Rotate: current -> previous, .part -> current. The AppImage is a single
+# self-contained file so the rename is atomic; no partial states are possible.
+if [ -f "${CURRENT}" ]; then
+  mv -f "${CURRENT}" "${PREVIOUS}"
+fi
+mv -f "${PART}" "${CURRENT}"
+echo "${LATEST_VER}" > "${VERSION_FILE}"
+
+echo ""
+echo "Citron installed: ${ASSET_NAME}"
+echo "Location: ${CURRENT}"
+if [ -f "${PREVIOUS}" ]; then
+  echo "Previous version kept at: ${PREVIOUS} (use 'Rollback Citron' if needed)."
+fi
+echo ""
+echo "Drop your prod.keys / title.keys in /storage/roms/bios/citron/keys and"
+echo "your firmware via the Citron GUI, then add Switch games to"
+echo "/storage/roms/switch. The Nintendo Switch section appears once games are"
+echo "present (restart EmulationStation if it doesn't show up)."
+sleep 12
