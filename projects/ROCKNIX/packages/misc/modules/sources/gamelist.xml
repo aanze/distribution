@@ -578,4 +578,64 @@ it's recommended to have a mouse and keyboard to modify settings.</desc>
         <players>1</players>
         <image>./images/nfs.svg</image>
      </game>
+    <game>
+        <path>./Start Citron.sh</path>
+        <name>Start Citron</name>
+        <desc>Opens the Citron (Nintendo Switch) GUI so you can install firmware, manage your prod.keys/title.keys and change settings - run this after Install Citron to finish setup. Drop your keys in /storage/roms/bios/keys (this launcher links that folder into Citron's data dir) and install firmware from the GUI. A mouse and keyboard are recommended for the interface. Citron is an experimental open-source Nintendo Switch emulator.</desc>
+        <developer>Citron Team</developer>
+        <publisher>citron-neo</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/citron.svg</image>
+    </game>
+    <game>
+        <path>./Install Citron.sh</path>
+        <name>Install Citron</name>
+        <desc>Downloads the latest Citron (Nintendo Switch) arm64 nightly AppImage from github.com/citron-neo/CI and installs it into the writable storage tree. Nothing is bundled in the firmware. After installing, run "Start Citron" to open the GUI and install firmware, drop your prod.keys/title.keys in /storage/roms/bios/keys, add Switch games to /storage/roms/switch, then restart EmulationStation - the Nintendo Switch section appears once games are present. Citron is an experimental open-source Nintendo Switch emulator.</desc>
+        <developer>Citron Team</developer>
+        <publisher>citron-neo</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/citron.svg</image>
+    </game>
+    <game>
+        <path>./Update Citron.sh</path>
+        <name>Update Citron</name>
+        <desc>Pulls the latest Citron (Nintendo Switch) arm64 nightly AppImage, keeping the previous one for rollback. A size and ELF integrity check runs before the new build is activated. Idempotent: skips if you already have the latest nightly.</desc>
+        <developer>Citron Team</developer>
+        <publisher>citron-neo</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/citron.svg</image>
+    </game>
+    <game>
+        <path>./Rollback Citron.sh</path>
+        <name>Rollback Citron</name>
+        <desc>Reverts the managed Citron install. If a previous version was kept it swaps current and previous; otherwise it removes the managed AppImage. Use this if a freshly updated Citron crashes when launching a game.</desc>
+        <developer>Citron Team</developer>
+        <publisher>citron-neo</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/citron.svg</image>
+    </game>
+    <game>
+        <path>./Uninstall Citron.sh</path>
+        <name>Uninstall Citron</name>
+        <desc>Removes the downloaded Citron AppImage(s). Your keys, saves and config under /storage/roms/bios/citron and /storage/.config/citron are kept. The Nintendo Switch section disappears once its ROM folder is empty (or after restarting EmulationStation).</desc>
+        <developer>Citron Team</developer>
+        <publisher>citron-neo</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/citron.svg</image>
+    </game>
 </gameList>
