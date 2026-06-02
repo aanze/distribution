@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg width="100%" height="100%" viewBox="0 0 1200 1080" version="1.1" xmlns="http://www.w3.org/2000/svg" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+  <rect id="Artboard1" x="0" y="0" width="1200" height="1080" style="fill:rgb(46,46,46);"/>
+  <!-- Stylised Nintendo Switch: two side controllers + central screen -->
+  <g transform="translate(600,470)">
+    <!-- left joy-con -->
+    <path d="M -290 -150 q -70 0 -70 70 l 0 160 q 0 70 70 70 l 70 0 l 0 -300 z" style="fill:rgb(244,208,63);"/>
+    <circle cx="-300" cy="-95" r="22" style="fill:rgb(46,46,46);"/>
+    <circle cx="-300" cy="95" r="22" style="fill:rgb(46,46,46);"/>
+    <!-- right joy-con -->
+    <path d="M 290 -150 q 70 0 70 70 l 0 160 q 0 70 -70 70 l -70 0 l 0 -300 z" style="fill:rgb(244,208,63);"/>
+    <circle cx="300" cy="-95" r="22" style="fill:rgb(46,46,46);"/>
+    <circle cx="300" cy="95" r="22" style="fill:rgb(46,46,46);"/>
+    <!-- central screen -->
+    <rect x="-220" y="-150" width="440" height="300" rx="14" style="fill:rgb(70,70,70);stroke:rgb(244,208,63);stroke-width:10;"/>
+  </g>
+  <text x="600" y="820" text-anchor="middle" style="font-family:'Arial',sans-serif;font-weight:700;font-size:170px;fill:rgb(244,208,63);">CITRON</text>
+  <text x="600" y="920" text-anchor="middle" style="font-family:'Arial',sans-serif;font-weight:400;font-size:70px;fill:rgb(200,200,200);">Nintendo Switch</text>
+</svg>
