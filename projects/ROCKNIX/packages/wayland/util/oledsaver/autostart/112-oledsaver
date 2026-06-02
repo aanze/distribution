@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Seed the EmulationStation screensaver event hooks (in tmpfs /var/run, one of
+# ES's scripts search dirs) so the OLED anti-image-retention overlay is started
+# on "screensaver-start" and killed on "screensaver-stop".
+#
+# IMPORTANT: the seeded hook basename MUST NOT be "oledsaver" (the binary name).
+# ES execs the hook with comm = its basename; if that were "oledsaver", the
+# hook's own `pidof oledsaver` guard would match itself ("already running" ->
+# never launch) and `killall oledsaver` would kill the hook mid-run. So we name
+# them oled-start / oled-stop.
+
+mkdir -p /var/run/emulationstation/scripts/screensaver-start
+ln -sf /usr/share/oledsaver/screensaver-start \
+       /var/run/emulationstation/scripts/screensaver-start/oled-start
+
+mkdir -p /var/run/emulationstation/scripts/screensaver-stop
+ln -sf /usr/share/oledsaver/screensaver-stop \
+       /var/run/emulationstation/scripts/screensaver-stop/oled-stop
