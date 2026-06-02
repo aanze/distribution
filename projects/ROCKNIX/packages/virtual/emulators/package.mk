@@ -96,6 +96,15 @@ case "${DEVICE}" in
     LIBRETRO_CORES+=" beetle-psx-lr beetle-saturn-lr bsnes-lr bsnes-hd-lr dolphin-lr"
 esac
 
+# Nintendo Switch (Citron). Kept as a separate statement (rather than editing the
+# crowded per-device PKG_EMUS lines above) so this personal feature cherry-picks
+# cleanly on top of the other Tools/emulator additions.
+case "${DEVICE}" in
+  SM8550|SM8650|SM8750)
+    PKG_EMUS+=" citron-sa"
+    ;;
+esac
+
 # Split building emulators into 2 stages, needed to fit the jobs into the 6 hour GH runner time limit.
 case "${TARGET_TYPE}" in
   cores_only)
@@ -692,6 +701,19 @@ makeinstall_target() {
       add_emu_core wiiu cemu cemu-sa true
       add_es_system wiiu
       install_script "Start CEMU.sh"
+      ;;
+  esac
+
+  ### Nintendo Switch
+  case ${DEVICE} in
+    SM8550|SM8650|SM8750)
+      add_emu_core switch citron citron-sa true
+      add_es_system switch
+      install_script "Start Citron.sh"
+      install_script "Install Citron.sh"
+      install_script "Update Citron.sh"
+      install_script "Rollback Citron.sh"
+      install_script "Uninstall Citron.sh"
       ;;
   esac
 
