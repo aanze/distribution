@@ -1,0 +1,7 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# ES "screensaver-stop" event hook: tear down the OLED overlay.
+killall oledsaver 2>/dev/null
+exit 0
