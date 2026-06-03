@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Anze <aanzdev@gmail.com>
+Date: Wed, 3 Jun 2026 19:55:00 +0200
+Subject: [PATCH] emulationstation: add "Bypass charging" System Settings toggle
+
+Adds a switch under Main Menu > System Settings > PERFORMANCE that toggles
+battery bypass charging (run the system from the charger, leave the battery
+untouched). It is only shown when the kernel exposes
+/sys/class/power_supply/battery/charge_behaviour (currently the SM8750 /
+AYN Odin 3), persists the choice in system.cfg (system.bypasscharge) and
+calls /usr/bin/charge-bypass to apply it.
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+ es-app/src/guis/GuiMenu.cpp | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/es-app/src/guis/GuiMenu.cpp b/es-app/src/guis/GuiMenu.cpp
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -1966,6 +1966,20 @@
+ 		});
+ 	}
+ 
++	// Bypass charging: power the system directly from the charger and leave
++	// the battery untouched (neither charging nor discharging). Only shown
++	// when the kernel exposes the charge_behaviour control (e.g. SM8750).
++	if (Utils::FileSystem::exists("/sys/class/power_supply/battery/charge_behaviour")) {
++		auto bypass_charge = std::make_shared<SwitchComponent>(mWindow);
++		bypass_charge->setState(SystemConf::getInstance()->getBool("system.bypasscharge"));
++		s->addWithLabel(_("BYPASS CHARGING (RUN ON AC)"), bypass_charge);
++		bypass_charge->setOnChangedCallback([bypass_charge] {
++			bool en = bypass_charge->getState();
++			SystemConf::getInstance()->setBool("system.bypasscharge", en);
++			Utils::Platform::runSystemCommand(std::string("/usr/bin/charge-bypass ") + (en ? "on" : "off"), "", nullptr);
++		});
++	}
++
+ 	// Default Scaling governor
+ 	auto optionsGovernors = std::make_shared<OptionListComponent<std::string> >(mWindow, _("DEFAULT SCALING GOVERNOR"), false);
+ 	std::vector<std::string> availableGovernors = ApiSystem::getInstance()->getAvailableCpuGovernors();
