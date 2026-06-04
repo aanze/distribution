@@ -1,0 +1,58 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] Steam: skip NoDisplay/Hidden .desktop entries
+
+The "steam" ES system scans /storage/.local/share/applications for *.desktop
+files. Steam writes its installed-game launchers there, but other emulators
+also drop desktop files into the same directory. In particular Citron, when it
+publishes Discord Rich Presence, registers a freedesktop URL-scheme handler
+("discord-<application_id>.desktop", flagged NoDisplay=true), which then shows
+up as a phantom game in the Steam list.
+
+Honour the freedesktop NoDisplay=true / Hidden=true keys in populateFolder():
+when a matched file has the .desktop extension and is flagged hidden, skip it.
+Real Steam game shortcuts set neither key, so they are unaffected; this also
+guards against any future emulator leaking hidden launchers into the list.
+
+---
+diff --git a/es-app/src/SystemData.cpp b/es-app/src/SystemData.cpp
+index 6787fecc..9ddd1eb5 100644
+--- a/es-app/src/SystemData.cpp
++++ b/es-app/src/SystemData.cpp
+@@ -287,6 +287,26 @@ void SystemData::setIsGameSystemStatus()
+ 	mIsGameSystem = (mMetadata.name != "retropie" && mMetadata.name != "retrobat");
+ }
+ 
++// Skip freedesktop .desktop entries flagged NoDisplay=true / Hidden=true. Other emulators
++// (e.g. Citron registering a Discord RPC "discord-<id>" URL-scheme handler) drop such files
++// into ~/.local/share/applications, which is the Steam system's rom path, where they would
++// otherwise show up as phantom games.
++static bool desktopEntryIsHidden(const std::string& path)
++{
++	std::ifstream file(path);
++	if (!file.is_open())
++		return false;
++
++	std::string line;
++	while (std::getline(file, line))
++	{
++		std::string key = Utils::String::toLower(Utils::String::replace(Utils::String::trim(line), " ", ""));
++		if (key == "nodisplay=true" || key == "hidden=true")
++			return true;
++	}
++	return false;
++}
++
+ void SystemData::populateFolder(FolderData* folder, std::unordered_map<std::string, FileData*>& fileMap)
+ {
+ 	const std::string& folderPath = folder->getPath();
+@@ -342,6 +362,10 @@ void SystemData::populateFolder(FolderData* folder, std::unordered_map<std::stri
+ 		isGame = false;
+ 		if(mEnvData->isValidExtension(extension))
+ 		{
++			// Don't list hidden freedesktop launchers (NoDisplay/Hidden) as games
++			if(extension == ".desktop" && desktopEntryIsHidden(filePath))
++				continue;
++
+ 			FileData* newGame = new FileData(GAME, filePath, this);
+ 
+ 			// preventing new arcade assets to be added
