@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Anze <aanzdev@gmail.com>
+Date: Thu, 4 Jun 2026 14:55:00 +0200
+Subject: [PATCH] usb: dwc3: SM8750 force USB power-off on host system suspend
+
+On SM8750 (AYN Odin 3), suspending to deep with a USB host device/dock
+attached hard-hangs the SoC: every kernel suspend phase completes
+(verified with pm_test: devices+core resume, only pm_test=none hangs),
+so the failure is the firmware power-collapse refusing to drop the USB
+power island. Stock Android (downstream msm-dwc3) avoids this by fully
+powering USB down before sleep; mainline dwc3-qcom instead KEEPS the
+eUSB2/QMP PHYs powered whenever the controller is wakeup-capable
+(device_may_wakeup() goes true once the dock's HID devices enable remote
+wakeup), taking the phy_pm_runtime_put_sync() path in dwc3_suspend_common()
+rather than dwc3_core_exit(). That leaves the PHYs up and wedges the
+collapse.
+
+This handheld never needs USB to wake the system (the power button does),
+so force the full power-off path for host-mode *system* (non-auto) suspend:
+always dwc3_core_exit()/dwc3_core_init_for_resume(), and tell the qcom glue
+to treat USB as non-wakeup so it does not arm the HS-PHY wake IRQs or keep
+clocks/PHYs alive. Runtime PM is unaffected.
+
+---
+--- a/drivers/usb/dwc3/core.c
++++ b/drivers/usb/dwc3/core.c
+@@ -2479,7 +2479,16 @@
+ 		dwc3_core_exit(dwc);
+ 		break;
+ 	case DWC3_GCTL_PRTCAP_HOST:
+-		if (!PMSG_IS_AUTO(msg) && !device_may_wakeup(dwc->dev)) {
++		/*
++		 * ROCKNIX/SM8750: with a USB host device attached, keeping the
++		 * eUSB2/QMP PHYs powered for remote-wakeup leaves the USB power
++		 * island up and wedges the SoC deep-suspend power-collapse
++		 * (every kernel suspend phase completes; only the firmware sleep
++		 * entry hangs - confirmed via pm_test). Force the full power-off
++		 * path on system suspend so the PHYs are powered down; USB cannot
++		 * wake the system (the power button does), which is fine here.
++		 */
++		if (!PMSG_IS_AUTO(msg)) {
+ 			dwc3_core_exit(dwc);
+ 			break;
+ 		}
+@@ -2542,7 +2553,8 @@
+ 		dwc3_gadget_resume(dwc);
+ 		break;
+ 	case DWC3_GCTL_PRTCAP_HOST:
+-		if (!PMSG_IS_AUTO(msg) && !device_may_wakeup(dwc->dev)) {
++		/* ROCKNIX/SM8750: match the forced full power-off on suspend. */
++		if (!PMSG_IS_AUTO(msg)) {
+ 			ret = dwc3_core_init_for_resume(dwc);
+ 			if (ret)
+ 				return ret;
+--- a/drivers/usb/dwc3/dwc3-qcom.c
++++ b/drivers/usb/dwc3/dwc3-qcom.c
+@@ -749,7 +749,13 @@
+ {
+ 	struct dwc3 *dwc = dev_get_drvdata(dev);
+ 	struct dwc3_qcom *qcom = to_dwc3_qcom(dwc);
+-	bool wakeup = device_may_wakeup(dev);
++	/*
++	 * ROCKNIX/SM8750: do not keep USB armed as a system wakeup source.
++	 * Pairing with the forced core power-off in dwc3_suspend_common(),
++	 * this guarantees the USB power island is fully down so the SoC can
++	 * reach deep low-power with a host/dock attached.
++	 */
++	bool wakeup = false;
+ 	int ret;
+ 
+ 	ret = dwc3_pm_suspend(&qcom->dwc);
+@@ -769,7 +775,8 @@
+ {
+ 	struct dwc3 *dwc = dev_get_drvdata(dev);
+ 	struct dwc3_qcom *qcom = to_dwc3_qcom(dwc);
+-	bool wakeup = device_may_wakeup(dev);
++	/* ROCKNIX/SM8750: match dwc3_qcom_pm_suspend() - USB not a wake source. */
++	bool wakeup = false;
+ 	int ret;
+ 
+ 	ret = dwc3_qcom_resume(qcom, wakeup);
