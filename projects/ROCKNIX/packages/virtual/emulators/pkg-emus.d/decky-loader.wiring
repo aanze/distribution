@@ -1,0 +1,9 @@
+  ### Decky Loader (Steam plugin loader) — Tools entries, Steam-capable
+  ### devices only. Drop-in ES wiring (see the pkg-emus.d loop at the top of
+  ### makeinstall_target): file-add only, no shared-file edits.
+  case ${DEVICE} in
+    SM8250|SM8550|SM8650|SM8750)
+      install_script "Install Decky Loader.sh"
+      install_script "Uninstall Decky Loader.sh"
+      ;;
+  esac
