@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg width="100%" height="100%" viewBox="0 0 1200 1080" version="1.1" xmlns="http://www.w3.org/2000/svg" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+  <path d="M 0 0 H 1200 V 1080 H 0 V 0 Z" style="fill:rgb(46,46,46);"/>
+  <!-- antenna -->
+  <rect x="588" y="300" width="24" height="70" rx="12" style="fill:white;"/>
+  <circle cx="600" cy="292" r="26" style="fill:white;"/>
+  <!-- robot head -->
+  <rect x="410" y="368" width="380" height="344" rx="70" ry="70" style="fill:white;"/>
+  <!-- eyes -->
+  <rect x="486" y="470" width="64" height="120" rx="32" style="fill:rgb(46,46,46);"/>
+  <rect x="650" y="470" width="64" height="120" rx="32" style="fill:rgb(46,46,46);"/>
+  <!-- ears -->
+  <rect x="372" y="476" width="42" height="120" rx="21" style="fill:white;"/>
+  <rect x="786" y="476" width="42" height="120" rx="21" style="fill:white;"/>
+  <!-- wordmark -->
+  <text x="600" y="800" text-anchor="middle" style="fill:white;font-family:'DejaVu Sans',Arial,sans-serif;font-weight:700;font-size:120px;">Decky</text>
+</svg>
