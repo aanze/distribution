@@ -1713,6 +1713,16 @@ makeinstall_target() {
   add_emu_core moonlight moonlight moonlight true
   add_es_system moonlight
 
+  ### Decky Loader (Steam plugin loader) — Tools entries, Steam-capable devices only.
+  ### Kept as its own standalone case block (disjoint from the Steam/OpenNOW block
+  ### above) so this personal feature cherry-picks cleanly alongside the others.
+  case ${DEVICE} in
+    SM8250|SM8550|SM8650|SM8750)
+      install_script "Install Decky Loader.sh"
+      install_script "Uninstall Decky Loader.sh"
+      ;;
+  esac
+
   ### Tools
   add_es_system tools
 
