@@ -83,14 +83,20 @@ mapping:
       gamepad:
         button: Select
 
-  - name: F1 Key
+  # AYN Odin 3 right "home" button -> Steam Quick Access Menu (QAM).
+  # Mapped to the gamepad QuickAccess capability; Steam reads it via the
+  # InputPlumber DBus target and opens the QAM (works with the ds5 target —
+  # no Steam-Deck/horipad target needed). Replaces the previous KeyF1 mapping,
+  # which did nothing useful in EmulationStation or Steam.
+  - name: QAM Button
     source_events:
       - evdev:
           event_type: KEY
           event_code: BTN_BACK
           value_type: button
     target_event:
-      keyboard: KeyF1
+      gamepad:
+        button: QuickAccess
 
   - name: Right Trigger
     source_events:
