@@ -721,6 +721,8 @@ makeinstall_target() {
     SM8250|SM8550|SM8650|SM8750)
       add_emu_core steam steam steam true
       install_script "Install Steam.sh"
+      install_script "Update Proton CachyOS.sh"
+      install_script "Rollback Proton CachyOS.sh"
       install_script "Uninstall Steam.sh"
       add_es_system steam
       add_emu_core heroic heroic heroic true
