@@ -1,0 +1,24 @@
+    <game>
+        <path>./Update Proton CachyOS.sh</path>
+        <name>Update Proton CachyOS</name>
+        <desc>Updates the Proton-CachyOS (ARM64) Steam compatibility tool in place, without re-running the full "Install Steam" routine. Fetches the latest arm64 release from github.com/CachyOS/proton-cachyos, patches it for ARM (removes the require_tool_appid line that otherwise makes Steam fail with "unable to launch the compatibility tool"), and keeps the version you had as a one-press rollback copy. The download is verified and validated before it goes live. Idempotent: skips if you already have the latest. Fully relaunch Steam afterwards.</desc>
+        <developer>CachyOS</developer>
+        <publisher>CachyOS</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/cachyos.svg</image>
+    </game>
+    <game>
+        <path>./Rollback Proton CachyOS.sh</path>
+        <name>Rollback Proton CachyOS</name>
+        <desc>Switches the Proton-CachyOS (ARM64) compatibility tool back to the version kept by "Update Proton CachyOS". If both a live and a previous version exist it swaps them, so you can toggle back and forth; if only the saved one exists it restores it. Use this if a freshly updated Proton-CachyOS misbehaves. Fully relaunch Steam afterwards.</desc>
+        <developer>CachyOS</developer>
+        <publisher>CachyOS</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/cachyos.svg</image>
+    </game>
