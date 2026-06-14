@@ -1,0 +1,10 @@
+  ## Proton Update/Rollback Tools entries (the steam system itself ships
+  ## upstream). Drop-in ES wiring (see the pkg-emus.d loop at the top of
+  ## makeinstall_target): file-add only, no shared-file edits. Same device
+  ## gate as upstream's Steam block.
+  case ${DEVICE} in
+    SM8250|SM8550|SM8650|SM8750)
+      install_script "Update Proton CachyOS.sh"
+      install_script "Rollback Proton CachyOS.sh"
+      ;;
+  esac
