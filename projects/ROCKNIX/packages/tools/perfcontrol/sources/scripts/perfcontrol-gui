@@ -1,0 +1,29 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# GUI launcher for Perf Control (CPU/GPU underclock + fan curve editor). Invoked
+# from the EmulationStation menus (System Settings > Performance and the Quick
+# Access modal) via runSystemCommand, NOT from the Tools list.
+# Reuses the Pyxel venv shipped by the gamepadcalibration package; the app only
+# needs `import pyxel` from it. All logic lives in /usr/share/perfcontrol/app.
+
+source /etc/profile
+
+APP="/usr/share/perfcontrol/app/perfcontrol_ui.py"
+GPVENV="/usr/local/share/gpcal/pyxel"
+
+if [ ! -d "${GPVENV}" ]; then
+  mako-notify "Perf Control: Pyxel runtime missing (gamepadcalibration)" 2>/dev/null
+  exit 1
+fi
+
+# Make the app killable by the global panic combo and force it full screen.
+set_kill set "python3"
+sway_fullscreen "python3" &
+
+# The venv's activate script resolves relative to its parent dir (mirrors GPcal).
+cd "$(dirname "${GPVENV}")"
+source pyxel/bin/activate
+
+PYTHONDONTWRITEBYTECODE=1 python3 "${APP}"
