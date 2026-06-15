@@ -16,6 +16,14 @@ case ${DEVICE} in
     ;;
 esac
 
+# Perf Control (CPU/GPU underclock + fan-curve tool). Separate case block so
+# this addition never collides with the shared line above on cherry-pick.
+case ${DEVICE} in
+  SM8250|SM8550|SM8750)
+    PKG_DEPENDS_TARGET+=" perfcontrol"
+    ;;
+esac
+
 makeinstall_target() {
   mkdir -p ${INSTALL}/usr/config/modules
     cp -rf ${PKG_DIR}/sources/* ${INSTALL}/usr/config/modules
