@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg width="100%" height="100%" viewBox="0 0 1200 1080" version="1.1" xmlns="http://www.w3.org/2000/svg" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+  <path d="M 0 0 H 1200 V 1080 H 0 V 0 Z" style="fill:rgb(46,46,46);"/>
+  <!-- CPU chip -->
+  <g style="fill:white;">
+    <!-- pins -->
+    <rect x="372" y="318" width="26" height="40"/>
+    <rect x="432" y="318" width="26" height="40"/>
+    <rect x="492" y="318" width="26" height="40"/>
+    <rect x="372" y="722" width="26" height="40"/>
+    <rect x="432" y="722" width="26" height="40"/>
+    <rect x="492" y="722" width="26" height="40"/>
+    <rect x="298" y="392" width="40" height="26"/>
+    <rect x="298" y="452" width="40" height="26"/>
+    <rect x="298" y="512" width="40" height="26"/>
+    <rect x="552" y="392" width="40" height="26"/>
+    <rect x="552" y="452" width="40" height="26"/>
+    <rect x="552" y="512" width="40" height="26"/>
+  </g>
+  <path d="M 360 356 h 170 a 24 24 0 0 1 24 24 v 320 a 24 24 0 0 1 -24 24 h -170 a 24 24 0 0 1 -24 -24 v -320 a 24 24 0 0 1 24 -24 Z" style="fill:white;"/>
+  <path d="M 392 408 h 106 a 14 14 0 0 1 14 14 v 236 a 14 14 0 0 1 -14 14 h -106 a 14 14 0 0 1 -14 -14 v -236 a 14 14 0 0 1 14 -14 Z" style="fill:rgb(46,46,46);"/>
+  <path d="M 418 470 h 54 v 28 h -54 Z M 418 540 h 54 v 28 h -54 Z M 418 596 h 54 v 28 h -54 Z" style="fill:white;"/>
+  <!-- Fan -->
+  <g transform="translate(820,540)">
+    <circle cx="0" cy="0" r="210" style="fill:none;stroke:white;stroke-width:26;"/>
+    <g style="fill:white;">
+      <g>
+        <path d="M 0 -34 C 70 -54 150 -30 168 30 C 150 0 80 -8 24 -20 C 8 -24 0 -28 0 -34 Z"/>
+      </g>
+      <g transform="rotate(90)">
+        <path d="M 0 -34 C 70 -54 150 -30 168 30 C 150 0 80 -8 24 -20 C 8 -24 0 -28 0 -34 Z"/>
+      </g>
+      <g transform="rotate(180)">
+        <path d="M 0 -34 C 70 -54 150 -30 168 30 C 150 0 80 -8 24 -20 C 8 -24 0 -28 0 -34 Z"/>
+      </g>
+      <g transform="rotate(270)">
+        <path d="M 0 -34 C 70 -54 150 -30 168 30 C 150 0 80 -8 24 -20 C 8 -24 0 -28 0 -34 Z"/>
+      </g>
+    </g>
+    <circle cx="0" cy="0" r="40" style="fill:white;"/>
+  </g>
+</svg>

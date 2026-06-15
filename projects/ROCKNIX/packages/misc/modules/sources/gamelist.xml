@@ -133,6 +133,18 @@
         <image>./images/qterminal.svg</image>
     </game>
     <game>
+        <path>./Perf Control.sh</path>
+        <name>Perf Control</name>
+        <desc>Underclock the CPU/GPU and set a custom fan curve, then save and apply named profiles. Profiles are shared two-way with the Steam (Decky) rocknix-control plugin via fancontrol.conf and the plugin's presets, so the same profile works in both EmulationStation and Steam.</desc>
+        <developer>ROCKNIX</developer>
+        <publisher>ROCKNIX</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/perf-control.svg</image>
+    </game>
+    <game>
         <path>./Install Steam.sh</path>
         <name>Install Steam</name>
         <desc>This tool is to install/update Steam.</desc>
