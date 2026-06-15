@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# Re-apply the active Perf Control profile's CPU/GPU clock caps at boot.
+# sysfs frequency caps do not persist across reboot (neither ROCKNIX nor the
+# Steam plugin restore them), so without this an underclock would be lost after
+# every reboot. The fan curve is NOT touched here: cooling.profile +
+# fancontrol.conf already persist in /storage and the fancontrol service reads
+# them at boot. Backgrounded so it never delays boot.
+
+[ -x /usr/bin/perfcontrol ] && /usr/bin/perfcontrol boot >/dev/null 2>&1 &
+exit 0
