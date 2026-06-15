@@ -1,0 +1,125 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# Perf Control - headless backend. Runs on the system python3 (no pyxel/venv).
+#   perfcontrol status            show sync state, profiles, live hardware
+#   perfcontrol list              print profile names (one per line)
+#   perfcontrol apply [name]      apply a profile (or the active one); incl. fan
+#   perfcontrol boot              re-apply the active profile's clocks at boot
+#   perfcontrol reset             restore hardware defaults + stock fan profile
+
+import os
+import sys
+
+sys.path.insert(0, "/usr/share/perfcontrol/app")
+
+import pc_config as C        # noqa: E402
+import pc_hardware as hw     # noqa: E402
+import pc_profiles as P      # noqa: E402
+import pc_apply as A         # noqa: E402
+
+
+def _khz(v):
+    return "%.2f GHz" % (v / 1e6) if v else "?"
+
+
+def _mhz_hz(v):
+    return "%d MHz" % (v // 1000000) if v else "?"
+
+
+def cmd_status():
+    store = P.Store.load()
+    print("sync: %s (%s)%s" % (
+        store.sync_status, store.sync_signature,
+        "  <- " + store.sync_reason if store.sync_reason else ""))
+    print("active profile: %s" % (store.active or "-"))
+    print("running now (live clock match): %s"
+          % (P.match_current(store.profiles, hw.live_clocks()) or "custom"))
+    print("profiles: %s" % (", ".join(sorted(store.profiles)) or "-"))
+    print("--- cpu ---")
+    for p in hw.list_cpu_policies():
+        print("  %-7s policy%-2d cpus[%s]  cur %s  cap %s..%s (hw %s..%s)" % (
+            p.get("label", "?"), p["num"], p["cpus"], _khz(p["cur"]),
+            _khz(p["scaling_min"]), _khz(p["scaling_max"]),
+            _khz(p["cpuinfo_min"]), _khz(p["cpuinfo_max"])))
+    gpu = hw.find_gpu()
+    if gpu:
+        print("--- gpu ---")
+        print("  cur %s  cap %s..%s  gov %s" % (
+            _mhz_hz(gpu["cur"]), _mhz_hz(gpu["min"]), _mhz_hz(gpu["max"]),
+            gpu["governor"]))
+    print("--- thermal ---")
+    mt = hw.max_temp()
+    print("  max %s C  fan %s rpm  cooling.profile=%s" % (
+        "%.1f" % (mt / 1000.0) if mt else "?", hw.fan_rpm(),
+        A.get_setting(C.COOLING_PROFILE_KEY)))
+    return 0
+
+
+def cmd_list():
+    store = P.Store.load()
+    for n in sorted(store.profiles):
+        print(n)
+    return 0
+
+
+def _pick(store, name):
+    if name:
+        return name if name in store.profiles else None
+    return store.active
+
+
+def cmd_apply(name):
+    store = P.Store.load()
+    target = _pick(store, name)
+    if not target:
+        sys.stderr.write("no such profile / no active profile\n")
+        return 1
+    A.apply_profile(store.profiles[target], fan=True)
+    store.set_active(target)
+    store.persist()
+    C.log("applied profile '%s'" % target)
+    print("applied '%s'" % target)
+    return 0
+
+
+def cmd_boot():
+    store = P.Store.load()
+    if not store.active:
+        return 0
+    # clocks only: the fan config already persists in /storage and the
+    # fancontrol service reads it at boot, so don't race the service here.
+    A.apply_caps(store.profiles[store.active])
+    C.log("boot re-applied clocks for '%s'" % store.active)
+    return 0
+
+
+def cmd_reset():
+    A.reset_default()
+    store = P.Store.load()
+    store.set_active(None)
+    store.persist()
+    print("reset to hardware defaults")
+    return 0
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "status"
+    arg = argv[2] if len(argv) > 2 else None
+    if cmd == "status":
+        return cmd_status()
+    if cmd == "list":
+        return cmd_list()
+    if cmd == "apply":
+        return cmd_apply(arg)
+    if cmd == "boot":
+        return cmd_boot()
+    if cmd == "reset":
+        return cmd_reset()
+    sys.stderr.write("usage: perfcontrol {status|list|apply [name]|boot|reset}\n")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
