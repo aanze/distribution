@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TOOLS-ONLY gamelist overrides — "Steam Library" grid.
+
+  Loaded ONLY for the Tools system, via theme.xml's
+      <include>./_inc/persystem/$system.xml</include>
+  ($system -> "tools"). Every other system loads the empty default.xml, so the
+  shared grid view (the game cover-shelf) is left completely untouched.
+
+  parseView uses overwriteElements=true for includes, so redefining an element
+  here by name REPLACES the matching properties from the main grid view.
+
+  Goal vs the old look: no flat-black background, no redundant big cover card,
+  a readable header, and a centered multi-row library of the (nice) cover cards.
+-->
+<theme>
+   <view name="grid">
+      <!-- Backdrop instead of the empty {game:fanart} hero (Tools have no
+           fanart). Reuse the Tools tab art: user's /storage copy wins, then the
+           bundled one, then the premium gradient. -->
+      <image name="hero" extra="true">
+         <origin>0.5 0.5</origin><pos>0.5 0.5</pos><minSize>1 1</minSize>
+         <path>firstfile("/storage/.config/themecfg/bg/" + {system:theme} + ".jpg", "/storage/.config/themecfg/bg/" + {system:theme} + ".png", "${themePath}/_inc/systems/bg/" + {system:theme} + ".jpg", "${themePath}/_inc/systems/bg/" + {system:theme} + ".png", "${themePath}/_inc/systems/bg/default.png")</path>
+         <zIndex>1</zIndex>
+      </image>
+      <!-- strong scrim: the backdrop reads as a discreet dark texture -->
+      <image name="scrim" extra="true">
+         <color>0a0f14d4</color>
+      </image>
+      <!-- the horizontal-shelf bottom gradient makes no sense for a library -->
+      <image name="shelfGrad" extra="true"><visible>false</visible></image>
+      <!-- drop the redundant big cover card (gameLogo duplicated the shelf tile) -->
+      <image name="gameLogo" extra="true"><visible>false</visible></image>
+
+      <!-- header: bright accent "TOOLS", top-left (the built-in dim centred
+           system name was the ugly grey "Tools"). -->
+      <text name="logoText">
+         <origin>0 0</origin><pos>0.06 0.07</pos><size>0.6 0</size>
+         <fontSize>0.045</fontSize>
+         <color>${colAccent}</color>
+         <alignment>left</alignment>
+         <forceUppercase>true</forceUppercase>
+         <zIndex>50</zIndex>
+      </text>
+
+      <!-- selected tool name along the bottom -->
+      <text name="mdTitle" extra="true">
+         <origin>0 1</origin><pos>0.06 0.95</pos><size>0.88 0</size>
+         <text>{game:name}</text>
+         <multiLine>false</multiLine>
+         <fontSize>0.040</fontSize>
+         <color>${colTextBright}</color>
+         <zIndex>20</zIndex>
+      </text>
+
+      <!-- THE library grid: a centred multi-row block of 2:3 cover cards.
+           autoLayout = cols rows (both must be non-zero); vertical scroll picks
+           up any overflow rows. size kept ~0.75*height ratio so 4x2 tiles stay
+           close to the 2:3 cover aspect. -->
+      <imagegrid name="gamegrid">
+         <!-- imagegrid ignores <origin>: position by top-left. 0.52 wide centred
+              => left edge at (1-0.52)/2 = 0.24. -->
+         <pos>0.24 0.22</pos><size>0.52 0.66</size>
+         <margin>0.012 0.020</margin>
+         <scrollDirection>vertical</scrollDirection>
+         <autoLayout>4 2</autoLayout>
+         <autoLayoutSelectedZoom>1.06</autoLayoutSelectedZoom>
+         <centerSelection>false</centerSelection>
+         <imageSource>image</imageSource>
+         <zIndex>15</zIndex>
+      </imagegrid>
+   </view>
+</theme>
