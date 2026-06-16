@@ -1,0 +1,9 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# Boot hook: deploy the vendored ROCKNIX Control Decky plugin if Decky is present
+# (version-gated, idempotent). Backgrounded so it never delays boot.
+
+[ -x /usr/bin/rocknix-control-deploy ] && /usr/bin/rocknix-control-deploy >/dev/null 2>&1 &
+exit 0
