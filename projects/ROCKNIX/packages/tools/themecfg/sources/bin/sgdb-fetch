@@ -1,0 +1,76 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# CLI front to the SteamGridDB fetcher. Runs on the system python3 (no venv).
+#
+#   sgdb-fetch <system> [system2 ...] [options]
+#   sgdb-fetch all                     scan every system under /storage/roms
+#
+# options:
+#   --kinds cover,hero,logo   which art to fetch (default: all three)
+#   --limit N                 stop after N games (per system) - handy for tests
+#   --overwrite               re-download even if the file already exists
+#   --dry-run                 show what would happen, touch nothing
+#   --key KEY                 SteamGridDB API key (else $SGDB_API_KEY / config)
+
+import os
+import sys
+
+sys.path.insert(0, "/usr/share/themecfg/app")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+
+import sgdb_fetch as F  # noqa: E402
+
+
+def parse_args(argv):
+    systems, kinds = [], list(F.KINDS.keys())
+    limit, overwrite, dry, key = 0, False, False, None
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--kinds":
+            i += 1
+            kinds = [k.strip() for k in argv[i].split(",") if k.strip() in F.KINDS]
+        elif a == "--limit":
+            i += 1
+            limit = int(argv[i])
+        elif a == "--overwrite":
+            overwrite = True
+        elif a == "--dry-run":
+            dry = True
+        elif a == "--key":
+            i += 1
+            key = argv[i]
+        elif a.startswith("--"):
+            sys.exit("unknown option: %s" % a)
+        else:
+            systems.append(a)
+        i += 1
+    return systems, kinds, limit, overwrite, dry, key
+
+
+def main(argv):
+    if len(argv) < 2:
+        sys.exit(__doc__ if __doc__ else "usage: sgdb-fetch <system> [options]")
+    systems, kinds, limit, overwrite, dry, key = parse_args(argv)
+    key = key or F.read_api_key()
+    if not key:
+        sys.exit("ERROR: no SteamGridDB API key (set $SGDB_API_KEY, pass --key, "
+                 "or add SGDB_API_KEY= to %s)" % F.CONFIG_FILE)
+
+    if systems == ["all"]:
+        systems = sorted(d for d in os.listdir(F.ROMS_ROOT)
+                         if os.path.isdir(os.path.join(F.ROMS_ROOT, d)))
+    for system in systems:
+        sdir = F.system_dir(system)
+        if not os.path.isdir(sdir):
+            sys.stderr.write("skip '%s' (no %s)\n" % (system, sdir))
+            continue
+        F.fetch_system(system, key, kinds, limit=limit,
+                       overwrite=overwrite, dry=dry)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
