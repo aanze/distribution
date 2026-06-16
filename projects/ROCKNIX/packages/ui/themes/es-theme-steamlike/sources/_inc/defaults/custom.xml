@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<theme>
+   <variables>
+      <colAccent>ffffffff</colAccent>
+      <colScrim>0a0f1499</colScrim>
+      <shelfCols>8</shelfCols>
+      <shelfZoom>1.08</shelfZoom>
+      <selFrame>ffffff66</selFrame>
+      <showLogos>1</showLogos>
+      <showVideo>0</showVideo>
+      <showClock>0</showClock>
+      <showTags>0</showTags>
+   </variables>
+</theme>

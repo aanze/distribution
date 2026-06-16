@@ -1,0 +1,27 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] GuiMenu: add Steamlike Theme Manager entry (steamlike theme only)
+
+Adds a 'STEAMLIKE THEME MANAGER' entry at the top of the UI Settings
+APPEARANCE group, shown only when ThemeSet == steamlike, launching the
+Pyxel Theme Manager via Utils::Platform::runSystemCommand.
+
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -4837,6 +4837,17 @@
+ 
+ 	s->addGroup(_("APPEARANCE"));
+ 
++	// ROCKNIX steamlike: launch the dedicated Theme Manager (Tools app) from
++	// here, but only when the steamlike theme is active so it never shows for
++	// other themes. runSystemCommand blocks the UI thread while the Pyxel GUI
++	// runs full-screen (the launcher restarts ES on exit if anything changed).
++	if (Settings::getInstance()->getString("ThemeSet") == "steamlike")
++	{
++		s->addEntry(_("STEAMLIKE THEME MANAGER"), true, [] {
++			Utils::Platform::runSystemCommand("/usr/bin/steamlike-theme-manager", "", nullptr);
++		});
++	}
++
+ 	if (system != nullptr && !themeSets.empty())
+ 	{		
+ 		auto selectedSet = themeSets.find(Settings::getInstance()->getString("ThemeSet"));
