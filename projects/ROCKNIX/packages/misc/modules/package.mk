@@ -47,3 +47,12 @@ case ${DEVICE} in
     PKG_DEPENDS_TARGET+=" ducktale-controls-plugin"
     ;;
 esac
+
+# Theme Manager backend (steamlike theme): SteamGridDB art fetcher + Pyxel GUI.
+# Reuses the Pyxel venv from gamepadcalibration. Dedicated case block at EOF to
+# stay cherry-pick friendly (matches the pattern other feature branches use).
+case ${DEVICE} in
+  SM8250|SM8550|SM8750)
+    PKG_DEPENDS_TARGET+=" themecfg"
+    ;;
+esac
