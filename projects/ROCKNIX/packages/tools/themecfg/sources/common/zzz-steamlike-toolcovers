@@ -1,0 +1,24 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# steamlike theme: re-point the Tools gamelist <image> entries at the pre-baked
+# 2:3 cover-cards so they render like game capsules in the cover-shelf.
+#
+# Named "zzz-" so it runs LAST in the common-scripts glob, after 001-sync-modules
+# (which `rsync -a --delete`s the pristine svg gamelist into /storage every boot)
+# AND after every other first-boot setup script -- so nothing can run after us and
+# leave the gamelist pointing back at the .svg icons. The companion essway.service
+# drop-in makes ES start only after rocknix-autostart finishes, so this re-point is
+# the final word before ES reads the gamelist. Pure XML rewrite (no ImageMagick) ->
+# fast, cannot hang. Covers ship read-only in /usr/share/themecfg/covers (a Theme
+# Manager rebuild writes to /storage/.config/themecfg/covers and takes precedence).
+
+ES_CFG=/storage/.config/emulationstation/es_settings.cfg
+
+# steamlike only -> other themes keep the original square icons
+THEME=$(sed -n 's/.*name="ThemeSet" value="\([^"]*\)".*/\1/p' "$ES_CFG" 2>/dev/null)
+[ "$THEME" = "steamlike" ] || exit 0
+
+python3 /usr/share/themecfg/app/gen_tool_covers.py --apply >/dev/null 2>&1
+exit 0
