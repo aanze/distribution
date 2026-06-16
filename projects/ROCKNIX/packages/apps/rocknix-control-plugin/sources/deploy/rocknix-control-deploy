@@ -1,0 +1,28 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# Deploy our vendored "ROCKNIX Control" Decky plugin (the aanze fork) into Decky.
+# Runs at boot and is re-runnable by hand. No-op unless Decky is installed.
+# Version-gated via a marker so it only copies when our shipped build differs
+# from what's deployed, then nudges plugin_loader to reload. This is how the
+# plugin "comes with Decky" without depending on the upstream Decky store.
+
+SRC="/usr/share/rocknix-control"
+DST="/storage/homebrew/plugins/rocknix-control"
+
+[ -f "${SRC}/plugin.json" ] || exit 0          # nothing shipped (wrong device)
+[ -d "/storage/homebrew/plugins" ] || exit 0   # Decky not installed -> nothing to do
+
+OURS="$(cat "${SRC}/.aanze-version" 2>/dev/null)"
+HAVE="$(cat "${DST}/.aanze-version" 2>/dev/null)"
+[ -n "${OURS}" ] && [ "${OURS}" = "${HAVE}" ] && exit 0   # our build already deployed
+
+mkdir -p "${DST}"
+cp -rf "${SRC}/." "${DST}/"
+chmod 0755 "${DST}/main.py" 2>/dev/null || true
+
+# Best-effort reload so Decky picks up the plugin now; the Steam-launch watcher
+# from "Install Decky Loader" also re-injects the UI on the next Steam start.
+systemctl restart plugin_loader >/dev/null 2>&1 || true
+exit 0
