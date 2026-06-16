@@ -38,3 +38,12 @@ post_makeinstall_target() {
     rm -f ${INSTALL}/usr/config/modules/Install*
   fi
 }
+
+# DUCKTALE-CONTROLS (aanze fork) Decky plugin — shipped in the image and
+# auto-deployed into Decky on boot. Dedicated case block at EOF so it never
+# collides with other branches' additions to the deps lines near the top.
+case ${DEVICE} in
+  SM8250|SM8550|SM8650|SM8750)
+    PKG_DEPENDS_TARGET+=" ducktale-controls-plugin"
+    ;;
+esac
