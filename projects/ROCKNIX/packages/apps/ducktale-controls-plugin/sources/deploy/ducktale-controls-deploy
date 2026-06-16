@@ -1,0 +1,45 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# Deploy our vendored "DUCKTALE-CONTROLS" Decky plugin (the aanze fork of
+# thefiqs/rocknix-control) into Decky. Runs at boot and is re-runnable by hand.
+# No-op unless Decky is installed. Version-gated via a marker so it only copies
+# when our shipped build differs from what's deployed, then nudges plugin_loader
+# to reload. This is how the plugin "comes with Decky" without depending on the
+# upstream Decky store.
+
+SRC="/usr/share/ducktale-controls"
+DST="/storage/homebrew/plugins/ducktale-controls"
+
+[ -f "${SRC}/plugin.json" ] || exit 0          # nothing shipped (wrong device)
+[ -d "/storage/homebrew/plugins" ] || exit 0   # Decky not installed -> nothing to do
+
+# One-time migration from the pre-rebrand "rocknix-control" plugin. Decky keys a
+# plugin's settings dir off its FOLDER name, so the rename moves the store too;
+# carry the user's presets/game-profiles over once, then drop the old plugin so
+# Decky doesn't list both ROCKNIX Control and DUCKTALE-CONTROLS.
+OLD_DST="/storage/homebrew/plugins/rocknix-control"
+OLD_SETTINGS="/storage/homebrew/settings/rocknix-control"
+NEW_SETTINGS="/storage/homebrew/settings/ducktale-controls"
+if [ -d "${OLD_DST}" ] || [ -d "${OLD_SETTINGS}" ]; then
+  if [ -d "${OLD_SETTINGS}" ] && [ ! -f "${NEW_SETTINGS}/presets.json" ]; then
+    mkdir -p "${NEW_SETTINGS}"
+    cp -f "${OLD_SETTINGS}/presets.json"       "${NEW_SETTINGS}/presets.json"       2>/dev/null || true
+    cp -f "${OLD_SETTINGS}/game_profiles.json" "${NEW_SETTINGS}/game_profiles.json" 2>/dev/null || true
+  fi
+  rm -rf "${OLD_DST}"
+fi
+
+OURS="$(cat "${SRC}/.aanze-version" 2>/dev/null)"
+HAVE="$(cat "${DST}/.aanze-version" 2>/dev/null)"
+[ -n "${OURS}" ] && [ "${OURS}" = "${HAVE}" ] && exit 0   # our build already deployed
+
+mkdir -p "${DST}"
+cp -rf "${SRC}/." "${DST}/"
+chmod 0755 "${DST}/main.py" 2>/dev/null || true
+
+# Best-effort reload so Decky picks up the plugin now; the Steam-launch watcher
+# from "Install Decky Loader" also re-injects the UI on the next Steam start.
+systemctl restart plugin_loader >/dev/null 2>&1 || true
+exit 0
