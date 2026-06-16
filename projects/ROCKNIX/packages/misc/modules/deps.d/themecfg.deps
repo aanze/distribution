@@ -1,0 +1,8 @@
+# Theme Manager backend (steamlike theme): SteamGridDB art fetcher + Pyxel GUI.
+# Reuses the Pyxel venv from gamepadcalibration. Drop-in deps snippet (see the
+# deps.d loop in package.mk): file-add only, no shared-file edits.
+case ${DEVICE} in
+  SM8250|SM8550|SM8750)
+    PKG_DEPENDS_TARGET+=" themecfg"
+    ;;
+esac
