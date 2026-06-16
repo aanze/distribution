@@ -1,0 +1,402 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ROCKNIX "steamlike" theme  v0.3
+  Closest feel to Steam Big Picture on the ROCKNIX EmulationStation
+  (Batocera-lineage) engine, formatVersion 7.
+
+  Per-game art (from the SteamGridDB fetcher) lands in the gamelist media slots:
+      {game:image}   -> 600x900 vertical capsule (cover)   - shown aspect-correct
+      {game:fanart}  -> 16:9 hero backdrop                  - cover-fit, no stretch
+      {game:wheel}   -> transparent logo (falls back marquee)
+      {game:video}   -> preview clip
+
+  Image sizing rules used here:
+      <size>    = exact (stretches - avoid for art)
+      <maxSize> = fit inside box, keep aspect (capsule, logo)
+      <minSize> = fill box / cover, keep aspect, crop overflow (hero)
+-->
+<theme defaultTransition="fade">
+   <formatVersion>7</formatVersion>
+
+   <include>./colors.xml</include>
+   <!-- live customisations written by the Steamlike Theme Manager GUI; included
+        AFTER the defaults so its <variables> override them. Always present. -->
+   <include>/storage/.config/themecfg/custom.xml</include>
+
+   <variables>
+      <!-- 1x1 white pixel: tint with <color> for reliable solid fills/scrims
+           (color-only <image> fills don't render dependably in this engine) -->
+      <px>./_inc/px.png</px>
+   </variables>
+
+   <!--
+   ============================================================
+   SYSTEM VIEW = Steam top "tab bar"
+   Clean dark premium background (no random game art).
+   ============================================================
+   -->
+   <view name="system">
+      <image name="bgfill" extra="true">
+         <origin>0 0</origin><pos>0 0</pos><size>1 1</size>
+         <path>${px}</path>
+         <color>${colBg}</color>
+         <zIndex>0</zIndex>
+      </image>
+      <!-- per-category HD background: _inc/systems/bg/<theme>.(jpg|png),
+           falling back to a premium gradient (never the ES gamepad). -->
+      <image name="sysBg" extra="true">
+         <origin>0.5 0.5</origin><pos>0.5 0.5</pos><minSize>1 1</minSize>
+         <path>firstfile("/storage/.config/themecfg/bg/" + {system:theme} + ".jpg", "/storage/.config/themecfg/bg/" + {system:theme} + ".png", "${themePath}/_inc/systems/bg/default.png")</path>
+         <zIndex>1</zIndex>
+      </image>
+      <!-- overall mood scrim so tabs + title always read -->
+      <image name="scrim" extra="true">
+         <origin>0 0</origin><pos>0 0</pos><size>1 1</size>
+         <path>${px}</path>
+         <color>${colScrim}</color>
+         <zIndex>2</zIndex>
+      </image>
+      <!-- smooth dark gradient at the bottom behind the title -->
+      <image name="bottomVignette" extra="true">
+         <origin>0 1</origin><pos>0 1</pos><size>1 0.46</size>
+         <path>./_inc/shelf-grad.png</path>
+         <zIndex>3</zIndex>
+      </image>
+      <!-- hide the engine's default centre info band -->
+      <text name="systemInfo"><visible>false</visible></text>
+      <controllerActivity name="controllerActivity"><visible>false</visible></controllerActivity>
+
+      <!-- clean white platform logo (console representation), centered.
+           Uses a dynamic expression ({system:theme}) so firstfile() actually
+           evaluates; absolute ${themePath}; transparent fallback (no gamepad). -->
+      <image name="sysLogo" extra="true" if="${showLogos} == '1'">
+         <origin>0.5 0.5</origin><pos>0.5 0.5</pos>
+         <maxSize>0.5 0.34</maxSize>
+         <path>firstfile("${themePath}/_inc/systems/art/" + {system:theme} + ".png", "${themePath}/_inc/systems/art/" + {system:theme} + ".svg", "${themePath}/_inc/blank.png")</path>
+         <zIndex>10</zIndex>
+      </image>
+
+      <!-- tab carousel -->
+      <carousel name="systemcarousel">
+         <type>horizontal</type>
+         <origin>0 0</origin>
+         <pos>0 0.03</pos>
+         <size>1 0.14</size>
+         <color>00000000</color>
+         <logoScale>1.4</logoScale>
+         <logoRotation>0</logoRotation>
+         <maxLogoCount>7</maxLogoCount>
+         <zIndex>30</zIndex>
+      </carousel>
+      <text name="logoText">
+         <fontSize>0.042</fontSize>
+         <color>${colText}</color>
+         <forceUppercase>true</forceUppercase>
+         <alignment>center</alignment>
+         <lineSpacing>1</lineSpacing>
+      </text>
+
+      <!-- accent rule under the tab bar -->
+      <image name="tabrule" extra="true">
+         <origin>0 0</origin><pos>0.06 0.185</pos><size>0.88 0.0022</size>
+         <path>${px}</path>
+         <color>${colAccent}</color>
+         <zIndex>20</zIndex>
+      </image>
+
+      <!-- (system name + entry count removed: the tab + centred logo already
+           identify the category) -->
+
+      <clock name="clock" if="${showClock} == '1'">
+         <origin>1 0</origin><pos>0.97 0.045</pos>
+         <fontSize>0.030</fontSize>
+         <color>${colTextDim}</color>
+         <zIndex>40</zIndex>
+      </clock>
+      <helpsystem name="help">
+         <origin>0 1</origin><pos>0.06 0.965</pos>
+         <textColor>${colTextDim}</textColor>
+         <iconColor>${colTextDim}</iconColor>
+      </helpsystem>
+   </view>
+
+   <!--
+   ============================================================
+   GAMELIST (basic + detailed) = Steam focused-game screen
+   Left rail = game list. Right = hero (bg) + cover + logo + meta.
+   ============================================================
+   -->
+   <view name="basic,detailed">
+      <image name="bgfill" extra="true">
+         <origin>0 0</origin><pos>0 0</pos><size>1 1</size>
+         <path>${px}</path>
+         <color>${colBg}</color>
+         <zIndex>0</zIndex>
+      </image>
+
+      <!-- HERO: focused game's fanart, cover-fit (no stretch) -->
+      <image name="hero" extra="true">
+         <origin>0.5 0.5</origin><pos>0.5 0.5</pos><minSize>1 1</minSize>
+         <path>{game:fanart}</path>
+         <zIndex>1</zIndex>
+      </image>
+      <!-- overall mood scrim -->
+      <image name="scrim" extra="true">
+         <origin>0 0</origin><pos>0 0</pos><size>1 1</size>
+         <path>${px}</path>
+         <color>${colScrim}</color>
+         <zIndex>2</zIndex>
+      </image>
+      <!-- left rail: dark gutter for the game list -->
+      <image name="leftPanel" extra="true">
+         <origin>0 0</origin><pos>0 0</pos><size>0.40 1</size>
+         <path>${px}</path>
+         <color>${colBarDark}</color>
+         <zIndex>3</zIndex>
+      </image>
+      <!-- bottom bar so the title/metadata read over bright hero art -->
+      <image name="bottomBar" extra="true">
+         <origin>0 1</origin><pos>0 1</pos><size>1 0.20</size>
+         <path>${px}</path>
+         <color>${colBarDark}</color>
+         <zIndex>3</zIndex>
+      </image>
+      <text name="systemInfo"><visible>false</visible></text>
+      <controllerActivity name="controllerActivity"><visible>false</visible></controllerActivity>
+
+      <!-- left-rail header = system name -->
+      <text name="railHeader" extra="true">
+         <origin>0 0</origin><pos>0.04 0.06</pos><size>0.32 0</size>
+         <text>{system:fullName}</text>
+         <fontSize>0.034</fontSize>
+         <color>${colAccent}</color>
+         <forceUppercase>true</forceUppercase>
+         <zIndex>10</zIndex>
+      </text>
+
+      <!-- game list (left rail) -->
+      <textlist name="gamelist">
+         <origin>0 0</origin>
+         <pos>0.04 0.13</pos>
+         <size>0.32 0.80</size>
+         <fontSize>0.037</fontSize>
+         <horizontalMargin>0.012</horizontalMargin>
+         <alignment>left</alignment>
+         <selectorColor>${colAccent}</selectorColor>
+         <selectedColor>${colBg}</selectedColor>
+         <primaryColor>${colText}</primaryColor>
+         <secondaryColor>${colTextDim}</secondaryColor>
+         <scrollbarColor>ffffff22</scrollbarColor>
+         <scrollbarAlignment>outer right</scrollbarAlignment>
+         <zIndex>10</zIndex>
+      </textlist>
+
+      <!-- vertical capsule cover (600x900), upper right, aspect-correct -->
+      <image name="capsule" extra="true">
+         <origin>1 0</origin><pos>0.97 0.10</pos>
+         <maxSize>0.26 0.54</maxSize>
+         <path>{game:image}</path>
+         <roundCorners>0.025</roundCorners>
+         <zIndex>11</zIndex>
+      </image>
+      <!-- video preview over the capsule after a delay -->
+      <video name="gameVideo" extra="true" if="${showVideo} == '1'">
+         <origin>1 0</origin><pos>0.97 0.10</pos>
+         <maxSize>0.26 0.54</maxSize>
+         <path>{game:video}</path>
+         <delay>1.5</delay>
+         <loops>0</loops>
+         <roundCorners>0.025</roundCorners>
+         <zIndex>12</zIndex>
+      </video>
+
+      <!-- game logo (wheel art, falls back to marquee), right of rail/bottom -->
+      <image name="gameLogo" extra="true">
+         <origin>0 1</origin><pos>0.43 0.80</pos>
+         <maxSize>0.42 0.18</maxSize>
+         <path>firstfile({game:wheel},{game:marquee})</path>
+         <zIndex>15</zIndex>
+      </image>
+      <!-- title text (also serves when no logo art exists) -->
+      <text name="mdTitle" extra="true">
+         <origin>0 1</origin><pos>0.43 0.90</pos><size>0.54 0</size>
+         <text>{game:name}</text>
+         <fontSize>0.052</fontSize>
+         <color>${colTextBright}</color>
+         <zIndex>16</zIndex>
+      </text>
+      <text name="mdSub" extra="true" if="${showTags} == '1'">
+         <origin>0 1</origin><pos>0.432 0.945</pos><size>0.54 0</size>
+         <text>{game:releaseyear}   {game:genre}</text>
+         <fontSize>0.028</fontSize>
+         <color>${colAccent}</color>
+         <forceUppercase>true</forceUppercase>
+         <zIndex>16</zIndex>
+      </text>
+
+      <clock name="clock" if="${showClock} == '1'">
+         <origin>1 0</origin><pos>0.97 0.045</pos>
+         <fontSize>0.030</fontSize>
+         <color>${colTextDim}</color>
+         <zIndex>40</zIndex>
+      </clock>
+      <helpsystem name="help">
+         <origin>0 1</origin><pos>0.04 0.965</pos>
+         <textColor>${colTextDim}</textColor>
+         <iconColor>${colTextDim}</iconColor>
+      </helpsystem>
+   </view>
+
+   <!--
+   ============================================================
+   GRID = SteamOS Big-Picture "cover shelf"
+   Hero dominates the screen; a horizontal row of capsule covers sits
+   along the bottom, focused cover enlarged. Set GamelistViewStyle=grid.
+   ============================================================
+   -->
+   <view name="grid">
+      <image name="bgfill" extra="true">
+         <origin>0 0</origin><pos>0 0</pos><size>1 1</size>
+         <path>${px}</path><color>${colBg}</color>
+         <zIndex>0</zIndex>
+      </image>
+      <!-- HERO of the focused game, full bleed, cover-fit -->
+      <image name="hero" extra="true">
+         <origin>0.5 0.5</origin><pos>0.5 0.5</pos><minSize>1 1</minSize>
+         <path>{game:fanart}</path>
+         <zIndex>1</zIndex>
+      </image>
+      <image name="scrim" extra="true">
+         <origin>0 0</origin><pos>0 0</pos><size>1 1</size>
+         <path>${px}</path><color>${colScrimSoft}</color>
+         <zIndex>2</zIndex>
+      </image>
+      <!-- smooth gradient: hero fades into the shelf (no hard black edge) -->
+      <image name="shelfGrad" extra="true">
+         <origin>0 1</origin><pos>0 1</pos><size>1 0.58</size>
+         <path>./_inc/shelf-grad.png</path>
+         <zIndex>3</zIndex>
+      </image>
+      <text name="systemInfo"><visible>false</visible></text>
+      <controllerActivity name="controllerActivity"><visible>false</visible></controllerActivity>
+
+      <!-- focused game logo (wheel) over the hero, upper-left -->
+      <image name="gameLogo" extra="true">
+         <origin>0 0</origin><pos>0.06 0.10</pos>
+         <maxSize>0.55 0.26</maxSize>
+         <path>firstfile({game:wheel},{game:marquee})</path>
+         <zIndex>12</zIndex>
+      </image>
+      <!-- title + meta, just above the shelf -->
+      <text name="mdTitle" extra="true">
+         <origin>0 1</origin><pos>0.06 0.55</pos><size>0.6 0</size>
+         <text>{game:name}</text>
+         <fontSize>0.055</fontSize>
+         <color>${colTextBright}</color>
+         <zIndex>12</zIndex>
+      </text>
+      <text name="mdSub" extra="true" if="${showTags} == '1'">
+         <origin>0 1</origin><pos>0.062 0.595</pos><size>0.6 0</size>
+         <text>{game:releaseyear}   {game:genre}</text>
+         <fontSize>0.028</fontSize>
+         <color>${colAccent}</color>
+         <forceUppercase>true</forceUppercase>
+         <zIndex>12</zIndex>
+      </text>
+
+      <!-- the cover shelf (horizontal row of capsules). imagegrid ignores
+           <origin>, so position by top-left. 8 columns at height 0.31 makes
+           each cell ~2:3 == the cover aspect, so the cover fills the cell and
+           the thin tile frame hugs it on all 4 sides (no side bars). -->
+      <imagegrid name="gamegrid">
+         <pos>0.035 0.585</pos><size>0.93 0.31</size>
+         <margin>0.009 0</margin>
+         <scrollDirection>horizontal</scrollDirection>
+         <autoLayout>${shelfCols} 1</autoLayout>
+         <autoLayoutSelectedZoom>${shelfZoom}</autoLayoutSelectedZoom>
+         <centerSelection>true</centerSelection>
+         <imageSource>image</imageSource>
+         <zIndex>15</zIndex>
+      </imagegrid>
+      <!-- unselected: slightly dimmed, no frame. selected: full bright + a
+           thin uniform frame (padding ~equal px on all sides) + zoom. -->
+      <gridtile name="default">
+         <padding>0.0024 0.0042</padding>
+         <imageColor>ffffffcc</imageColor>
+         <backgroundColor>00000000</backgroundColor>
+      </gridtile>
+      <gridtile name="selected">
+         <padding>0.0024 0.0042</padding>
+         <imageColor>ffffffff</imageColor>
+         <backgroundColor>${selFrame}</backgroundColor>
+      </gridtile>
+
+      <clock name="clock" if="${showClock} == '1'">
+         <origin>1 0</origin><pos>0.97 0.045</pos>
+         <fontSize>0.030</fontSize><color>${colTextDim}</color>
+         <zIndex>40</zIndex>
+      </clock>
+      <helpsystem name="help">
+         <origin>0 1</origin><pos>0.04 0.985</pos>
+         <textColor>${colTextDim}</textColor>
+         <iconColor>${colTextDim}</iconColor>
+      </helpsystem>
+   </view>
+
+   <!--
+   ============================================================
+   MENU = the Start/Select popup, the B side panel and toasts.
+   Dark Steam panel instead of the default white.
+   ============================================================
+   -->
+   <view name="menu">
+      <menuBackground name="menubg">
+         <color>${colPanelDark}</color>
+         <cornerSize>14 14</cornerSize>
+      </menuBackground>
+      <menuText name="menutitle">
+         <fontSize>0.030</fontSize>
+         <color>${colTextBright}</color>
+      </menuText>
+      <menuText name="menutext">
+         <fontSize>0.029</fontSize>
+         <color>${colText}</color>
+         <selectedColor>${colBg}</selectedColor>
+         <selectorColor>${colAccent}</selectorColor>
+         <separatorColor>ffffff14</separatorColor>
+      </menuText>
+      <menuText name="menufooter">
+         <fontSize>0.023</fontSize>
+         <color>${colTextDim}</color>
+      </menuText>
+      <menuText name="menutextsmall">
+         <fontSize>0.023</fontSize>
+         <color>${colTextDim}</color>
+      </menuText>
+      <menuGroup name="menugroup">
+         <color>${colAccent}</color>
+         <separatorColor>ffffff22</separatorColor>
+         <backgroundColor>00000000</backgroundColor>
+      </menuGroup>
+   </view>
+
+   <!--
+   ============================================================
+   DETAILED: hide built-in md_* so they don't draw over our layout.
+   ============================================================
+   -->
+   <view name="detailed">
+      <text name="md_lbl_rating,md_lbl_releasedate,md_lbl_developer,md_developer,md_lbl_publisher,md_publisher,md_lbl_genre,md_genre,md_lbl_players,md_players,md_lbl_lastplayed,md_lbl_playcount,md_playcount,md_lbl_gametime,md_gametime,md_name,md_description">
+         <visible>false</visible>
+      </text>
+      <datetime name="md_releasedate,md_lastplayed">
+         <visible>false</visible>
+      </datetime>
+      <rating name="md_rating">
+         <visible>false</visible>
+      </rating>
+      <image name="md_image,md_marquee">
+         <visible>false</visible>
+      </image>
+   </view>
+</theme>
