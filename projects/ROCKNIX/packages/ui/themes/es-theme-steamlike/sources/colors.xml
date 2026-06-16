@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Steam-style slate palette. Colours are RRGGBBAA (last 2 hex = alpha).
+  Included by theme.xml; referenced everywhere as ${colName}.
+-->
+<theme>
+   <variables>
+      <!-- backgrounds -->
+      <colBg>0e141bff</colBg>          <!-- deepest base, shows when no hero art -->
+      <colPanel>1b2838ff</colPanel>    <!-- Steam panel blue-grey -->
+      <colPanelDark>171a21ff</colPanelDark>
+
+      <!-- accents -->
+      <colAccent>66c0f4ff</colAccent>  <!-- Steam light blue (focus) -->
+      <colAccent2>1a9fffff</colAccent2>
+
+      <!-- text -->
+      <colText>c7d5e0ff</colText>      <!-- body -->
+      <colTextDim>8f98a0ff</colTextDim>
+      <colTextBright>ffffffff</colTextBright>
+      <colTabSelText>0e141bff</colTabSelText> <!-- selected tab label on the white pill (near-black) -->
+
+      <!-- hero scrims (darken fanart so text stays legible) -->
+      <colScrim>0a0f1499</colScrim>        <!-- ~60% over whole hero (mood) -->
+      <colScrimSoft>0a0f1466</colScrimSoft>
+      <colBarDark>0a0f14ee</colBarDark>    <!-- ~93% near-opaque: tab/title bars -->
+
+      <!-- ===== tunables overridable live by the Theme Manager GUI ===== -->
+      <shelfCols>8</shelfCols>             <!-- cover shelf columns (6-10) -->
+      <shelfZoom>1.08</shelfZoom>          <!-- selected-cover zoom -->
+      <selFrame>ffffffff</selFrame>        <!-- selected-cover frame colour -->
+      <showClock>1</showClock>             <!-- clock visibility (1/0) -->
+      <showLogos>1</showLogos>             <!-- platform logos in system view -->
+      <showVideo>1</showVideo>             <!-- cover video previews -->
+      <showTags>1</showTags>               <!-- year/genre line under game name -->
+      <showBackgrounds>1</showBackgrounds> <!-- per-category section backgrounds (system view) -->
+      <showTabPill>1</showTabPill>         <!-- gamescope-style pill behind the selected tab -->
+      <showTabRule>1</showTabRule>         <!-- accent separator line under the tab bar -->
+   </variables>
+</theme>
