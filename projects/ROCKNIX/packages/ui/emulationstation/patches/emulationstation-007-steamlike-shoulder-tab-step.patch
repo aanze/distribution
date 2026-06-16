@@ -1,0 +1,27 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] SystemView: steamlike shoulders step one tab at a time
+
+In the system carousel the shoulder buttons (L1/R1) trigger moveCursorFast,
+which jumps by manufacturer group (or by 10 when systems are unsorted). With
+the steamlike theme's Steam-style top tab bar that skips whole tabs such as
+Tools and OpenNOW. Make the shoulders step a single system at a time, but
+only when the steamlike theme is active so other themes keep the fast jump.
+
+--- a/es-app/src/views/SystemView.cpp
++++ b/es-app/src/views/SystemView.cpp
+@@ -401,6 +401,15 @@
+ 					mCarousel.moveSelectionBy(1);
+ 					return true;
+ 				}
++				// ROCKNIX steamlike: the Steam-style top tab bar steps one system at a
++				// time on the shoulders (L1/R1). Stock behaviour is a manufacturer (or
++				// x10) "fast jump" that skips tabs such as Tools and OpenNOW; only
++				// override for the steamlike theme so other themes keep the fast jump.
++				if (Settings::getInstance()->getString("ThemeSet") == "steamlike")
++				{
++					if (config->isMappedTo("rightshoulder", input)) { mCarousel.moveSelectionBy(1);  return true; }
++					if (config->isMappedTo("leftshoulder", input))  { mCarousel.moveSelectionBy(-1); return true; }
++				}
+ 				if ((Settings::getInstance()->getBool("QuickSystemSelect") && config->isMappedLike("down", input)) || config->isMappedTo("rightshoulder", input))
+ 				{
+ 					int cursor = moveCursorFast(true);
