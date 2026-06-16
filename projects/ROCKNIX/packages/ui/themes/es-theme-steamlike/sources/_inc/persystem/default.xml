@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Per-system override fallback. theme.xml does:
+      <include>./_inc/persystem/$system.xml</include>
+  ES resolves $system to the focused system's theme folder; if that file is
+  missing it falls back to THIS default.xml (see ThemeData::parseInclude). So
+  every system EXCEPT the ones with a dedicated file loads this no-op include,
+  which keeps the shared views untouched. Tools gets persystem/tools.xml.
+-->
+<theme>
+</theme>
