@@ -1,6 +1,12 @@
-<img src="https://github.com/ROCKNIX/distribution/blob/next/distributions/ROCKNIX/logos/rocknix-logo.png?raw=yes" width=192>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[![Latest Version](https://img.shields.io/github/release/ROCKNIX/distribution.svg?color=FF5555&label=latest%20version&style=flat-square)](https://github.com/ROCKNIX/distribution/releases/latest) [![Activity](https://img.shields.io/github/commit-activity/m/ROCKNIX/distribution?color=FF5555&style=flat-square)](https://github.com/ROCKNIX/distribution/commits) [![Pull Requests](https://img.shields.io/github/issues-pr-closed/ROCKNIX/distribution?color=FF5555&style=flat-square)](https://github.com/ROCKNIX/distribution/pulls) [![Discord Server](https://img.shields.io/discord/948029830325235753?color=FF5555&label=chat&style=flat-square)](https://discord.gg/seTxckZjJy)
+<img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/ducktale-logo.png?raw=yes" width=320>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[![Latest Version](https://img.shields.io/github/release/aanze/distribution.svg?color=1F4D2E&label=latest%20version&style=flat-square)](https://github.com/aanze/distribution/releases/latest) [![Activity](https://img.shields.io/github/commit-activity/m/aanze/distribution?color=1F4D2E&style=flat-square)](https://github.com/aanze/distribution/commits) [![Based on ROCKNIX](https://img.shields.io/badge/based%20on-ROCKNIX-1F4D2E?style=flat-square)](https://github.com/ROCKNIX/distribution)
 
 ---
+
+**DUCKTALE** is a personal, customized fork of [ROCKNIX](https://github.com/ROCKNIX/distribution) for handheld gaming devices (primarily the AYN Odin 3 / SM8750). It tracks the official ROCKNIX nightlies and layers on a set of personal features — a Steam Big-Picture-style theme, on-device tooling, and quality-of-life fixes — while staying as close to upstream as possible.
+
+Render unto Caesar: **all credit for the underlying OS goes to the ROCKNIX community.** DUCKTALE is not affiliated with or endorsed by the ROCKNIX project; it is simply a downstream build maintained for personal use. For the real thing, please use [ROCKNIX](https://github.com/ROCKNIX/distribution).
+
+> The text below is from upstream ROCKNIX and describes the base distribution DUCKTALE is built on.
 
 ROCKNIX is an immutable Linux distribution for handheld gaming devices developed by a small community of enthusiasts.  Our goal is to produce an operating system that has the features and capabilities that we need, and to have fun as we develop it.
 
