@@ -1,8 +1,31 @@
-<img src="https://github.com/ROCKNIX/distribution/blob/next/distributions/ROCKNIX/logos/rocknix-logo.png?raw=yes" width=192>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[![Latest Version](https://img.shields.io/github/release/ROCKNIX/distribution.svg?color=FF5555&label=latest%20version&style=flat-square)](https://github.com/ROCKNIX/distribution/releases/latest) [![Activity](https://img.shields.io/github/commit-activity/m/ROCKNIX/distribution?color=FF5555&style=flat-square)](https://github.com/ROCKNIX/distribution/commits) [![Pull Requests](https://img.shields.io/github/issues-pr-closed/ROCKNIX/distribution?color=FF5555&style=flat-square)](https://github.com/ROCKNIX/distribution/pulls) [![Discord Server](https://img.shields.io/discord/948029830325235753?color=FF5555&label=chat&style=flat-square)](https://discord.gg/seTxckZjJy)
+<img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/ducktale-logo.png?raw=yes" width=320>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[![Latest Version](https://img.shields.io/github/release/aanze/distribution.svg?color=1F4D2E&label=latest%20version&style=flat-square)](https://github.com/aanze/distribution/releases/latest) [![Activity](https://img.shields.io/github/commit-activity/m/aanze/distribution?color=1F4D2E&style=flat-square)](https://github.com/aanze/distribution/commits) [![Based on ROCKNIX](https://img.shields.io/badge/based%20on-ROCKNIX-1F4D2E?style=flat-square)](https://github.com/ROCKNIX/distribution)
 
 ---
 
+**DUCKTALE** is a personal, customized fork of [ROCKNIX](https://github.com/ROCKNIX/distribution) for handheld gaming devices (primarily the AYN Odin 3 / SM8750). It tracks the official ROCKNIX nightlies and layers on a set of personal features — a Steam Big-Picture-style theme, on-device tooling, and quality-of-life fixes — while staying as close to upstream as possible.
+
+Render unto Caesar: **all credit for the underlying OS goes to the ROCKNIX community.** DUCKTALE is not affiliated with or endorsed by the ROCKNIX project; it is simply a downstream build maintained for personal use. For the real thing, please use [ROCKNIX](https://github.com/ROCKNIX/distribution).
+
+> The text below is from upstream ROCKNIX and describes the base distribution DUCKTALE is built on.
+
 ROCKNIX is an immutable Linux distribution for handheld gaming devices developed by a small community of enthusiasts.  Our goal is to produce an operating system that has the features and capabilities that we need, and to have fun as we develop it.
+
+## What DUCKTALE adds
+
+On top of stock ROCKNIX:
+
+* Steam Big-Picture-style **"steamlike"** theme: cover-art shelf, hero backdrops, console tabs.
+* **Theme Manager** app: tune the look, set per-section backgrounds, pull cover/hero/logo art from SteamGridDB.
+* **Boot into SteamOS**: boot straight to the Steam/gamescope session; "return to desktop" drops back to EmulationStation.
+* **Perf Control**: CPU/GPU underclock and custom fan curves, two-way synced with the Steam plugin.
+* Built-in fork of the **Decky CPU/GPU/fan plugin** (installs with Decky, keeps your profile when you quit a game).
+* One-tap **Decky Loader** install and **Proton-CachyOS** update/rollback. *(Steam-capable)*
+* **GeForce NOW (OpenNOW)** as its own main-menu section.
+* On-demand **Nintendo Switch (Citron)** and **PS3 (RPCS3)** install/update tools.
+* **Bypass charging**: run plugged in without charging or draining the battery. *(Odin 3)*
+* **Right home button → Steam Quick Access**: open the Steam QAM with a single press. *(Odin 3)*
+* **OLED anti-image-retention screensaver**: a sweeping pixel-shift overlay that keeps the screen from burning in. *(Odin 3)*
+* On-device **"update to my nightly"** from the Updates menu.
 
 ## Features
 
@@ -19,14 +42,30 @@ ROCKNIX is an immutable Linux distribution for handheld gaming devices developed
 
 ## Screenshots
 
+The "steamlike" theme and the Perf Control tool on an AYN Odin 3:
+
 <table>
   <tr>
-    <td><img src="https://rocknix.org/_inc/images/screenshots/system-view.png"/></td>
-    <td><img src="https://rocknix.org/_inc/images/screenshots/menu.png"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/steam-tab.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/steam-gamelist.png?raw=yes"/></td>
   </tr>
   <tr>
-    <td><img src="https://rocknix.org/_inc/images/screenshots/gamelist-view-metadata-immersive.png"/></td>
-    <td><img src="https://rocknix.org/_inc/images/screenshots/gamelist-view-no-metadata-immersive.png"/></td>
+    <td align="center"><sub>Steam tab</sub></td>
+    <td align="center"><sub>Steam library (cover shelf)</sub></td>
+  </tr>
+  <tr>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/opennow-tab.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/perfcontrol-1.png?raw=yes"/></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>GeForce NOW (OpenNOW) tab</sub></td>
+    <td align="center"><sub>Perf Control — profiles</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/perfcontrol-2.png?raw=yes" width="49%"/></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><sub>Perf Control — live monitor</sub></td>
   </tr>
 </table>
 
