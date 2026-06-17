@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Anze <aanzdev@gmail.com>
+Date: Tue, 17 Jun 2026 21:00:00 +0200
+Subject: [PATCH] emulationstation: add "Boot into SteamOS" System Settings toggle
+
+Adds a switch under Main Menu > System Settings (SYSTEM group) that, when on,
+makes the device boot straight into the Steam (gamescope / "SteamOS") session
+instead of EmulationStation. Only shown where Steam is installed
+(/usr/bin/start_steam.sh). The choice is persisted in system.cfg
+(system.boottosteam) and read by start_es.sh, which launches the Steam session
+on the boot pass (so EmulationStation never renders -> no flash) and falls back
+to EmulationStation as the desktop after Steam's "return to desktop".
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+ es-app/src/guis/GuiMenu.cpp | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/es-app/src/guis/GuiMenu.cpp b/es-app/src/guis/GuiMenu.cpp
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -1568,6 +1568,19 @@ void GuiMenu::openSystemSettings()
+ 	// Clock time format (14:42 or 2:42 pm)
+ 	s->addSwitch(_("SHOW CLOCK IN 12-HOUR FORMAT"), "ClockMode12", true);
+ 
++	// Boot directly into the Steam (gamescope / "SteamOS") session at startup
++	// instead of EmulationStation. Only shown where Steam is installed. The
++	// choice is persisted in system.cfg (system.boottosteam) and read by
++	// start_es.sh; Steam's "return to desktop" brings you back to the ES desktop.
++	if (Utils::FileSystem::exists("/usr/bin/start_steam.sh")) {
++		auto boot_to_steam = std::make_shared<SwitchComponent>(mWindow);
++		boot_to_steam->setState(SystemConf::getInstance()->getBool("system.boottosteam"));
++		s->addWithLabel(_("BOOT INTO STEAMOS"), boot_to_steam);
++		boot_to_steam->setOnChangedCallback([boot_to_steam] {
++			SystemConf::getInstance()->setBool("system.boottosteam", boot_to_steam->getState());
++		});
++	}
++
+ 	// power saver
+ 	auto power_saver = std::make_shared< OptionListComponent<std::string> >(mWindow, _("POWER SAVING MODE"), false);
+ 	power_saver->addRange({ { _("DISABLED"), "disabled" }, { _("DEFAULT"), "default" }, { _("ENHANCED"), "enhanced" }, { _("INSTANT"), "instant" }, }, Settings::PowerSaverMode());
