@@ -120,8 +120,15 @@ Pull from: downstream kernel `sde_encoder_phys_wb.c`/`sde_hw_*` if available; `d
 
 ## Phase plan
 - [x] Phase 0 — HW writeback validated.
-- [ ] Phase 1a — capture engine + V4L2 node + buffer ring (this branch). Target: `/dev/videoX` yields live
-  frames while sway runs, AND keeps yielding across `systemctl stop sway`/gamescope.
+- [x] **M1 driver written + compiles + patch applies** (`0506-ROCKNIX-dpu-cwb-capture.patch`):
+  `dpu_capture.{c,h}` engine, `set_capture_active` CTL op, `_dpu_encoder_kickoff_phys` hook, kms
+  init/destroy, Makefile. debugfs `/sys/kernel/debug/dpu_capture/{arm,status,frame.raw}`. Single kernel
+  buffer (msm_gem WC, 1080x1920 XRGB8888 stride 4352), single-LM tap (rt_pp[0]), WB_DONE frame counter.
+  All 4 touched objects compile clean against linux-7.0.11; patch verified via `patch -p1`/`git apply`.
+  **Pending: build + flash + on-device test** (arm, check status frames>0, pull frame.raw -> PNG, confirm
+  it's the live ES screen; then test continuity across `systemctl stop sway`/gamescope).
+- [ ] M1.5 — dual-LM stitch (2 CWB muxes/DCWB pps), derive WxH from active mode, ring buffer.
+- [ ] Phase 1b — confirm continuity across a real ES->Steam->ES handoff.
 - [ ] Phase 1b — confirm continuity across a real ES→Steam→ES handoff.
 - [ ] Phase 2 — Iris H.264 encode pipeline + screenshot path + save dir.
 - [ ] Phase 3 — ES SELECT menu + input_sense hotkey UX.
