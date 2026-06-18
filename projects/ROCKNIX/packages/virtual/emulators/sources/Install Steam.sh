@@ -128,8 +128,12 @@ install_proton_cachyos() {
   local extracted_dir="${dest_dir}/${PROTON_CACHYOS_DIR}"
   local manifest_file="${extracted_dir}/toolmanifest.vdf"
 
+  # Only clean up older builds of the SAME release line this bundles (11.x).
+  # Other lines (e.g. a proton-10 the user added via "Update Proton CachyOS")
+  # are managed side by side and must never be removed here.
+  local bundled_major="${PROTON_CACHYOS_VERSION_FULL%%.*}"
   if [ -d "${dest_dir}" ]; then
-    for old_dir in "${dest_dir}"/proton-cachyos-*-arm64; do
+    for old_dir in "${dest_dir}"/proton-cachyos-"${bundled_major}".*-arm64; do
       [ -d "${old_dir}" ] || continue
       if [ "${old_dir}" != "${extracted_dir}" ]; then
         log_info "Removing old Proton-CachyOS: $(basename "${old_dir}")"
