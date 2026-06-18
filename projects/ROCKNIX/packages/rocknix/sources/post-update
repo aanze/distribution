@@ -35,7 +35,9 @@ done
 
 rsync -a --delete ${EXCLUDE} /usr/config/system/ /storage/.config/system/
 rsync -a --ignore-existing /usr/config/game /storage/.config/
-rsync -a /usr/config/modules /storage/.config/
+# Skip gamelist.xml: it carries the user's Tools favorites and is reconciled at
+# boot by the 001-sync-modules autostart (shipped metadata + preserved favorites).
+rsync -a --exclude=gamelist.xml /usr/config/modules /storage/.config/
 
 if [ -f "/storage/.config/emulationstation/resources/logo.png" ]
 then
@@ -44,7 +46,7 @@ fi
 
 echo "Sync modules..." >>${LOG}
 tocon "Update tool modules..."
-rsync -a /usr/config/modules/* /storage/.config/modules/
+rsync -a --exclude=gamelist.xml /usr/config/modules/* /storage/.config/modules/
 cp -f /usr/config/retroarch/retroarch-core-options.cfg /storage/.config/retroarch/retroarch-core-options.cfg
 
 ### Apply developer ssh keys if they exist
