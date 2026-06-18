@@ -171,12 +171,15 @@ install_proton_variant() {
 }
 
 install_proton_cachyos() {
+  # Cleanup glob scoped to the SAME release line this bundles: other lines
+  # (e.g. a proton-10 the user keeps via "Update Proton CachyOS") are managed
+  # side by side and must never be removed by an install/reinstall.
   install_proton_variant \
     "Proton-CachyOS" \
     "${PROTON_CACHYOS_URL}" \
     "${PROTON_CACHYOS_TAR}" \
     "${PROTON_CACHYOS_DIR}" \
-    "proton-cachyos-*-arm64"
+    "proton-cachyos-${PROTON_CACHYOS_VERSION_FULL%%.*}.*-arm64"
 }
 
 install_proton_ge() {
