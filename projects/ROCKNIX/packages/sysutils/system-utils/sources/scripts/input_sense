@@ -472,7 +472,9 @@ set +e
       (${FUNCTION_HOTKEY_BTN_EAST_EVENT})
         if [ "${HOTKEY_A_PRESSED}" = true ]; then
           ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_EAST_EVENT}: Screenshot"
-          /usr/bin/rocknix-screenshot
+          # System-wide capture via DPU CWB (works in emulators AND gamescope/Steam);
+          # falls back to grim internally if the kernel engine is absent.
+          /usr/bin/rocknix-cwb-screenshot
           # Display notification if 'success' exit code
           SCREENSHOT_SUCCESS=$?
           [ "$SCREENSHOT_SUCCESS" -eq 0 ] && /usr/bin/mako-notify "Screenshot Saved" -no-ra
