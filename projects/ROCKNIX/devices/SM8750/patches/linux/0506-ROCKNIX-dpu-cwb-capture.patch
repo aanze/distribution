@@ -58,7 +58,7 @@ diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/d
 new file mode 100644
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,469 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -66,13 +66,20 @@ new file mode 100644
 + * The realtime display path (sway, gamescope, ...) owns the CRTC and the DRM
 + * master, so a userspace recorder cannot drive the writeback connector, and the
 + * capture cannot survive a compositor handoff. Instead we program the dedicated
-+ * CWB datapath (CWB mux -> dedicated CWB pingpong -> WB_2) directly and add the
-+ * writeback to the *realtime* CTL's flush during each kickoff, exactly the way
-+ * mainline clone-mode does it internally -- but kernel-initiated, so it is
-+ * independent of whichever compositor currently holds the master.
++ * CWB datapath (CWB mux -> dedicated CWB pingpong -> WB) directly and add the
++ * writeback to the *realtime* CTL's flush during each kickoff, the way mainline
++ * clone-mode does it internally -- but kernel-initiated, so it is independent of
++ * whichever compositor currently holds the master.
 + *
-+ * Milestone M1: debugfs-armed capture into one kernel buffer, dumpable, with a
-+ * captured-frame counter. No V4L2 / encode yet.
++ * v2 (after M1 crashed the display on arm): adds a crash-safe PROBE mode that
++ * only logs the live topology, completes the WB programming (OT/QoS/CDP) to
++ * match dpu_encoder_phys_wb_setup(), and gates real capture to the single-LM
++ * case (safe no-op otherwise) until dual-LM stitching is implemented.
++ *
++ * debugfs /sys/kernel/debug/dpu_capture/:
++ *   arm    : write 'p' = probe (log only, no HW), '1' = capture, '0' = off
++ *   status : mode/frames/indices
++ *   frame.raw : raw XRGB8888 capture buffer (capture mode)
 + */
 +#define pr_fmt(fmt) "dpu_capture: " fmt
 +
@@ -85,19 +92,25 @@ new file mode 100644
 +#include "msm_gem.h"
 +#include "dpu_kms.h"
 +#include "dpu_hw_mdss.h"
++#include "dpu_hw_catalog.h"
 +#include "dpu_hw_ctl.h"
 +#include "dpu_hw_wb.h"
 +#include "dpu_hw_cwb.h"
++#include "dpu_hw_top.h"
++#include "dpu_hw_util.h"
 +#include "dpu_hw_pingpong.h"
 +#include "dpu_core_irq.h"
++#include "dpu_vbif.h"
 +#include "dpu_capture.h"
 +
-+/* M1: fixed to the Odin 3 panel; will be derived from the active mode later. */
++/* M1/v2: fixed to the Odin 3 panel; derived from the active mode later. */
 +#define CAP_W		1080
 +#define CAP_H		1920
 +#define CAP_BPP		4
 +#define CAP_STRIDE	ALIGN(CAP_W * CAP_BPP, 256)
 +#define CAP_SIZE	(CAP_STRIDE * CAP_H)
++
++enum cap_mode { CAP_OFF = 0, CAP_PROBE, CAP_CAPTURE };
 +
 +struct dpu_capture {
 +	struct dpu_kms *kms;
@@ -114,8 +127,9 @@ new file mode 100644
 +	void *vaddr;
 +	u64 iova;
 +
-+	bool armed;
++	enum cap_mode mode;
 +	bool irq_on;
++	int probe_logs;
 +	atomic_t frames;
 +
 +	struct dentry *dir;
@@ -130,24 +144,96 @@ new file mode 100644
 +	atomic_inc(&c->frames);
 +}
 +
-+/* program the CWB datapath + add WB to the realtime CTL flush (under spinlock) */
-+void dpu_capture_kickoff(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl,
-+			 const enum dpu_pingpong *rt_pp, int num_pp)
++/* --- WB programming helpers (mirror dpu_encoder_phys_wb.c) --- */
++
++static bool cap_clk_force(struct dpu_capture *c, bool en, bool *forced)
 +{
-+	struct dpu_capture *c = g_cap;
++	struct dpu_hw_wb *wb = c->wb;
++	struct dpu_hw_mdp *mdp = c->kms->hw_mdp;
++
++	if (wb->ops.setup_clk_force_ctrl) {
++		*forced = wb->ops.setup_clk_force_ctrl(wb, en);
++		return true;
++	}
++	if (mdp && mdp->ops.setup_clk_force_ctrl) {
++		*forced = mdp->ops.setup_clk_force_ctrl(mdp, wb->caps->clk_ctrl, en);
++		return true;
++	}
++	return false;
++}
++
++static void cap_set_ot_limit(struct dpu_capture *c)
++{
++	struct dpu_vbif_set_ot_params ot = {0};
++	bool forced = false;
++
++	ot.xin_id = c->wb->caps->xin_id;
++	ot.num = c->wb->idx - WB_0;
++	ot.width = CAP_W;
++	ot.height = CAP_H;
++	ot.is_wfd = false;		/* CWB => realtime, not WFD */
++	ot.frame_rate = 120;
++	ot.vbif_idx = c->wb->caps->vbif_idx;
++	ot.rd = false;
++
++	if (!cap_clk_force(c, true, &forced))
++		return;
++	dpu_vbif_set_ot_limit(c->kms, &ot);
++	if (forced)
++		cap_clk_force(c, false, &forced);
++}
++
++static void cap_set_qos_remap(struct dpu_capture *c)
++{
++	struct dpu_vbif_set_qos_params q = {0};
++	bool forced = false;
++
++	q.vbif_idx = c->wb->caps->vbif_idx;
++	q.xin_id = c->wb->caps->xin_id;
++	q.num = c->wb->idx - WB_0;
++	q.is_rt = true;			/* CWB */
++
++	if (!cap_clk_force(c, true, &forced))
++		return;
++	dpu_vbif_set_qos_remap(c->kms, &q);
++	if (forced)
++		cap_clk_force(c, false, &forced);
++}
++
++static void cap_set_qos(struct dpu_capture *c)
++{
++	const struct dpu_perf_cfg *perf = c->kms->catalog->perf;
++	const struct dpu_qos_lut_tbl *tbl;
++	struct dpu_hw_qos_cfg qos = {0};
++
++	qos.danger_safe_en = true;
++	qos.danger_lut = perf->danger_lut_tbl[DPU_QOS_LUT_USAGE_NRT];
++	qos.safe_lut = perf->safe_lut_tbl[DPU_QOS_LUT_USAGE_NRT];
++	tbl = &perf->qos_lut_tbl[DPU_QOS_LUT_USAGE_NRT];
++	qos.creq_lut = _dpu_hw_get_qos_lut(tbl, 0);
++
++	if (c->wb->ops.setup_qos_lut)
++		c->wb->ops.setup_qos_lut(c->wb, &qos);
++}
++
++static void cap_program(struct dpu_capture *c, struct dpu_hw_ctl *ctl,
++			enum dpu_pingpong rt_pp)
++{
++	const struct dpu_perf_cfg *perf = c->kms->catalog->perf;
 +	struct dpu_hw_cwb_setup_cfg cwb_cfg;
 +	struct dpu_hw_wb_cfg wb_cfg;
 +
-+	if (!c || !c->armed || !ctl || num_pp < 1)
-+		return;
-+	if (c->kms != dpu_kms || !c->wb || !c->cwb || !c->dcwb_pp || !c->iova)
-+		return;
-+
-+	/* M1: single layer-mixer tap (rt_pp[0]); dual-LM stitching is M1.5 */
++	/* CWB mux: tap the realtime pingpong's layer-mixer output */
 +	cwb_cfg.input = INPUT_MODE_LM_OUT;
-+	cwb_cfg.pp_idx = rt_pp[0];
++	cwb_cfg.pp_idx = rt_pp;
 +	c->cwb->ops.config_cwb(c->cwb, &cwb_cfg);
 +
++	/* OT/QoS first (matches dpu_encoder_phys_wb_setup ordering) */
++	cap_set_ot_limit(c);
++	cap_set_qos_remap(c);
++	cap_set_qos(c);
++
++	/* output framebuffer */
 +	memset(&wb_cfg, 0, sizeof(wb_cfg));
 +	wb_cfg.intf_mode = INTF_MODE_WB_LINE;
 +	wb_cfg.roi.x1 = 0;
@@ -165,6 +251,9 @@ new file mode 100644
 +		c->wb->ops.setup_roi(c->wb, &wb_cfg);
 +	if (c->wb->ops.setup_outformat)
 +		c->wb->ops.setup_outformat(c->wb, &wb_cfg, c->fmt);
++	if (c->wb->ops.setup_cdp)
++		c->wb->ops.setup_cdp(c->wb, c->fmt,
++			perf->cdp_cfg[DPU_PERF_CDP_USAGE_RT].wr_enable);
 +	if (c->wb->ops.setup_outaddress)
 +		c->wb->ops.setup_outaddress(c->wb, &wb_cfg);
 +	if (c->wb->ops.bind_pingpong_blk)
@@ -178,6 +267,44 @@ new file mode 100644
 +		ctl->ops.update_pending_flush_wb(ctl, c->wb->idx);
 +	if (ctl->ops.update_pending_flush_cwb)
 +		ctl->ops.update_pending_flush_cwb(ctl, c->cwb->idx);
++}
++
++/* called from the realtime encoder kickoff, under enc_spinlock */
++void dpu_capture_kickoff(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl,
++			 const enum dpu_pingpong *rt_pp, int num_pp)
++{
++	struct dpu_capture *c = g_cap;
++
++	if (!c || c->mode == CAP_OFF || !ctl || c->kms != dpu_kms)
++		return;
++
++	if (c->mode == CAP_PROBE) {
++		if (c->probe_logs < 8) {
++			pr_info("probe: ctl=%d num_pp=%d pp=[%d %d %d %d]\n",
++				ctl->idx, num_pp,
++				num_pp > 0 ? rt_pp[0] : -1,
++				num_pp > 1 ? rt_pp[1] : -1,
++				num_pp > 2 ? rt_pp[2] : -1,
++				num_pp > 3 ? rt_pp[3] : -1);
++			c->probe_logs++;
++		}
++		return;
++	}
++
++	/* CAP_CAPTURE */
++	if (!c->wb || !c->cwb || !c->dcwb_pp || !c->iova || num_pp < 1)
++		return;
++	/* v2: only the single-LM case is implemented; dual-LM is a safe no-op */
++	if (num_pp != 1) {
++		if (c->probe_logs < 4) {
++			pr_warn("capture skipped: num_pp=%d (dual-LM not yet supported)\n",
++				num_pp);
++			c->probe_logs++;
++		}
++		return;
++	}
++
++	cap_program(c, ctl, rt_pp[0]);
 +}
 +
 +static int dpu_capture_alloc_buf(struct dpu_capture *c)
@@ -207,20 +334,41 @@ new file mode 100644
 +	c->iova = 0;
 +}
 +
-+static int dpu_capture_arm(struct dpu_capture *c)
++static void dpu_capture_disarm(struct dpu_capture *c)
++{
++	if (c->mode == CAP_OFF)
++		return;
++	c->mode = CAP_OFF;
++	if (c->irq_on) {
++		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
++		c->irq_on = false;
++	}
++	dpu_capture_free_buf(c);
++	pr_info("disarmed (%d frames)\n", atomic_read(&c->frames));
++}
++
++static int dpu_capture_arm_probe(struct dpu_capture *c)
++{
++	dpu_capture_disarm(c);
++	c->probe_logs = 0;
++	c->mode = CAP_PROBE;
++	pr_info("armed: PROBE (log-only, no hardware)\n");
++	return 0;
++}
++
++static int dpu_capture_arm_capture(struct dpu_capture *c)
 +{
 +	int ret;
 +
-+	if (c->armed)
-+		return 0;
++	dpu_capture_disarm(c);
 +
 +	ret = dpu_capture_alloc_buf(c);
 +	if (ret) {
 +		pr_err("buffer alloc failed: %d\n", ret);
 +		return ret;
 +	}
-+
 +	atomic_set(&c->frames, 0);
++	c->probe_logs = 0;
 +
 +	ret = dpu_core_irq_register_callback(c->kms, c->wb_irq,
 +					     dpu_capture_wb_done_irq, c);
@@ -230,23 +378,10 @@ new file mode 100644
 +		return ret;
 +	}
 +	c->irq_on = true;
-+	c->armed = true;
-+	pr_info("armed: %ux%u stride=%u iova=%pad\n",
++	c->mode = CAP_CAPTURE;
++	pr_info("armed: CAPTURE %ux%u stride=%u iova=%pad\n",
 +		CAP_W, CAP_H, CAP_STRIDE, &c->iova);
 +	return 0;
-+}
-+
-+static void dpu_capture_disarm(struct dpu_capture *c)
-+{
-+	if (!c->armed)
-+		return;
-+	c->armed = false;
-+	if (c->irq_on) {
-+		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
-+		c->irq_on = false;
-+	}
-+	dpu_capture_free_buf(c);
-+	pr_info("disarmed (%d frames)\n", atomic_read(&c->frames));
 +}
 +
 +/* ---- debugfs ---- */
@@ -256,14 +391,16 @@ new file mode 100644
 +{
 +	struct dpu_capture *c = file->private_data;
 +	char buf[8];
-+	int n = min(count, sizeof(buf) - 1);
++	size_t n = min(count, sizeof(buf) - 1);
 +
 +	if (copy_from_user(buf, ubuf, n))
 +		return -EFAULT;
 +	buf[n] = '\0';
 +
-+	if (buf[0] == '1')
-+		dpu_capture_arm(c);
++	if (buf[0] == 'p' || buf[0] == 'P')
++		dpu_capture_arm_probe(c);
++	else if (buf[0] == '1')
++		dpu_capture_arm_capture(c);
 +	else
 +		dpu_capture_disarm(c);
 +	return count;
@@ -279,16 +416,18 @@ new file mode 100644
 +			   size_t count, loff_t *ppos)
 +{
 +	struct dpu_capture *c = file->private_data;
-+	char buf[160];
++	const char *m = c->mode == CAP_CAPTURE ? "capture" :
++			c->mode == CAP_PROBE ? "probe" : "off";
++	char buf[200];
 +	int n;
 +
 +	n = scnprintf(buf, sizeof(buf),
-+		      "armed=%d frames=%d w=%u h=%u stride=%u size=%u iova=0x%llx wb=%d cwb=%d dcwb_pp=%d\n",
-+		      c->armed, atomic_read(&c->frames), CAP_W, CAP_H,
-+		      CAP_STRIDE, CAP_SIZE, (u64)c->iova,
++		      "mode=%s frames=%d w=%u h=%u stride=%u size=%u iova=0x%llx wb=%d cwb=%d dcwb_pp=%d wb_irq=%u\n",
++		      m, atomic_read(&c->frames), CAP_W, CAP_H, CAP_STRIDE,
++		      CAP_SIZE, (u64)c->iova,
 +		      c->wb ? c->wb->idx : -1,
 +		      c->cwb ? c->cwb->idx : -1,
-+		      c->dcwb_pp ? c->dcwb_pp->idx : -1);
++		      c->dcwb_pp ? c->dcwb_pp->idx : -1, c->wb_irq);
 +	return simple_read_from_buffer(ubuf, count, ppos, buf, n);
 +}
 +
