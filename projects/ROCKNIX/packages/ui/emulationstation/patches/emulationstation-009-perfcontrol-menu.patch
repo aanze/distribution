@@ -1,0 +1,69 @@
+From 5ba48a0c1b8e6f33d5b3804a843eca94c0f2d59d Mon Sep 17 00:00:00 2001
+From: Anze <aanzdev@gmail.com>
+Date: Thu, 18 Jun 2026 15:28:56 +0200
+Subject: [PATCH] emulationstation: Perf Control + bypass charging in
+ Performance & Quick Access
+
+Adds a PERF CONTROL launcher under Main Menu > System Settings > PERFORMANCE
+(next to the existing BYPASS CHARGING toggle) and, in the QUICK ACCESS modal,
+both a PERF CONTROL launcher and a BYPASS CHARGING toggle. Perf Control is
+gated on /usr/share/perfcontrol/perfcontrol-gui (installed only on the SM8xxx
+handhelds that bundle the Pyxel venv); the bypass toggle on the kernel
+charge_behaviour node. Replaces the old Tools-menu entry for Perf Control.
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+ es-app/src/guis/GuiMenu.cpp | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/es-app/src/guis/GuiMenu.cpp b/es-app/src/guis/GuiMenu.cpp
+index ab38f17e..4cfbe1b0 100644
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -1993,6 +1993,16 @@ void GuiMenu::openSystemSettings()
+ 		});
+ 	}
+ 
++	// Perf Control: launch the CPU/GPU underclock + fan-curve tool (Pyxel GUI).
++	// Shown only where the tool is installed (the SM8xxx handhelds that bundle
++	// the Pyxel venv). The launcher takes over the screen and is killable by the
++	// global panic combo; ES resumes when it exits.
++	if (Utils::FileSystem::exists("/usr/share/perfcontrol/perfcontrol-gui")) {
++		s->addEntry(_("PERF CONTROL"), false, [] {
++			Utils::Platform::runSystemCommand("\"/usr/share/perfcontrol/perfcontrol-gui\"", "", nullptr);
++		});
++	}
++
+ 	// Default Scaling governor
+ 	auto optionsGovernors = std::make_shared<OptionListComponent<std::string> >(mWindow, _("DEFAULT SCALING GOVERNOR"), false);
+ 	std::vector<std::string> availableGovernors = ApiSystem::getInstance()->getAvailableCpuGovernors();
+@@ -5686,6 +5696,26 @@ void GuiMenu::openQuitMenu_static(Window *window, bool quickAccessMenu, bool ani
+ 	if (quickAccessMenu)
+ 	{
+     		s->addGroup(_("QUICK ACCESS"));
++
++		// Power controls surfaced in the quick-access modal so they are reachable
++		// without diving into System Settings > Performance. Each is gated on the
++		// same condition as its System Settings counterpart.
++		if (Utils::FileSystem::exists("/usr/share/perfcontrol/perfcontrol-gui")) {
++			s->addEntry(_("PERF CONTROL"), false, [] {
++				Utils::Platform::runSystemCommand("\"/usr/share/perfcontrol/perfcontrol-gui\"", "", nullptr);
++			});
++		}
++		if (Utils::FileSystem::exists("/sys/class/power_supply/battery/charge_behaviour")) {
++			auto bypass_charge = std::make_shared<SwitchComponent>(window);
++			bypass_charge->setState(SystemConf::getInstance()->getBool("system.bypasscharge"));
++			s->addWithLabel(_("BYPASS CHARGING (RUN ON AC)"), bypass_charge);
++			bypass_charge->setOnChangedCallback([bypass_charge] {
++				bool en = bypass_charge->getState();
++				SystemConf::getInstance()->setBool("system.bypasscharge", en);
++				Utils::Platform::runSystemCommand(std::string("/usr/bin/charge-bypass ") + (en ? "on" : "off"), "", nullptr);
++			});
++		}
++
+             if (AudioManager::getInstance()->isSongPlaying())
+             {
+                 std::string songName = AudioManager::getInstance()->getSongName();
+-- 
+2.34.1
+
