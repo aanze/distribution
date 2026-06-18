@@ -58,7 +58,7 @@ diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/d
 new file mode 100644
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,469 @@
+@@ -0,0 +1,499 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -66,20 +66,19 @@ new file mode 100644
 + * The realtime display path (sway, gamescope, ...) owns the CRTC and the DRM
 + * master, so a userspace recorder cannot drive the writeback connector, and the
 + * capture cannot survive a compositor handoff. Instead we program the dedicated
-+ * CWB datapath (CWB mux -> dedicated CWB pingpong -> WB) directly and add the
-+ * writeback to the *realtime* CTL's flush during each kickoff, the way mainline
-+ * clone-mode does it internally -- but kernel-initiated, so it is independent of
-+ * whichever compositor currently holds the master.
++ * CWB datapath (CWB mux -> dedicated CWB pingpong -> [merge_3d] -> WB) directly
++ * and add the writeback to the *realtime* CTL's flush during each kickoff, the
++ * way mainline clone-mode does it internally -- but kernel-initiated, so it is
++ * independent of whichever compositor currently holds the master.
 + *
-+ * v2 (after M1 crashed the display on arm): adds a crash-safe PROBE mode that
-+ * only logs the live topology, completes the WB programming (OT/QoS/CDP) to
-+ * match dpu_encoder_phys_wb_setup(), and gates real capture to the single-LM
-+ * case (safe no-op otherwise) until dual-LM stitching is implemented.
++ * The Odin 3 panel is driven DUAL layer-mixer (two pingpongs), so a full-frame
++ * capture taps both LMs: CWB_0<-LM0, CWB_1<-LM1 -> PINGPONG_CWB_0/1 -> MERGE_3D
++ * (H_ROW_INT, same as the display) -> WB_2. Single-LM is also handled.
 + *
 + * debugfs /sys/kernel/debug/dpu_capture/:
-+ *   arm    : write 'p' = probe (log only, no HW), '1' = capture, '0' = off
++ *   arm    : 'p' = probe (log topology, no HW), '1' = capture, '0' = off
 + *   status : mode/frames/indices
-+ *   frame.raw : raw XRGB8888 capture buffer (capture mode)
++ *   frame.raw : raw XRGB8888 capture buffer
 + */
 +#define pr_fmt(fmt) "dpu_capture: " fmt
 +
@@ -99,16 +98,17 @@ new file mode 100644
 +#include "dpu_hw_top.h"
 +#include "dpu_hw_util.h"
 +#include "dpu_hw_pingpong.h"
++#include "dpu_hw_merge3d.h"
 +#include "dpu_core_irq.h"
 +#include "dpu_vbif.h"
 +#include "dpu_capture.h"
 +
-+/* M1/v2: fixed to the Odin 3 panel; derived from the active mode later. */
 +#define CAP_W		1080
 +#define CAP_H		1920
 +#define CAP_BPP		4
 +#define CAP_STRIDE	ALIGN(CAP_W * CAP_BPP, 256)
 +#define CAP_SIZE	(CAP_STRIDE * CAP_H)
++#define CAP_MAX_LM	2
 +
 +enum cap_mode { CAP_OFF = 0, CAP_PROBE, CAP_CAPTURE };
 +
@@ -116,9 +116,10 @@ new file mode 100644
 +	struct dpu_kms *kms;
 +
 +	/* dedicated CWB datapath blocks (fetched from rm, always present) */
-+	struct dpu_hw_wb *wb;			/* WB_2 */
-+	struct dpu_hw_cwb *cwb;			/* CWB_0 mux */
-+	struct dpu_hw_pingpong *dcwb_pp;	/* PINGPONG_CWB_0 */
++	struct dpu_hw_wb *wb;				/* WB_2 */
++	struct dpu_hw_cwb *cwb[CAP_MAX_LM];		/* CWB_0, CWB_1 */
++	struct dpu_hw_pingpong *dcwb_pp[CAP_MAX_LM];	/* PINGPONG_CWB_0/1 */
++	struct dpu_hw_merge_3d *merge3d;		/* MERGE_3D_4 */
 +	const struct msm_format *fmt;
 +	unsigned int wb_irq;
 +
@@ -216,24 +217,40 @@ new file mode 100644
 +		c->wb->ops.setup_qos_lut(c->wb, &qos);
 +}
 +
++/* program the CWB datapath for @num_pp layer mixers and flush on the realtime CTL */
 +static void cap_program(struct dpu_capture *c, struct dpu_hw_ctl *ctl,
-+			enum dpu_pingpong rt_pp)
++			const enum dpu_pingpong *rt_pp, int num_pp)
 +{
 +	const struct dpu_perf_cfg *perf = c->kms->catalog->perf;
 +	struct dpu_hw_cwb_setup_cfg cwb_cfg;
 +	struct dpu_hw_wb_cfg wb_cfg;
++	enum dpu_merge_3d merge = 0;
++	u32 cwb_mask = 0;
++	int i;
 +
-+	/* CWB mux: tap the realtime pingpong's layer-mixer output */
-+	cwb_cfg.input = INPUT_MODE_LM_OUT;
-+	cwb_cfg.pp_idx = rt_pp;
-+	c->cwb->ops.config_cwb(c->cwb, &cwb_cfg);
++	/* each CWB mux taps one realtime pingpong's layer-mixer output */
++	for (i = 0; i < num_pp; i++) {
++		cwb_cfg.input = INPUT_MODE_LM_OUT;
++		cwb_cfg.pp_idx = rt_pp[i];
++		c->cwb[i]->ops.config_cwb(c->cwb[i], &cwb_cfg);
++		cwb_mask |= BIT(c->cwb[i]->idx - CWB_0);
++	}
++
++	/* dual-LM: merge the two dedicated CWB pingpongs (same mode as display) */
++	if (num_pp == CAP_MAX_LM && c->merge3d) {
++		if (c->merge3d->ops.setup_3d_mode)
++			c->merge3d->ops.setup_3d_mode(c->merge3d, BLEND_3D_H_ROW_INT);
++		merge = c->merge3d->idx;
++	} else if (c->merge3d && c->merge3d->ops.setup_3d_mode) {
++		c->merge3d->ops.setup_3d_mode(c->merge3d, BLEND_3D_NONE);
++	}
 +
 +	/* OT/QoS first (matches dpu_encoder_phys_wb_setup ordering) */
 +	cap_set_ot_limit(c);
 +	cap_set_qos_remap(c);
 +	cap_set_qos(c);
 +
-+	/* output framebuffer */
++	/* output framebuffer (full frame; merge_3d stitches the two halves) */
 +	memset(&wb_cfg, 0, sizeof(wb_cfg));
 +	wb_cfg.intf_mode = INTF_MODE_WB_LINE;
 +	wb_cfg.roi.x1 = 0;
@@ -256,17 +273,20 @@ new file mode 100644
 +			perf->cdp_cfg[DPU_PERF_CDP_USAGE_RT].wr_enable);
 +	if (c->wb->ops.setup_outaddress)
 +		c->wb->ops.setup_outaddress(c->wb, &wb_cfg);
++	/* bind WB to the first dedicated CWB pingpong (carries the merge_3d) */
 +	if (c->wb->ops.bind_pingpong_blk)
-+		c->wb->ops.bind_pingpong_blk(c->wb, c->dcwb_pp->idx);
++		c->wb->ops.bind_pingpong_blk(c->wb, c->dcwb_pp[0]->idx);
 +
-+	/* route WB + CWB on the realtime master CTL without disturbing INTF */
++	/* route WB + CWB (+ merge_3d) on the realtime master CTL */
 +	if (ctl->ops.set_capture_active)
-+		ctl->ops.set_capture_active(ctl, c->wb->idx,
-+					    BIT(c->cwb->idx - CWB_0));
++		ctl->ops.set_capture_active(ctl, c->wb->idx, cwb_mask, merge);
++	for (i = 0; i < num_pp; i++)
++		if (ctl->ops.update_pending_flush_cwb)
++			ctl->ops.update_pending_flush_cwb(ctl, c->cwb[i]->idx);
++	if (merge && ctl->ops.update_pending_flush_merge_3d)
++		ctl->ops.update_pending_flush_merge_3d(ctl, merge);
 +	if (ctl->ops.update_pending_flush_wb)
 +		ctl->ops.update_pending_flush_wb(ctl, c->wb->idx);
-+	if (ctl->ops.update_pending_flush_cwb)
-+		ctl->ops.update_pending_flush_cwb(ctl, c->cwb->idx);
 +}
 +
 +/* called from the realtime encoder kickoff, under enc_spinlock */
@@ -291,20 +311,16 @@ new file mode 100644
 +		return;
 +	}
 +
-+	/* CAP_CAPTURE */
-+	if (!c->wb || !c->cwb || !c->dcwb_pp || !c->iova || num_pp < 1)
-+		return;
-+	/* v2: only the single-LM case is implemented; dual-LM is a safe no-op */
-+	if (num_pp != 1) {
++	/* CAP_CAPTURE: only 1 or 2 layer mixers supported */
++	if (!c->iova || num_pp < 1 || num_pp > CAP_MAX_LM) {
 +		if (c->probe_logs < 4) {
-+			pr_warn("capture skipped: num_pp=%d (dual-LM not yet supported)\n",
-+				num_pp);
++			pr_warn("capture skipped: num_pp=%d unsupported\n", num_pp);
 +			c->probe_logs++;
 +		}
 +		return;
 +	}
 +
-+	cap_program(c, ctl, rt_pp[0]);
++	cap_program(c, ctl, rt_pp, num_pp);
 +}
 +
 +static int dpu_capture_alloc_buf(struct dpu_capture *c)
@@ -418,16 +434,19 @@ new file mode 100644
 +	struct dpu_capture *c = file->private_data;
 +	const char *m = c->mode == CAP_CAPTURE ? "capture" :
 +			c->mode == CAP_PROBE ? "probe" : "off";
-+	char buf[200];
++	char buf[224];
 +	int n;
 +
 +	n = scnprintf(buf, sizeof(buf),
-+		      "mode=%s frames=%d w=%u h=%u stride=%u size=%u iova=0x%llx wb=%d cwb=%d dcwb_pp=%d wb_irq=%u\n",
++		      "mode=%s frames=%d w=%u h=%u stride=%u size=%u iova=0x%llx wb=%d cwb=[%d,%d] dcwb_pp=[%d,%d] merge3d=%d wb_irq=%u\n",
 +		      m, atomic_read(&c->frames), CAP_W, CAP_H, CAP_STRIDE,
 +		      CAP_SIZE, (u64)c->iova,
 +		      c->wb ? c->wb->idx : -1,
-+		      c->cwb ? c->cwb->idx : -1,
-+		      c->dcwb_pp ? c->dcwb_pp->idx : -1, c->wb_irq);
++		      c->cwb[0] ? c->cwb[0]->idx : -1,
++		      c->cwb[1] ? c->cwb[1]->idx : -1,
++		      c->dcwb_pp[0] ? c->dcwb_pp[0]->idx : -1,
++		      c->dcwb_pp[1] ? c->dcwb_pp[1]->idx : -1,
++		      c->merge3d ? c->merge3d->idx : -1, c->wb_irq);
 +	return simple_read_from_buffer(ubuf, count, ppos, buf, n);
 +}
 +
@@ -459,7 +478,7 @@ new file mode 100644
 +static void dpu_capture_fetch_blocks(struct dpu_capture *c)
 +{
 +	struct dpu_rm *rm = &c->kms->rm;
-+	int i;
++	int i, n, pp0;
 +
 +	for (i = 0; i < ARRAY_SIZE(rm->hw_wb); i++) {
 +		if (rm->hw_wb[i]) {
@@ -467,15 +486,22 @@ new file mode 100644
 +			break;
 +		}
 +	}
-+	for (i = 0; i < ARRAY_SIZE(rm->cwb_blks); i++) {
-+		if (rm->cwb_blks[i]) {
-+			c->cwb = to_dpu_hw_cwb(rm->cwb_blks[i]);
-+			break;
-+		}
++	/* first two CWB muxes */
++	for (i = 0, n = 0; i < ARRAY_SIZE(rm->cwb_blks) && n < CAP_MAX_LM; i++) {
++		if (rm->cwb_blks[i])
++			c->cwb[n++] = to_dpu_hw_cwb(rm->cwb_blks[i]);
 +	}
-+	i = PINGPONG_CWB_0 - PINGPONG_0;
-+	if (i < ARRAY_SIZE(rm->pingpong_blks) && rm->pingpong_blks[i])
-+		c->dcwb_pp = to_dpu_hw_pingpong(rm->pingpong_blks[i]);
++	/* the two dedicated CWB pingpongs */
++	pp0 = PINGPONG_CWB_0 - PINGPONG_0;
++	for (n = 0; n < CAP_MAX_LM; n++) {
++		int idx = pp0 + n;
++
++		if (idx < ARRAY_SIZE(rm->pingpong_blks) && rm->pingpong_blks[idx])
++			c->dcwb_pp[n] = to_dpu_hw_pingpong(rm->pingpong_blks[idx]);
++	}
++	/* merge_3d that both CWB pingpongs feed (PINGPONG_CWB_0/1 -> MERGE_3D_4) */
++	if (c->dcwb_pp[0] && c->dcwb_pp[0]->merge_3d)
++		c->merge3d = c->dcwb_pp[0]->merge_3d;
 +}
 +
 +void dpu_capture_init(struct dpu_kms *dpu_kms)
@@ -493,9 +519,11 @@ new file mode 100644
 +	atomic_set(&c->frames, 0);
 +	dpu_capture_fetch_blocks(c);
 +
-+	if (!c->wb || !c->cwb || !c->dcwb_pp) {
-+		pr_warn("CWB blocks missing (wb=%p cwb=%p dcwb_pp=%p); disabled\n",
-+			c->wb, c->cwb, c->dcwb_pp);
++	if (!c->wb || !c->cwb[0] || !c->cwb[1] ||
++	    !c->dcwb_pp[0] || !c->dcwb_pp[1] || !c->merge3d) {
++		pr_warn("CWB blocks missing (wb=%p cwb=%p,%p dcwb_pp=%p,%p merge3d=%p); disabled\n",
++			c->wb, c->cwb[0], c->cwb[1], c->dcwb_pp[0],
++			c->dcwb_pp[1], c->merge3d);
 +		kfree(c);
 +		return;
 +	}
@@ -513,8 +541,10 @@ new file mode 100644
 +	debugfs_create_file("frame.raw", 0400, c->dir, c, &frame_fops);
 +
 +	g_cap = c;
-+	pr_info("init: wb=%d cwb=%d dcwb_pp=%d wb_irq=%u\n",
-+		c->wb->idx, c->cwb->idx, c->dcwb_pp->idx, c->wb_irq);
++	pr_info("init: wb=%d cwb=[%d,%d] dcwb_pp=[%d,%d] merge3d=%d wb_irq=%u\n",
++		c->wb->idx, c->cwb[0]->idx, c->cwb[1]->idx,
++		c->dcwb_pp[0]->idx, c->dcwb_pp[1]->idx, c->merge3d->idx,
++		c->wb_irq);
 +}
 +
 +void dpu_capture_destroy(struct dpu_kms *dpu_kms)
@@ -554,7 +584,7 @@ diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h b/drivers/gpu/drm/msm/di
 +	 * @cwb_mask  : bitmask of CWB muxes (BIT(cwb - CWB_0))
 +	 */
 +	void (*set_capture_active)(struct dpu_hw_ctl *ctx,
-+		enum dpu_wb wb, u32 cwb_mask);
++		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d);
 +
 +	/**
  	 * @update_pending_flush_intf: OR in the given flushbits to the
@@ -563,12 +593,12 @@ diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h b/drivers/gpu/drm/msm/di
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
 --- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
-@@ -334,6 +334,20 @@
+@@ -334,6 +334,27 @@
  	ctx->pending_flush_mask |= BIT(CWB_IDX);
  }
  
 +static void dpu_hw_ctl_set_capture_active(struct dpu_hw_ctl *ctx,
-+		enum dpu_wb wb, u32 cwb_mask)
++		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d)
 +{
 +	struct dpu_hw_blk_reg_map *c = &ctx->hw;
 +	u32 wb_active = DPU_REG_READ(c, CTL_WB_ACTIVE);
@@ -579,12 +609,19 @@ diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c b/drivers/gpu/drm/msm/di
 +
 +	DPU_REG_WRITE(c, CTL_WB_ACTIVE, wb_active);
 +	DPU_REG_WRITE(c, CTL_CWB_ACTIVE, cwb_active);
++
++	if (merge_3d) {
++		u32 m3d_active = DPU_REG_READ(c, CTL_MERGE_3D_ACTIVE);
++
++		m3d_active |= BIT(merge_3d - MERGE_3D_0);
++		DPU_REG_WRITE(c, CTL_MERGE_3D_ACTIVE, m3d_active);
++	}
 +}
 +
  static void dpu_hw_ctl_update_pending_flush_intf_v1(struct dpu_hw_ctl *ctx,
  		enum dpu_intf intf)
  {
-@@ -828,6 +842,7 @@
+@@ -828,6 +849,7 @@
  			dpu_hw_ctl_update_pending_flush_merge_3d_v1;
  		c->ops.update_pending_flush_wb = dpu_hw_ctl_update_pending_flush_wb_v1;
  		c->ops.update_pending_flush_cwb = dpu_hw_ctl_update_pending_flush_cwb_v1;
