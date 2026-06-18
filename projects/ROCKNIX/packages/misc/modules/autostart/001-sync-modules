@@ -5,4 +5,59 @@
 # Minimal OS variable loading for performance
 . /etc/profile.d/001-functions
 
-rsync -a --delete /usr/config/modules/ /storage/.config/modules/
+SRC=/usr/config/modules
+DST=/storage/.config/modules
+
+mkdir -p "${DST}"
+
+# Sync the tool scripts and icons (add new, refresh changed, drop removed) but
+# leave gamelist.xml out of this destructive pass: it is the file
+# EmulationStation rewrites whenever you favorite a Tool, so clobbering it with
+# the pristine copy on every boot is what used to make Tools favorites vanish
+# after a reboot. The gamelist is reconciled separately below.
+rsync -a --delete --exclude=gamelist.xml "${SRC}/" "${DST}/"
+
+# Reconcile the Tools gamelist: rebuild from the shipped metadata (so new tools
+# and updated descriptions/icons always show up) while carrying over the user's
+# <favorite> flags from the copy ES has been writing, so favorites survive
+# reboots and OS updates. Falls back to the shipped gamelist on any error so the
+# Tools section is never left without metadata.
+SHIPPED="${SRC}/gamelist.xml"
+LIVE="${DST}/gamelist.xml"
+if [ -f "${SHIPPED}" ]; then
+  if [ -f "${LIVE}" ] && command -v python3 >/dev/null 2>&1; then
+    python3 - "${SHIPPED}" "${LIVE}" <<'PY' || cp -f "${SHIPPED}" "${LIVE}"
+import re, sys
+import xml.etree.ElementTree as ET
+
+shipped, live = sys.argv[1], sys.argv[2]
+# ES's parser tolerates a lone '&'; ElementTree does not, so escape it first.
+bad_amp = re.compile(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9A-Fa-f]+);)")
+
+def parse(path):
+    with open(path, encoding="utf-8") as fh:
+        return ET.fromstring(bad_amp.sub("&amp;", fh.read()))
+
+# Tool <path>s the user favorited in the live (ES-written) gamelist.
+fav = set()
+for g in parse(live).findall("game"):
+    p = (g.findtext("path") or "").strip()
+    if p and (g.findtext("favorite") or "").strip().lower() == "true":
+        fav.add(p)
+
+# Rebuild from the shipped metadata, re-stamping <favorite> on those paths.
+root = parse(shipped)
+for g in root.findall("game"):
+    p = (g.findtext("path") or "").strip()
+    cur = g.find("favorite")
+    if p in fav:
+        (cur if cur is not None else ET.SubElement(g, "favorite")).text = "true"
+    elif cur is not None:
+        g.remove(cur)
+
+ET.ElementTree(root).write(live, encoding="unicode", xml_declaration=True)
+PY
+  else
+    cp -f "${SHIPPED}" "${LIVE}"
+  fi
+fi
