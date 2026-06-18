@@ -49,28 +49,40 @@ hardware datapath and mainline plumbing are good; only master-independence remai
   the real-time CTL and is triggered by the same `trigger_start`** — that single-CTL coupling + the
   userspace-supplied FB are exactly the master dependency we must remove.
 
-## Architecture decision: out-of-band CWB capture, own CTL (Strategy 2b)
+## Architecture decision: out-of-band CWB capture on the SHARED realtime CTL (Strategy 2a)
 Do NOT go through the drm_encoder/atomic/writeback-connector framework (it's master-bound). Instead a new
 in-driver capture engine directly programs the CWB datapath and reads frames into a kernel-owned buffer
 ring, exposed via a **V4L2 capture node** (`/dev/videoX`, `VIDIOC_*`/dma-buf), independent of the master.
 
-Two ways to trigger the WB; chosen one first:
-- **2a (hook the real-time CTL):** add WB+CWB to the real-time CTL's pending-flush on each kickoff
-  (hook `_dpu_encoder_kickoff_phys`). Reuses the single-CTL clone path but **touches the hot display
-  path** → risk to the compositor's frames. Rejected as primary.
-- **2b (independent CTL) — CHOSEN:** give the capture its **own spare CTL** + a CWB PP + `WB_2` + CWB
-  mux(es). Program the CWB mux to tap the active real-time LM(s) (concurrent live tap — read-only w.r.t.
-  the real-time path), then **trigger our own CTL on the real-time vsync IRQ** to latch a frame into the
-  next ring buffer. The real-time CTL/flush is never modified → display path untouched → lowest risk to
-  stability, and fully master-independent. Slight tearing risk if WB latch races the frame; mitigated by
-  triggering on vsync. Needs confirming the DPU supports an independent CTL driving WB off a concurrent
-  tap (hardware is designed for concurrent capture; downstream SDE does this — see RE asks).
+**Trigger model — settled by RE (2026-06-18), reversed from an earlier 2b guess:** concurrent writeback
+is driven by the **realtime CTL**, NOT an independent one. Evidence: the mainline upstreaming series
+("drm/msm/dpu: Reorder encoder kickoff for CWB") states *"the realtime encoder must always kickoff last
+as it will call the trigger flush and start"*, and the SM8750 downstream SDE driver couples CWB to the
+source display's CTL the same way (DCWB is a dedicated datapath, but still flushed/started by the source
+CTL). There is **no truly-independent-CTL concurrent capture** — the WB latch must ride the realtime
+frame's flush/start. So:
+- **2a (CHOSEN): hook the realtime kickoff** (`_dpu_encoder_kickoff_phys`, before the master's
+  `trigger_flush`/`trigger_start`). When capture is armed, program the CWB mux to tap the active realtime
+  pingpong(s) at LM_OUT, program `WB_2` (outaddr = next ring buffer, format, ROI, bind DCWB pingpong),
+  and add WB + DCWB-PP + CWB-mux bits to the **master CTL's** pending flush. The existing
+  `trigger_flush`+`trigger_start` then kicks the WB alongside the display. WB_DONE IRQ → buffer ready →
+  V4L2. This replicates EXACTLY what mainline clone-mode does internally (so it's well-trodden, not novel
+  HW risk), just kernel-initiated instead of via a userspace WB-connector atomic commit → master-independent.
+- **2b (REJECTED): own spare CTL triggered on vsync.** Looked lower-risk (never touches the display CTL)
+  but the RE shows the HW/driver model latches the WB via the source CTL; an async own-CTL trigger would
+  race the frame (tearing) and isn't how Qualcomm drives concurrent capture. Don't revisit without new
+  evidence that DCWB can latch cleanly off an independent CTL.
+
+Risk note for 2a: we DO add to the hot realtime CTL flush each frame. Mitigated by doing exactly the
+mainline clone-mode ops (config_cwb + update_pending_flush_cwb + WB setup + update_pending_flush_wb) and
+nothing else; guarded by an arm flag so zero overhead when not recording.
 
 ## Components to build (kernel patch `0506-ROCKNIX-dpu-cwb-capture.patch` + glue)
-1. **Capture engine** in `drm/msm/disp/dpu1` (new `dpu_capture.c/.h`): arm/disarm, reserve CWB PP(s)+WB_2+
-   CWB mux(es)+a CTL (init hw blocks directly from catalog, bypassing atomic RM since they're dedicated),
-   program CWB mux tap of the live LM(s), WB outaddr=ring buffer, register on `WB_DONE` IRQ, hook a
-   per-CRTC vsync callback to trigger the capture CTL.
+1. **Capture engine** in `drm/msm/disp/dpu1` (new `dpu_capture.c/.h`): arm/disarm; init the dedicated
+   hw blocks directly from catalog (DCWB pingpong(s), `WB_2`, CWB mux(es)) bypassing atomic RM since
+   they're free/dedicated; on each realtime kickoff (hook in `_dpu_encoder_kickoff_phys`) program the CWB
+   mux tap of the live LM(s) + WB outaddr=next ring buffer + add WB/DCWB-PP/CWB-mux to the **master
+   realtime CTL** pending flush; register on `WB_DONE` IRQ to advance the ring. No separate CTL.
 2. **Buffer ring + IOMMU**: kernel dma-bufs mapped into the DPU address space (`msm_gem`/the DPU aspace)
    for WB output; handed to userspace via V4L2 (dmabuf export) or mmap.
 3. **V4L2 capture device**: `/dev/videoX` advertising the panel resolution + XRGB8888/NV12; DQBUF delivers
@@ -83,9 +95,13 @@ Two ways to trigger the WB; chosen one first:
    in-game (the existing L1+B screenshot hotkey can be re-pointed at the CWB path).
 
 ## Open questions / risks
-- Independent-CTL CWB trigger model (2b): exact CTL flush/start sequence + which IRQ to trigger on; does
-  WB latch a clean frame off the concurrent LM tap when triggered async to the real-time CTL?
-- Dual-LM stitching for the WB output (2 CWB PPs → one WB buffer; merge3d on the CWB path?).
+- Exact replication of mainline clone-mode flush ordering in the kickoff hook (config_cwb +
+  update_pending_flush_cwb + WB setup + update_pending_flush_wb on the master CTL) so the WB latches the
+  same frame the display flushes; verify WB_DONE fires once per realtime frame while armed.
+- Realtime-CTL ownership/locking: the hook runs under `dpu_enc->enc_spinlock`; keep our additions minimal
+  and lock-safe. Arm flag gates all of it so non-recording frames are untouched.
+- LM topology / stitching for the WB output (CWB mux even/odd LM↔mux/DCWB-PP pairing rule from the RE;
+  Android drives the panel single-LM+DSC, mainline/sway may differ — re-read active hw_pp[] each frame).
 - WB output buffer format/tiling vs what Iris encoder ingests (prefer linear NV12 to feed v4l2 encoder
   directly; else linear XRGB8888 + a convert).
 - IOMMU mapping of the WB output into the DPU aspace from a kernel allocation.
