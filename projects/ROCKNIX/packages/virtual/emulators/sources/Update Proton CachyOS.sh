@@ -3,27 +3,35 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 #
-# Updates the Proton-CachyOS (ARM64) Steam compatibility tool in place, without
-# re-running the full "Install Steam" routine. Fetches the latest arm64 release
-# from https://github.com/CachyOS/proton-cachyos, patches it for ARM (strips the
+# Updates the Proton-CachyOS (ARM64) Steam compatibility tools in place, without
+# re-running the full "Install Steam" routine. CachyOS ships two parallel release
+# lines (e.g. 10.x and 11.x); this tool manages BOTH, keeping each line's latest
+# arm64 build installed side by side. That way a fresh proton-10 release can
+# never replace your proton-11 (the old single-slot behaviour) -- each line lives
+# in its own directory and is updated independently.
+#
+# For every line it fetches the newest arm64 release from
+# https://github.com/CachyOS/proton-cachyos, patches it for ARM (strips the
 # require_tool_appid line that otherwise makes Steam fail with "unable to launch
-# the compatibility tool"), and keeps the version you had as a rollback copy.
+# the compatibility tool"), and keeps the version you had as a per-line rollback.
 #
 # Layout:
-#   compatibilitytools.d/proton-cachyos-<ver>-arm64   <- the live (active) tool
-#   <Steam>/.cachyos-rollback/proton-cachyos-<ver>-arm64
-#                                                     <- one kept previous version
+#   compatibilitytools.d/proton-cachyos-<ver>-arm64       <- live (active) tools
+#   <Steam>/.cachyos-rollback/<major>/proton-cachyos-<ver>-arm64
+#                                                         <- one kept previous
+#                                                            version per line
 #
 # The .cachyos-rollback store lives OUTSIDE compatibilitytools.d so Steam never
-# shows it as a second, duplicate entry. Both stores are on /storage, so moving
-# between them is an instant rename (no large copy).
+# shows it as a duplicate entry. Both stores are on /storage, so moving between
+# them is an instant rename (no large copy).
 #
 # Safety:
 #   - Download to a .part file, verified (size + xz magic) before extraction.
 #   - Extract to a staging dir and validated (proton + files/) before going live.
-#   - The previous good version is kept for one-press rollback.
+#   - The previous good version of each line is kept for one-press rollback.
 #   - Lock dir prevents concurrent update/rollback.
-#   - Idempotent: skips if the live tool is already the latest arm64 release.
+#   - Idempotent: skips any line whose live tool is already the latest release.
+#   - A failure on one line never touches the other line's live tool.
 
 source /etc/profile
 
@@ -41,20 +49,31 @@ cleanup() {
   rmdir "${LOCK_DIR}" 2>/dev/null || true
 }
 
-fail() {
-  echo ""
-  echo "ERROR: $*"
-  echo ""
-  echo "The currently installed Proton-CachyOS has NOT been modified."
-  cleanup
-  sleep 15
-  exit 1
+trap cleanup EXIT
+
+# Soft failure for a single line: report, clean scratch, but keep going so the
+# other line still gets a chance to update. Returns non-zero.
+line_fail() {
+  echo "  ERROR: $*" >&2
+  echo "  This line was left unchanged." >&2
+  rm -f "${PART}"
+  rm -rf "${STAGING}"
+  return 1
 }
 
-# Newest installed proton-cachyos-*-arm64 dir inside a given directory (by name,
-# which sorts chronologically thanks to the YYYYMMDD in the version), or empty.
-newest_cachyos_in() {
-  ls -d "${1}"/proton-cachyos-*-arm64 2>/dev/null | sort | tail -n1
+# proton-cachyos-11.0-20260602-slr-arm64 -> 11
+major_of() {
+  local b="${1##*/}"
+  b="${b#proton-cachyos-}"
+  echo "${b%%.*}"
+}
+
+# Live dirs for a major line, oldest..newest by name (date sorts chronologically).
+live_versions_for_major() {
+  ls -d "${CTD}"/proton-cachyos-"${1}".*-arm64 2>/dev/null | sort
+}
+newest_live_for_major() {
+  live_versions_for_major "${1}" | tail -n1
 }
 
 echo "=== Proton-CachyOS updater (ARM64) ==="
@@ -72,102 +91,164 @@ if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
   sleep 5
   exit 1
 fi
-trap cleanup EXIT
 
-CURRENT_DIR="$(newest_cachyos_in "${CTD}")"
-if [ -n "${CURRENT_DIR}" ]; then
-  echo "Currently installed: $(basename "${CURRENT_DIR}")"
+echo "Currently installed:"
+shopt -s nullglob
+INSTALLED=("${CTD}"/proton-cachyos-*-arm64)
+shopt -u nullglob
+if [ "${#INSTALLED[@]}" -gt 0 ]; then
+  for d in "${INSTALLED[@]}"; do
+    echo "  - $(basename "${d}")"
+  done
 else
-  echo "No Proton-CachyOS currently installed."
+  echo "  (none)"
 fi
 echo ""
 
-echo "Querying the latest arm64 release from CachyOS/proton-cachyos..."
-META="$(curl -fsSL "${RELEASES_API}")" || fail "could not reach the GitHub API. Check your network."
+echo "Querying the latest arm64 releases from CachyOS/proton-cachyos..."
+META="$(curl -fsSL "${RELEASES_API}")" || {
+  echo "ERROR: could not reach the GitHub API. Check your network."
+  sleep 15
+  exit 1
+}
 
-ASSET_URL="$(echo "${META}" \
+# All arm64 asset URLs, newest release first (API order).
+mapfile -t ASSET_URLS < <(echo "${META}" \
   | grep -oE '"browser_download_url": *"[^"]*"' \
   | sed -E 's/.*"(https[^"]+)".*/\1/' \
-  | grep -E 'arm64\.tar\.xz$' \
-  | head -n1)"
-[ -n "${ASSET_URL}" ] || fail "no arm64 .tar.xz asset found in the latest CachyOS releases (API rate limit or asset naming changed?)."
+  | grep -E 'arm64\.tar\.xz$')
 
-TAR_NAME="$(basename "${ASSET_URL}")"
-TARGET_NAME="${TAR_NAME%.tar.xz}"
-TARGET_DIR="${CTD}/${TARGET_NAME}"
-
-echo "Latest available: ${TARGET_NAME}"
-echo ""
-
-if [ -d "${TARGET_DIR}" ] && [ -f "${TARGET_DIR}/proton" ]; then
-  echo "Already up to date. Nothing to do."
-  sleep 5
-  exit 0
+if [ "${#ASSET_URLS[@]}" -eq 0 ]; then
+  echo "ERROR: no arm64 .tar.xz asset found in the latest CachyOS releases"
+  echo "(API rate limit or asset naming changed?)."
+  sleep 15
+  exit 1
 fi
 
-echo "Downloading: ${ASSET_URL}"
-rm -f "${PART}"
-wget -c -t 5 -O "${PART}" "${ASSET_URL}" || fail "download failed."
-
-# Integrity: non-trivial size + xz magic bytes (FD 37 7A 58 5A 00).
-SIZE="$(stat -c%s "${PART}" 2>/dev/null || echo 0)"
-if [ "${SIZE}" -lt 50000000 ]; then
-  fail "downloaded file is suspiciously small (${SIZE} bytes)."
-fi
-MAGIC="$(head -c6 "${PART}" | od -An -tx1 | tr -d ' \n')"
-if [ "${MAGIC}" != "fd377a585a00" ]; then
-  fail "downloaded file is not an xz archive (magic=${MAGIC})."
-fi
-
-echo ""
-echo "Extracting..."
-rm -rf "${STAGING}"
-mkdir -p "${STAGING}"
-tar -xf "${PART}" -C "${STAGING}" || fail "extraction failed (corrupt download?)."
-
-EXTRACTED="${STAGING}/${TARGET_NAME}"
-if [ ! -d "${EXTRACTED}" ]; then
-  # Fall back to the single top-level directory the tarball produced.
-  EXTRACTED="$(find "${STAGING}" -mindepth 1 -maxdepth 1 -type d | head -n1)"
-fi
-if [ -z "${EXTRACTED}" ] || [ ! -f "${EXTRACTED}/proton" ] || [ ! -d "${EXTRACTED}/files" ]; then
-  fail "extracted tool is incomplete (proton/files missing)."
-fi
-
-# Patch for ARM64: drop require_tool_appid (points at an x86 runtime that can't
-# launch on ARM, the classic "unable to launch the compatibility tool" crash).
-MANIFEST="${EXTRACTED}/toolmanifest.vdf"
-if [ -f "${MANIFEST}" ] && grep -q require_tool_appid "${MANIFEST}"; then
-  sed -i '/require_tool_appid/d' "${MANIFEST}" || fail "could not patch toolmanifest.vdf."
-  echo "Patched toolmanifest.vdf (removed require_tool_appid)."
-fi
-
-# Rotate rollback store: keep the version we currently have as the single
-# "previous"; discard any older leftovers.
-echo ""
-echo "Saving current version for rollback..."
-rm -rf "${ROLLBACK_STORE}"
-mkdir -p "${ROLLBACK_STORE}"
-if [ -n "${CURRENT_DIR}" ]; then
-  mv -f "${CURRENT_DIR}" "${ROLLBACK_STORE}/" || fail "could not move current version into the rollback store."
-fi
-# Remove any remaining (older) live copies so only the new one stays visible.
-for d in "${CTD}"/proton-cachyos-*-arm64; do
-  [ -d "${d}" ] && rm -rf "${d}"
+# Newest asset per major line (first time we see a major in API order = latest).
+declare -A LATEST_FOR_MAJOR
+MAJORS=()
+for url in "${ASSET_URLS[@]}"; do
+  name="${url##*/}"
+  m="${name#proton-cachyos-}"
+  m="${m%%.*}"
+  [ -n "${m}" ] || continue
+  [ -n "${LATEST_FOR_MAJOR[$m]}" ] && continue
+  LATEST_FOR_MAJOR[$m]="${url}"
+  MAJORS+=("${m}")
 done
 
-# Go live: move the validated new tool into place.
-mv -f "${EXTRACTED}" "${TARGET_DIR}" || fail "could not move the new version into place."
+echo "Release lines available: ${MAJORS[*]}"
+echo ""
 
+# Download + validate + patch the asset for one line into STAGING, returning the
+# validated staging dir path on stdout (and 0); non-zero on any failure.
+stage_asset() {
+  local url="$1" name target_name extracted size magic manifest
+  name="${url##*/}"
+  target_name="${name%.tar.xz}"
+
+  rm -f "${PART}"
+  echo "  Downloading: ${url}" >&2
+  wget -c -t 5 -O "${PART}" "${url}" >/dev/null 2>&1 || { line_fail "download failed."; return 1; }
+
+  size="$(stat -c%s "${PART}" 2>/dev/null || echo 0)"
+  if [ "${size}" -lt 50000000 ]; then
+    line_fail "downloaded file is suspiciously small (${size} bytes)."; return 1
+  fi
+  magic="$(head -c6 "${PART}" | od -An -tx1 | tr -d ' \n')"
+  if [ "${magic}" != "fd377a585a00" ]; then
+    line_fail "downloaded file is not an xz archive (magic=${magic})."; return 1
+  fi
+
+  rm -rf "${STAGING}"
+  mkdir -p "${STAGING}"
+  tar -xf "${PART}" -C "${STAGING}" || { line_fail "extraction failed (corrupt download?)."; return 1; }
+
+  extracted="${STAGING}/${target_name}"
+  if [ ! -d "${extracted}" ]; then
+    extracted="$(find "${STAGING}" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  fi
+  if [ -z "${extracted}" ] || [ ! -f "${extracted}/proton" ] || [ ! -d "${extracted}/files" ]; then
+    line_fail "extracted tool is incomplete (proton/files missing)."; return 1
+  fi
+
+  # Patch for ARM64: drop require_tool_appid (points at an x86 runtime that can't
+  # launch on ARM -- the classic "unable to launch the compatibility tool" crash).
+  manifest="${extracted}/toolmanifest.vdf"
+  if [ -f "${manifest}" ] && grep -q require_tool_appid "${manifest}"; then
+    sed -i '/require_tool_appid/d' "${manifest}" || { line_fail "could not patch toolmanifest.vdf."; return 1; }
+  fi
+
+  echo "${extracted}"
+}
+
+UPDATED=()
+SKIPPED=()
+FAILED=()
+
+for m in "${MAJORS[@]}"; do
+  url="${LATEST_FOR_MAJOR[$m]}"
+  name="${url##*/}"
+  target_name="${name%.tar.xz}"
+  target_dir="${CTD}/${target_name}"
+
+  echo "Line ${m}.x -> latest: ${target_name}"
+
+  if [ -d "${target_dir}" ] && [ -f "${target_dir}/proton" ]; then
+    echo "  Already up to date."
+    echo ""
+    SKIPPED+=("${target_name}")
+    continue
+  fi
+
+  extracted="$(stage_asset "${url}")" || { FAILED+=("${m}.x"); echo ""; continue; }
+
+  # Rotate this line's rollback: keep the current live version as the single
+  # "previous" for this line; discard any older leftovers for this line only.
+  current="$(newest_live_for_major "${m}")"
+  store="${ROLLBACK_STORE}/${m}"
+  rm -rf "${store}"
+  mkdir -p "${store}"
+  if [ -n "${current}" ]; then
+    mv -f "${current}" "${store}/" || { line_fail "could not move current version into the rollback store."; FAILED+=("${m}.x"); echo ""; continue; }
+  fi
+  # Remove any remaining (older) live copies of THIS line so only the new one
+  # stays visible. Other lines are never touched.
+  for d in $(live_versions_for_major "${m}"); do
+    [ -d "${d}" ] && rm -rf "${d}"
+  done
+
+  if ! mv -f "${extracted}" "${target_dir}"; then
+    line_fail "could not move the new version into place."
+    FAILED+=("${m}.x")
+    echo ""
+    continue
+  fi
+
+  echo "  Updated to ${target_name}."
+  prev="$(ls -d "${store}"/proton-cachyos-*-arm64 2>/dev/null | sort | tail -n1)"
+  if [ -n "${prev}" ]; then
+    echo "  Previous version kept for rollback: $(basename "${prev}")"
+  fi
+  echo ""
+  UPDATED+=("${target_name}")
+done
+
+echo "=== Summary ==="
+[ "${#UPDATED[@]}" -gt 0 ] && printf '  Updated:  %s\n' "${UPDATED[@]}"
+[ "${#SKIPPED[@]}" -gt 0 ] && printf '  Current:  %s\n' "${SKIPPED[@]}"
+[ "${#FAILED[@]}"  -gt 0 ] && printf '  Failed:   %s\n' "${FAILED[@]}"
 echo ""
-echo "Proton-CachyOS updated to ${TARGET_NAME}."
-echo "Location: ${TARGET_DIR}"
-PREV="$(newest_cachyos_in "${ROLLBACK_STORE}")"
-if [ -n "${PREV}" ]; then
-  echo "Previous version kept for rollback: $(basename "${PREV}")"
-  echo "Run \"Rollback Proton CachyOS\" to switch back to it."
+
+if [ "${#UPDATED[@]}" -gt 0 ]; then
+  echo "Fully close and relaunch Steam, then pick the version you want under a"
+  echo "game's Properties > Compatibility. Run \"Rollback Proton CachyOS\" to switch"
+  echo "a line back to its kept previous version."
 fi
-echo ""
-echo "Fully close and relaunch Steam, then pick \"${TARGET_NAME}\" under a game's"
-echo "Properties > Compatibility."
+
+if [ "${#FAILED[@]}" -gt 0 ]; then
+  sleep 15
+  exit 1
+fi
 sleep 10
