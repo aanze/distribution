@@ -3,5 +3,15 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 
-killall gamescope steam FEX
-killall -9 gamescope steam FEX
+# "Return to Desktop".
+#  1) Quiesce screen-capture (drain the writeback + un-tap the CWB + CDM off)
+#     while gamescope is still live, so nothing is orphaned. The recorder stays
+#     alive (paused), so one clip continues into ES once capture resumes.
+#  2) SIGKILL gamescope/Steam immediately -- do NOT let them exit cleanly. A clean
+#     atomic-disable saves the DSI PLL/PHY state which sway then restores; after a
+#     capture session that saved state is stale and the panel re-init times out
+#     (-110 -> black screen). An immediate SIGKILL skips the save, so sway's
+#     enable does a full PLL re-lock from scratch and the panel comes back clean.
+/usr/bin/rocknix-screenrecord pause 2>/dev/null
+
+killall -9 gamescope steam FEX 2>/dev/null
