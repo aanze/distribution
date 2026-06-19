@@ -1,16 +1,18 @@
 From: Anze <aanzdev@gmail.com>
-Subject: [PATCH] ROCKNIX: drm/msm/dpu: out-of-band CWB screen capture (RGB/NV12 + recording ring)
+Subject: [PATCH] ROCKNIX: drm/msm/dpu: out-of-band CWB screen capture (RGB/NV12 + recording ring + display-safety watchdog)
 
-Capture the live panel scanout via the dedicated Concurrent WriteBack datapath
-(CWB mux -> dedicated CWB pingpong -> MERGE_3D -> [CDM] -> WB), added to the
-realtime CTL's flush each kickoff. Kernel-initiated, master-independent, works
-under any compositor (ES/sway and gamescope/Steam) and survives the handoff.
+Out-of-band Concurrent WriteBack capture (CWB mux -> dedicated CWB pingpong ->
+MERGE_3D -> [CDM] -> WB) added to the realtime CTL's flush each kickoff; kernel-
+initiated, master-independent, survives the ES<->Steam compositor handoff.
+debugfs screenshot (RGB/NV12 via CDM) + /dev/dpu_capture0 NV12 dmabuf ring for
+the Iris H.264 encoder.
 
-- Screenshot via debugfs /sys/kernel/debug/dpu_capture/{arm,status,frame.raw}.
-- Recording via /dev/dpu_capture0: a 4-buffer NV12 ring exported as dma-bufs for
-  zero-copy feeding to the Iris H.264 encoder (ioctls QUERY/EXPBUF/DQBUF/QBUF +
-  poll). NV12 Y stride is 128-aligned (1152) to match the encoder's sizeimage.
-  DQBUF blocks until a frame newer than the last handed out (dq_seq).
+Display-safety watchdog: riding the realtime CTL means a stalled writeback would
+block the display commit (seen as a black screen on the gamescope->sway re-init
+after Steam). If a WB doesn't complete by the next kickoff, clear_capture_active
+removes it from the CTL so the display commits cleanly; retry briefly to ride
+through the transition, and auto-off if it keeps stalling. The display can never
+stay blocked.
 
 Signed-off-by: Anze <aanzdev@gmail.com>
 diff --git a/drivers/gpu/drm/msm/Makefile b/drivers/gpu/drm/msm/Makefile
@@ -27,10 +29,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..a6f8013
+index 0000000..1d0cef3
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,834 @@
+@@ -0,0 +1,887 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -80,6 +82,10 @@ index 0000000..a6f8013
 +#define CAP_H		1920
 +#define CAP_MAX_LM	2
 +#define REC_NBUF	4
++/* watchdog: frames a stalled WB is cleared+skipped before a retry, and how many
++ * retry cycles before giving up (auto-off) -- bounds any display glitch. */
++#define CAP_RETRY_AFTER	4
++#define CAP_MAX_RETRIES	8
 +
 +#define RGB_STRIDE	ALIGN(CAP_W * 4, 256)
 +#define RGB_SIZE	(RGB_STRIDE * CAP_H)
@@ -139,6 +145,15 @@ index 0000000..a6f8013
 +	bool irq_on;
 +	int probe_logs;
 +	atomic_t frames;
++
++	/* display-safety watchdog: a WB queued onto the realtime CTL that never
++	 * completes would stall the display commit; track it and clear it off. */
++	bool wb_outstanding;
++	int wb_stall;
++	int wb_retries;
++	u32 last_cwb_mask;
++	enum dpu_merge_3d last_merge;
++	enum dpu_cdm last_cdm;
 +
 +	/* recording ring */
 +	struct rec_buf ring[REC_NBUF];
@@ -326,6 +341,11 @@ index 0000000..a6f8013
 +	if (c->wb->ops.bind_pingpong_blk)
 +		c->wb->ops.bind_pingpong_blk(c->wb, c->dcwb_pp[0]->idx);
 +
++	/* remember what we activated so the watchdog can clear exactly these */
++	c->last_cwb_mask = cwb_mask;
++	c->last_merge = merge;
++	c->last_cdm = cdm_idx;
++
 +	if (ctl->ops.set_capture_active)
 +		ctl->ops.set_capture_active(ctl, c->wb->idx, cwb_mask, merge, cdm_idx);
 +	for (i = 0; i < num_pp; i++)
@@ -377,6 +397,28 @@ index 0000000..a6f8013
 +	if (num_pp < 1 || num_pp > CAP_MAX_LM)
 +		return;
 +
++	/*
++	 * Display-safety watchdog. If the previous frame's writeback hasn't
++	 * completed by now, it is stalling -- clear it off the realtime CTL so
++	 * the display commits cleanly, and skip this frame. Retry after a few
++	 * frames (rides through a brief compositor transition); give up (auto-
++	 * off) if it keeps stalling so the display can never stay blocked.
++	 */
++	if (c->wb_outstanding) {
++		if (ctl->ops.clear_capture_active)
++			ctl->ops.clear_capture_active(ctl, c->wb->idx,
++				c->last_cwb_mask, c->last_merge, c->last_cdm);
++		if (++c->wb_stall >= CAP_RETRY_AFTER) {
++			c->wb_stall = 0;
++			c->wb_outstanding = false;	/* allow a fresh retry */
++			if (++c->wb_retries >= CAP_MAX_RETRIES) {
++				pr_warn("WB stalled; capture stopped to protect display\n");
++				c->mode = CAP_OFF;
++			}
++		}
++		return;
++	}
++
 +	if (c->mode == CAP_RECORD) {
 +		spin_lock_irqsave(&c->rec_lock, flags);
 +		idx = rec_next_free(c);
@@ -385,6 +427,7 @@ index 0000000..a6f8013
 +		if (idx < 0)
 +			return;		/* all buffers held; drop this frame */
 +		cap_program(c, ctl, rt_pp, num_pp, c->ring[idx].iova, PIX_NV12);
++		c->wb_outstanding = true;
 +		return;
 +	}
 +
@@ -392,6 +435,7 @@ index 0000000..a6f8013
 +	if (!c->iova)
 +		return;
 +	cap_program(c, ctl, rt_pp, num_pp, c->iova, c->pix);
++	c->wb_outstanding = true;
 +}
 +
 +static void dpu_capture_wb_done_irq(void *arg)
@@ -400,6 +444,11 @@ index 0000000..a6f8013
 +	unsigned long flags;
 +
 +	atomic_inc(&c->frames);
++
++	/* WB completed -> not stalled */
++	c->wb_outstanding = false;
++	c->wb_stall = 0;
++	c->wb_retries = 0;
 +
 +	if (c->mode != CAP_RECORD)
 +		return;
@@ -500,6 +549,9 @@ index 0000000..a6f8013
 +		return ret;
 +	}
 +	atomic_set(&c->frames, 0);
++	c->wb_outstanding = false;
++	c->wb_stall = 0;
++	c->wb_retries = 0;
 +	c->wr_idx = -1;
 +	c->ready_idx = 0;
 +	c->ready_seq = 0;
@@ -682,6 +734,9 @@ index 0000000..a6f8013
 +	if (ret)
 +		return ret;
 +	atomic_set(&c->frames, 0);
++	c->wb_outstanding = false;
++	c->wb_stall = 0;
++	c->wb_retries = 0;
 +	c->probe_logs = 0;
 +	c->pix = pix;
 +	ret = dpu_core_irq_register_callback(c->kms, c->wb_irq,
@@ -946,10 +1001,10 @@ index 2756c57..ae0487c 100644
  	for (i = 0; i < dpu_enc->num_phys_encs; i++) {
  		struct dpu_encoder_phys *phys = dpu_enc->phys_encs[i];
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
-index 36a497f..e24197b 100644
+index 36a497f..59f6772 100644
 --- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
-@@ -334,6 +334,32 @@ static void dpu_hw_ctl_update_pending_flush_cwb_v1(struct dpu_hw_ctl *ctx,
+@@ -334,6 +334,54 @@ static void dpu_hw_ctl_update_pending_flush_cwb_v1(struct dpu_hw_ctl *ctx,
  	ctx->pending_flush_mask |= BIT(CWB_IDX);
  }
  
@@ -979,22 +1034,45 @@ index 36a497f..e24197b 100644
 +		DPU_REG_WRITE(c, CTL_CDM_ACTIVE, cdm);
 +}
 +
++static void dpu_hw_ctl_clear_capture_active(struct dpu_hw_ctl *ctx,
++		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d,
++		enum dpu_cdm cdm)
++{
++	struct dpu_hw_blk_reg_map *c = &ctx->hw;
++	u32 wb_active = DPU_REG_READ(c, CTL_WB_ACTIVE) & ~BIT(wb - WB_0);
++	u32 cwb_active = DPU_REG_READ(c, CTL_CWB_ACTIVE) & ~cwb_mask;
++
++	DPU_REG_WRITE(c, CTL_WB_ACTIVE, wb_active);
++	DPU_REG_WRITE(c, CTL_CWB_ACTIVE, cwb_active);
++
++	if (merge_3d) {
++		u32 m3d_active = DPU_REG_READ(c, CTL_MERGE_3D_ACTIVE) &
++				~BIT(merge_3d - MERGE_3D_0);
++		DPU_REG_WRITE(c, CTL_MERGE_3D_ACTIVE, m3d_active);
++	}
++
++	/* realtime RGB path never uses CDM, so clearing it outright is safe */
++	if (cdm)
++		DPU_REG_WRITE(c, CTL_CDM_ACTIVE, 0);
++}
++
  static void dpu_hw_ctl_update_pending_flush_intf_v1(struct dpu_hw_ctl *ctx,
  		enum dpu_intf intf)
  {
-@@ -828,6 +854,7 @@ struct dpu_hw_ctl *dpu_hw_ctl_init(struct drm_device *dev,
+@@ -828,6 +876,8 @@ struct dpu_hw_ctl *dpu_hw_ctl_init(struct drm_device *dev,
  			dpu_hw_ctl_update_pending_flush_merge_3d_v1;
  		c->ops.update_pending_flush_wb = dpu_hw_ctl_update_pending_flush_wb_v1;
  		c->ops.update_pending_flush_cwb = dpu_hw_ctl_update_pending_flush_cwb_v1;
 +		c->ops.set_capture_active = dpu_hw_ctl_set_capture_active;
++		c->ops.clear_capture_active = dpu_hw_ctl_clear_capture_active;
  		c->ops.update_pending_flush_dsc =
  			dpu_hw_ctl_update_pending_flush_dsc_v1;
  		c->ops.update_pending_flush_cdm = dpu_hw_ctl_update_pending_flush_cdm_v1;
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h
-index e535bf0..7ee4310 100644
+index e535bf0..c204952 100644
 --- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h
-@@ -131,6 +131,18 @@ struct dpu_hw_ctl_ops {
+@@ -131,6 +131,27 @@ struct dpu_hw_ctl_ops {
  	void (*update_pending_flush_cwb)(struct dpu_hw_ctl *ctx,
  		enum dpu_cwb blk);
  
@@ -1007,6 +1085,15 @@ index e535bf0..7ee4310 100644
 +	 * @cwb_mask  : bitmask of CWB muxes (BIT(cwb - CWB_0))
 +	 */
 +	void (*set_capture_active)(struct dpu_hw_ctl *ctx,
++		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d,
++		enum dpu_cdm cdm);
++
++	/**
++	 * @clear_capture_active: clear the WB/CWB/merge_3d/CDM ACTIVE bits the
++	 * out-of-band capture set, so a stalled writeback cannot block the
++	 * realtime CTL's commit (display-safety watchdog).
++	 */
++	void (*clear_capture_active)(struct dpu_hw_ctl *ctx,
 +		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d,
 +		enum dpu_cdm cdm);
 +
