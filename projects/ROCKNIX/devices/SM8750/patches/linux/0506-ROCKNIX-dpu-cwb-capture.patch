@@ -1,15 +1,18 @@
 From: Anze <aanzdev@gmail.com>
-Subject: [PATCH] ROCKNIX: drm/msm/dpu: out-of-band CWB screen capture (RGB + NV12)
+Subject: [PATCH] ROCKNIX: drm/msm/dpu: out-of-band CWB screen capture (RGB/NV12 + recording ring)
 
-Capture the live panel scanout into a kernel buffer via the dedicated Concurrent
-WriteBack datapath (CWB mux -> dedicated CWB pingpong -> MERGE_3D -> [CDM] -> WB),
-added to the realtime CTL's flush each kickoff. Kernel-initiated, so it is
-independent of the userspace DRM master and works under any compositor
-(EmulationStation/sway and gamescope/Steam) and survives the handoff.
+Capture the live panel scanout via the dedicated Concurrent WriteBack datapath
+(CWB mux -> dedicated CWB pingpong -> MERGE_3D -> [CDM] -> WB), added to the
+realtime CTL's flush each kickoff. Kernel-initiated, master-independent, works
+under any compositor (ES/sway and gamescope/Steam) and survives the handoff.
 
-debugfs /sys/kernel/debug/dpu_capture/: arm {p=probe|1=XRGB|2=NV12|0=off},
-status, frame.raw. NV12 uses the CDM block for HW RGB->YUV420, feedable to the
-Iris H.264 encoder for recording. Dual layer-mixer is stitched via MERGE_3D.
+- Screenshot via debugfs /sys/kernel/debug/dpu_capture/{arm,status,frame.raw}:
+  arm 'p'=probe, '1'=XRGB grab, '2'=NV12 grab (CDM RGB->YUV420), '0'=off.
+- Recording via /dev/dpu_capture0: a 4-buffer NV12 ring whose buffers are
+  exported as dma-bufs for zero-copy feeding to the Iris H.264 encoder. ioctls
+  QUERY/EXPBUF/DQBUF/QBUF + poll(); open starts the ring, release stops it.
+- Dual layer-mixer stitched via MERGE_3D; CTL set_capture_active also drives
+  CTL_MERGE_3D_ACTIVE and CTL_CDM_ACTIVE.
 
 Signed-off-by: Anze <aanzdev@gmail.com>
 diff --git a/drivers/gpu/drm/msm/Makefile b/drivers/gpu/drm/msm/Makefile
@@ -26,10 +29,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..5b6c398
+index 0000000..2f572df
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,562 @@
+@@ -0,0 +1,830 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -37,21 +40,26 @@ index 0000000..5b6c398
 + * Programs the dedicated CWB datapath (CWB mux -> dedicated CWB pingpong ->
 + * MERGE_3D -> [CDM] -> WB) directly and adds the writeback to the *realtime*
 + * CTL's flush during each kickoff -- kernel-initiated, so capture is independent
-+ * of whichever compositor (sway/ES, gamescope/Steam) holds the DRM master.
++ * of whichever compositor (sway/ES, gamescope/Steam) holds the DRM master and
++ * survives a handoff.
 + *
-+ * Two output formats:
-+ *   - XRGB8888 (arm '1'): screenshot-grade RGB grab.
-+ *   - NV12     (arm '2'): YUV420 via the CDM block (HW RGB->YUV), feedable
-+ *                         straight to the Iris H.264 encoder for recording.
-+ *
-+ * debugfs /sys/kernel/debug/dpu_capture/: arm {p|1|2|0}, status, frame.raw
++ *   Screenshot (debugfs): /sys/kernel/debug/dpu_capture/{arm,status,frame.raw}
++ *       arm 'p'=probe, '1'=XRGB single grab, '2'=NV12 single grab, '0'=off.
++ *   Recording (misc dev): /dev/dpu_capture0 -- an NV12 ring whose buffers are
++ *       exported as dma-bufs (zero-copy) so a userspace app can feed them to the
++ *       Iris H.264 encoder. ioctls: QUERY, EXPBUF, DQBUF, QBUF + poll().
 + */
 +#define pr_fmt(fmt) "dpu_capture: " fmt
 +
 +#include <linux/debugfs.h>
 +#include <linux/io.h>
 +#include <linux/slab.h>
++#include <linux/miscdevice.h>
++#include <linux/poll.h>
++#include <linux/dma-buf.h>
++#include <linux/ktime.h>
 +#include <drm/drm_fourcc.h>
++#include <drm/drm_prime.h>
 +
 +#include "msm_kms.h"
 +#include "msm_gem.h"
@@ -73,22 +81,43 @@ index 0000000..5b6c398
 +#define CAP_W		1080
 +#define CAP_H		1920
 +#define CAP_MAX_LM	2
++#define REC_NBUF	4
 +
-+/* XRGB8888: stride padded to 256B */
 +#define RGB_STRIDE	ALIGN(CAP_W * 4, 256)
 +#define RGB_SIZE	(RGB_STRIDE * CAP_H)
 +
-+/* NV12 (linear, pseudo-planar 4:2:0): Y plane then interleaved UV plane */
 +#define NV12_Y_STRIDE	CAP_W
 +#define NV12_Y_SIZE	(NV12_Y_STRIDE * CAP_H)
 +#define NV12_UV_STRIDE	CAP_W
 +#define NV12_UV_SIZE	(NV12_UV_STRIDE * (CAP_H / 2))
 +#define NV12_SIZE	(NV12_Y_SIZE + NV12_UV_SIZE)
 +
-+#define CAP_BUF_SIZE	RGB_SIZE	/* alloc the larger; both fit */
++#define CAP_BUF_SIZE	RGB_SIZE	/* single screenshot buffer (larger fits) */
 +
-+enum cap_mode { CAP_OFF = 0, CAP_PROBE, CAP_CAPTURE };
++/* ---- /dev/dpu_capture0 uapi (duplicated in the userspace recorder) ---- */
++struct dpucap_geom {
++	__u32 width, height, fourcc, num_buffers;
++	__u32 y_stride, y_size, uv_stride, uv_size, total_size;
++};
++struct dpucap_expbuf { __u32 index; __s32 fd; };
++struct dpucap_frame { __u32 index, sequence; __u64 timestamp_ns; };
++#define DPUCAP_MAGIC	'D'
++#define DPUCAP_QUERY	_IOR(DPUCAP_MAGIC, 0, struct dpucap_geom)
++#define DPUCAP_EXPBUF	_IOWR(DPUCAP_MAGIC, 1, struct dpucap_expbuf)
++#define DPUCAP_DQBUF	_IOR(DPUCAP_MAGIC, 2, struct dpucap_frame)
++#define DPUCAP_QBUF	_IOW(DPUCAP_MAGIC, 3, __u32)
++
++enum cap_mode { CAP_OFF = 0, CAP_PROBE, CAP_SHOT, CAP_RECORD };
 +enum cap_pix  { PIX_RGB = 0, PIX_NV12 };
++
++struct rec_buf {
++	struct drm_gem_object *bo;
++	void *vaddr;
++	u64 iova;
++	struct dma_buf *dmabuf;
++	bool busy;		/* held by userspace (DQ'd, not yet Q'd) */
++	bool ready;
++};
 +
 +struct dpu_capture {
 +	struct dpu_kms *kms;
@@ -97,11 +126,11 @@ index 0000000..5b6c398
 +	struct dpu_hw_cwb *cwb[CAP_MAX_LM];		/* CWB_0, CWB_1 */
 +	struct dpu_hw_pingpong *dcwb_pp[CAP_MAX_LM];	/* PINGPONG_CWB_0/1 */
 +	struct dpu_hw_merge_3d *merge3d;		/* MERGE_3D_4 */
-+	struct dpu_hw_cdm *cdm;				/* CDM_0 (NV12) */
-+	const struct msm_format *rgb_fmt;
-+	const struct msm_format *nv12_fmt;
++	struct dpu_hw_cdm *cdm;				/* CDM_0 */
++	const struct msm_format *rgb_fmt, *nv12_fmt;
 +	unsigned int wb_irq;
 +
++	/* single-shot (debugfs) buffer */
 +	struct drm_gem_object *bo;
 +	void *vaddr;
 +	u64 iova;
@@ -112,17 +141,21 @@ index 0000000..5b6c398
 +	int probe_logs;
 +	atomic_t frames;
 +
++	/* recording ring */
++	struct rec_buf ring[REC_NBUF];
++	int wr_idx;			/* buffer currently being written (-1 none) */
++	int ready_idx;			/* last completed buffer */
++	u32 ready_seq;			/* completed-frame counter */
++	u64 ready_ts;
++	spinlock_t rec_lock;
++	wait_queue_head_t rec_wq;
++
 +	struct dentry *dir;
++	struct miscdevice misc;
++	bool misc_ok;
 +};
 +
 +static struct dpu_capture *g_cap;
-+
-+static void dpu_capture_wb_done_irq(void *arg)
-+{
-+	struct dpu_capture *c = arg;
-+
-+	atomic_inc(&c->frames);
-+}
 +
 +/* --- WB programming helpers (mirror dpu_encoder_phys_wb.c) --- */
 +
@@ -196,40 +229,37 @@ index 0000000..5b6c398
 +		c->wb->ops.setup_qos_lut(c->wb, &qos);
 +}
 +
-+/* CDM RGB->YUV420 for NV12 output (mirrors dpu_encoder_helper_phys_setup_cdm) */
 +static void cap_setup_cdm(struct dpu_capture *c, enum dpu_pingpong pp, bool enable)
 +{
 +	struct dpu_hw_cdm_cfg cfg = {0};
 +
 +	if (!c->cdm)
 +		return;
-+
 +	if (!enable) {
 +		if (c->cdm->ops.bind_pingpong_blk)
 +			c->cdm->ops.bind_pingpong_blk(c->cdm, PINGPONG_NONE);
 +		return;
 +	}
-+
 +	cfg.output_width = CAP_W;
 +	cfg.output_height = CAP_H;
 +	cfg.output_fmt = c->nv12_fmt;
 +	cfg.output_type = CDM_CDWN_OUTPUT_WB;
 +	cfg.output_bit_depth = CDM_CDWN_OUTPUT_8BIT;
 +	cfg.csc_cfg = &dpu_csc10_rgb2yuv_601l;
-+	cfg.h_cdwn_type = CDM_CDWN_COSITE;	/* 4:2:0 */
-+	cfg.v_cdwn_type = CDM_CDWN_OFFSITE;	/* 4:2:0 */
++	cfg.h_cdwn_type = CDM_CDWN_COSITE;
++	cfg.v_cdwn_type = CDM_CDWN_OFFSITE;
 +	cfg.pp_id = pp;
-+
 +	if (c->cdm->ops.enable)
 +		c->cdm->ops.enable(c->cdm, &cfg);
 +}
 +
-+/* program the CWB datapath and flush on the realtime CTL */
++/* program the CWB datapath to write @iova in @pix and flush on the realtime CTL */
 +static void cap_program(struct dpu_capture *c, struct dpu_hw_ctl *ctl,
-+			const enum dpu_pingpong *rt_pp, int num_pp)
++			const enum dpu_pingpong *rt_pp, int num_pp,
++			u64 iova, enum cap_pix pix)
 +{
 +	const struct dpu_perf_cfg *perf = c->kms->catalog->perf;
-+	bool nv12 = (c->pix == PIX_NV12);
++	bool nv12 = (pix == PIX_NV12);
 +	struct dpu_hw_cwb_setup_cfg cwb_cfg;
 +	struct dpu_hw_wb_cfg wb_cfg;
 +	enum dpu_merge_3d merge = 0;
@@ -237,7 +267,6 @@ index 0000000..5b6c398
 +	u32 cwb_mask = 0;
 +	int i;
 +
-+	/* CWB mux taps per realtime pingpong's layer-mixer output */
 +	for (i = 0; i < num_pp; i++) {
 +		cwb_cfg.input = INPUT_MODE_LM_OUT;
 +		cwb_cfg.pp_idx = rt_pp[i];
@@ -245,7 +274,6 @@ index 0000000..5b6c398
 +		cwb_mask |= BIT(c->cwb[i]->idx - CWB_0);
 +	}
 +
-+	/* dual-LM: merge the two dedicated CWB pingpongs (display's 3D mode) */
 +	if (num_pp == CAP_MAX_LM && c->merge3d) {
 +		if (c->merge3d->ops.setup_3d_mode)
 +			c->merge3d->ops.setup_3d_mode(c->merge3d, BLEND_3D_H_ROW_INT);
@@ -258,7 +286,6 @@ index 0000000..5b6c398
 +	cap_set_qos_remap(c);
 +	cap_set_qos(c);
 +
-+	/* CDM converts RGB->NV12 in HW; disable it for RGB capture */
 +	cap_setup_cdm(c, c->dcwb_pp[0]->idx, nv12);
 +	if (nv12 && c->cdm)
 +		cdm_idx = c->cdm->idx;
@@ -273,15 +300,15 @@ index 0000000..5b6c398
 +	wb_cfg.dest.height = CAP_H;
 +	if (nv12) {
 +		wb_cfg.dest.num_planes = 2;
-+		wb_cfg.dest.plane_addr[0] = lower_32_bits(c->iova);
++		wb_cfg.dest.plane_addr[0] = lower_32_bits(iova);
 +		wb_cfg.dest.plane_pitch[0] = NV12_Y_STRIDE;
 +		wb_cfg.dest.plane_size[0] = NV12_Y_SIZE;
-+		wb_cfg.dest.plane_addr[1] = lower_32_bits(c->iova) + NV12_Y_SIZE;
++		wb_cfg.dest.plane_addr[1] = lower_32_bits(iova) + NV12_Y_SIZE;
 +		wb_cfg.dest.plane_pitch[1] = NV12_UV_STRIDE;
 +		wb_cfg.dest.plane_size[1] = NV12_UV_SIZE;
 +	} else {
 +		wb_cfg.dest.num_planes = 1;
-+		wb_cfg.dest.plane_addr[0] = lower_32_bits(c->iova);
++		wb_cfg.dest.plane_addr[0] = lower_32_bits(iova);
 +		wb_cfg.dest.plane_pitch[0] = RGB_STRIDE;
 +		wb_cfg.dest.plane_size[0] = RGB_SIZE;
 +	}
@@ -312,38 +339,84 @@ index 0000000..5b6c398
 +		ctl->ops.update_pending_flush_wb(ctl, c->wb->idx);
 +}
 +
++/* pick the next ring buffer to write (round-robin, skip userspace-held) */
++static int rec_next_free(struct dpu_capture *c)
++{
++	int i, idx;
++
++	for (i = 1; i <= REC_NBUF; i++) {
++		idx = (c->ready_idx + i) % REC_NBUF;
++		if (!c->ring[idx].busy)
++			return idx;
++	}
++	return -1;
++}
++
 +/* called from the realtime encoder kickoff, under enc_spinlock */
 +void dpu_capture_kickoff(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl,
 +			 const enum dpu_pingpong *rt_pp, int num_pp)
 +{
 +	struct dpu_capture *c = g_cap;
++	unsigned long flags;
++	int idx;
 +
 +	if (!c || c->mode == CAP_OFF || !ctl || c->kms != dpu_kms)
 +		return;
 +
 +	if (c->mode == CAP_PROBE) {
 +		if (c->probe_logs < 8) {
-+			pr_info("probe: ctl=%d num_pp=%d pp=[%d %d %d %d]\n",
++			pr_info("probe: ctl=%d num_pp=%d pp=[%d %d]\n",
 +				ctl->idx, num_pp,
 +				num_pp > 0 ? rt_pp[0] : -1,
-+				num_pp > 1 ? rt_pp[1] : -1,
-+				num_pp > 2 ? rt_pp[2] : -1,
-+				num_pp > 3 ? rt_pp[3] : -1);
++				num_pp > 1 ? rt_pp[1] : -1);
 +			c->probe_logs++;
 +		}
 +		return;
 +	}
 +
-+	if (!c->iova || num_pp < 1 || num_pp > CAP_MAX_LM) {
-+		if (c->probe_logs < 4) {
-+			pr_warn("capture skipped: num_pp=%d unsupported\n", num_pp);
-+			c->probe_logs++;
-+		}
++	if (num_pp < 1 || num_pp > CAP_MAX_LM)
++		return;
++
++	if (c->mode == CAP_RECORD) {
++		spin_lock_irqsave(&c->rec_lock, flags);
++		idx = rec_next_free(c);
++		c->wr_idx = idx;
++		spin_unlock_irqrestore(&c->rec_lock, flags);
++		if (idx < 0)
++			return;		/* all buffers held; drop this frame */
++		cap_program(c, ctl, rt_pp, num_pp, c->ring[idx].iova, PIX_NV12);
 +		return;
 +	}
 +
-+	cap_program(c, ctl, rt_pp, num_pp);
++	/* CAP_SHOT: single debugfs buffer */
++	if (!c->iova)
++		return;
++	cap_program(c, ctl, rt_pp, num_pp, c->iova, c->pix);
 +}
++
++static void dpu_capture_wb_done_irq(void *arg)
++{
++	struct dpu_capture *c = arg;
++	unsigned long flags;
++
++	atomic_inc(&c->frames);
++
++	if (c->mode != CAP_RECORD)
++		return;
++
++	spin_lock_irqsave(&c->rec_lock, flags);
++	if (c->wr_idx >= 0) {
++		c->ready_idx = c->wr_idx;
++		c->ring[c->ready_idx].ready = true;
++		c->ready_seq++;
++		c->ready_ts = ktime_get_ns();
++		c->wr_idx = -1;
++	}
++	spin_unlock_irqrestore(&c->rec_lock, flags);
++	wake_up_interruptible(&c->rec_wq);
++}
++
++/* ---- buffer alloc ---- */
 +
 +static int dpu_capture_alloc_buf(struct dpu_capture *c)
 +{
@@ -352,9 +425,7 @@ index 0000000..5b6c398
 +	if (IS_ERR(c->vaddr)) {
 +		int ret = PTR_ERR(c->vaddr);
 +
-+		c->vaddr = NULL;
-+		c->bo = NULL;
-+		c->iova = 0;
++		c->vaddr = NULL; c->bo = NULL; c->iova = 0;
 +		return ret;
 +	}
 +	memset(c->vaddr, 0, CAP_BUF_SIZE);
@@ -367,14 +438,265 @@ index 0000000..5b6c398
 +		msm_gem_unpin_iova(c->bo, c->kms->base.vm);
 +		drm_gem_object_put(c->bo);
 +	}
-+	c->bo = NULL;
-+	c->vaddr = NULL;
-+	c->iova = 0;
++	c->bo = NULL; c->vaddr = NULL; c->iova = 0;
 +}
 +
-+static void dpu_capture_disarm(struct dpu_capture *c)
++static void rec_free_ring(struct dpu_capture *c)
 +{
-+	if (c->mode == CAP_OFF)
++	int i;
++
++	for (i = 0; i < REC_NBUF; i++) {
++		if (c->ring[i].dmabuf) {
++			dma_buf_put(c->ring[i].dmabuf);
++			c->ring[i].dmabuf = NULL;
++		}
++		if (c->ring[i].bo) {
++			msm_gem_unpin_iova(c->ring[i].bo, c->kms->base.vm);
++			drm_gem_object_put(c->ring[i].bo);
++		}
++		memset(&c->ring[i], 0, sizeof(c->ring[i]));
++	}
++}
++
++static int rec_alloc_ring(struct dpu_capture *c)
++{
++	int i;
++
++	for (i = 0; i < REC_NBUF; i++) {
++		c->ring[i].vaddr = msm_gem_kernel_new(c->kms->dev, NV12_SIZE,
++				MSM_BO_WC, c->kms->base.vm,
++				&c->ring[i].bo, &c->ring[i].iova);
++		if (IS_ERR(c->ring[i].vaddr)) {
++			int ret = PTR_ERR(c->ring[i].vaddr);
++
++			c->ring[i].vaddr = NULL; c->ring[i].bo = NULL;
++			rec_free_ring(c);
++			return ret;
++		}
++		c->ring[i].dmabuf = drm_gem_prime_export(c->ring[i].bo, O_RDWR);
++		if (IS_ERR(c->ring[i].dmabuf)) {
++			int ret = PTR_ERR(c->ring[i].dmabuf);
++
++			c->ring[i].dmabuf = NULL;
++			rec_free_ring(c);
++			return ret;
++		}
++	}
++	return 0;
++}
++
++/* ---- recording start/stop (driven by /dev/dpu_capture0 open/release) ---- */
++
++static int rec_start(struct dpu_capture *c)
++{
++	int ret;
++
++	if (c->mode != CAP_OFF)
++		return -EBUSY;
++
++	ret = rec_alloc_ring(c);
++	if (ret) {
++		pr_err("ring alloc failed: %d\n", ret);
++		return ret;
++	}
++	atomic_set(&c->frames, 0);
++	c->wr_idx = -1;
++	c->ready_idx = 0;
++	c->ready_seq = 0;
++
++	ret = dpu_core_irq_register_callback(c->kms, c->wb_irq,
++					     dpu_capture_wb_done_irq, c);
++	if (ret) {
++		rec_free_ring(c);
++		return ret;
++	}
++	c->irq_on = true;
++	c->mode = CAP_RECORD;
++	pr_info("record start: %d x NV12 ring\n", REC_NBUF);
++	return 0;
++}
++
++static void rec_stop(struct dpu_capture *c)
++{
++	if (c->mode != CAP_RECORD)
++		return;
++	c->mode = CAP_OFF;
++	if (c->irq_on) {
++		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
++		c->irq_on = false;
++	}
++	rec_free_ring(c);
++	pr_info("record stop (%d frames)\n", atomic_read(&c->frames));
++}
++
++/* ---- /dev/dpu_capture0 ---- */
++
++static int dpucap_open(struct inode *ino, struct file *file)
++{
++	struct dpu_capture *c = g_cap;
++	int ret;
++
++	if (!c)
++		return -ENODEV;
++	if (!c->cdm || !c->nv12_fmt)
++		return -ENODEV;
++	ret = rec_start(c);
++	if (ret)
++		return ret;
++	file->private_data = c;
++	return 0;
++}
++
++static int dpucap_release(struct inode *ino, struct file *file)
++{
++	struct dpu_capture *c = file->private_data;
++
++	if (c)
++		rec_stop(c);
++	return 0;
++}
++
++static __poll_t dpucap_poll(struct file *file, poll_table *wait)
++{
++	struct dpu_capture *c = file->private_data;
++	__poll_t mask = 0;
++	unsigned long flags;
++
++	poll_wait(file, &c->rec_wq, wait);
++	spin_lock_irqsave(&c->rec_lock, flags);
++	if (c->ready_seq)
++		mask |= EPOLLIN | EPOLLRDNORM;
++	spin_unlock_irqrestore(&c->rec_lock, flags);
++	return mask;
++}
++
++static long dpucap_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	struct dpu_capture *c = file->private_data;
++	void __user *uarg = (void __user *)arg;
++	unsigned long flags;
++
++	switch (cmd) {
++	case DPUCAP_QUERY: {
++		struct dpucap_geom g = {
++			.width = CAP_W, .height = CAP_H,
++			.fourcc = DRM_FORMAT_NV12, .num_buffers = REC_NBUF,
++			.y_stride = NV12_Y_STRIDE, .y_size = NV12_Y_SIZE,
++			.uv_stride = NV12_UV_STRIDE, .uv_size = NV12_UV_SIZE,
++			.total_size = NV12_SIZE,
++		};
++		return copy_to_user(uarg, &g, sizeof(g)) ? -EFAULT : 0;
++	}
++	case DPUCAP_EXPBUF: {
++		struct dpucap_expbuf e;
++		int fd;
++
++		if (copy_from_user(&e, uarg, sizeof(e)))
++			return -EFAULT;
++		if (e.index >= REC_NBUF || !c->ring[e.index].dmabuf)
++			return -EINVAL;
++		get_dma_buf(c->ring[e.index].dmabuf);
++		fd = dma_buf_fd(c->ring[e.index].dmabuf, O_CLOEXEC);
++		if (fd < 0) {
++			dma_buf_put(c->ring[e.index].dmabuf);
++			return fd;
++		}
++		e.fd = fd;
++		return copy_to_user(uarg, &e, sizeof(e)) ? -EFAULT : 0;
++	}
++	case DPUCAP_DQBUF: {
++		struct dpucap_frame f;
++		int idx;
++
++		if (wait_event_interruptible(c->rec_wq, c->ready_seq != 0))
++			return -ERESTARTSYS;
++		spin_lock_irqsave(&c->rec_lock, flags);
++		idx = c->ready_idx;
++		c->ring[idx].busy = true;
++		c->ring[idx].ready = false;
++		f.index = idx;
++		f.sequence = c->ready_seq;
++		f.timestamp_ns = c->ready_ts;
++		spin_unlock_irqrestore(&c->rec_lock, flags);
++		return copy_to_user(uarg, &f, sizeof(f)) ? -EFAULT : 0;
++	}
++	case DPUCAP_QBUF: {
++		u32 idx;
++
++		if (copy_from_user(&idx, uarg, sizeof(idx)))
++			return -EFAULT;
++		if (idx >= REC_NBUF)
++			return -EINVAL;
++		spin_lock_irqsave(&c->rec_lock, flags);
++		c->ring[idx].busy = false;
++		spin_unlock_irqrestore(&c->rec_lock, flags);
++		return 0;
++	}
++	}
++	return -ENOTTY;
++}
++
++static const struct file_operations dpucap_fops = {
++	.owner = THIS_MODULE,
++	.open = dpucap_open,
++	.release = dpucap_release,
++	.unlocked_ioctl = dpucap_ioctl,
++	.poll = dpucap_poll,
++	.llseek = noop_llseek,
++};
++
++/* ---- debugfs (screenshot) ---- */
++
++static int dpu_capture_arm_probe(struct dpu_capture *c)
++{
++	if (c->mode == CAP_RECORD)
++		return -EBUSY;
++	if (c->irq_on) {
++		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
++		c->irq_on = false;
++	}
++	dpu_capture_free_buf(c);
++	c->probe_logs = 0;
++	c->mode = CAP_PROBE;
++	pr_info("armed: PROBE\n");
++	return 0;
++}
++
++static int dpu_capture_arm_shot(struct dpu_capture *c, enum cap_pix pix)
++{
++	int ret;
++
++	if (c->mode == CAP_RECORD)
++		return -EBUSY;
++	if (pix == PIX_NV12 && (!c->cdm || !c->nv12_fmt))
++		return -ENODEV;
++	if (c->irq_on) {
++		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
++		c->irq_on = false;
++	}
++	dpu_capture_free_buf(c);
++
++	ret = dpu_capture_alloc_buf(c);
++	if (ret)
++		return ret;
++	atomic_set(&c->frames, 0);
++	c->probe_logs = 0;
++	c->pix = pix;
++	ret = dpu_core_irq_register_callback(c->kms, c->wb_irq,
++					     dpu_capture_wb_done_irq, c);
++	if (ret) {
++		dpu_capture_free_buf(c);
++		return ret;
++	}
++	c->irq_on = true;
++	c->mode = CAP_SHOT;
++	pr_info("armed: SHOT %s\n", pix == PIX_NV12 ? "NV12" : "XRGB");
++	return 0;
++}
++
++static void dpu_capture_disarm_shot(struct dpu_capture *c)
++{
++	if (c->mode != CAP_SHOT && c->mode != CAP_PROBE)
 +		return;
 +	c->mode = CAP_OFF;
 +	if (c->irq_on) {
@@ -382,53 +704,7 @@ index 0000000..5b6c398
 +		c->irq_on = false;
 +	}
 +	dpu_capture_free_buf(c);
-+	pr_info("disarmed (%d frames)\n", atomic_read(&c->frames));
 +}
-+
-+static int dpu_capture_arm_probe(struct dpu_capture *c)
-+{
-+	dpu_capture_disarm(c);
-+	c->probe_logs = 0;
-+	c->mode = CAP_PROBE;
-+	pr_info("armed: PROBE (log-only)\n");
-+	return 0;
-+}
-+
-+static int dpu_capture_arm_capture(struct dpu_capture *c, enum cap_pix pix)
-+{
-+	int ret;
-+
-+	if (pix == PIX_NV12 && (!c->cdm || !c->nv12_fmt)) {
-+		pr_warn("NV12 unavailable (cdm=%p nv12_fmt=%p)\n", c->cdm, c->nv12_fmt);
-+		return -ENODEV;
-+	}
-+
-+	dpu_capture_disarm(c);
-+
-+	ret = dpu_capture_alloc_buf(c);
-+	if (ret) {
-+		pr_err("buffer alloc failed: %d\n", ret);
-+		return ret;
-+	}
-+	atomic_set(&c->frames, 0);
-+	c->probe_logs = 0;
-+	c->pix = pix;
-+
-+	ret = dpu_core_irq_register_callback(c->kms, c->wb_irq,
-+					     dpu_capture_wb_done_irq, c);
-+	if (ret) {
-+		pr_err("wb irq register failed: %d\n", ret);
-+		dpu_capture_free_buf(c);
-+		return ret;
-+	}
-+	c->irq_on = true;
-+	c->mode = CAP_CAPTURE;
-+	pr_info("armed: CAPTURE %s %ux%u iova=%pad\n",
-+		pix == PIX_NV12 ? "NV12" : "XRGB8888", CAP_W, CAP_H, &c->iova);
-+	return 0;
-+}
-+
-+/* ---- debugfs ---- */
 +
 +static ssize_t arm_write(struct file *file, const char __user *ubuf,
 +			 size_t count, loff_t *ppos)
@@ -444,49 +720,43 @@ index 0000000..5b6c398
 +	if (buf[0] == 'p' || buf[0] == 'P')
 +		dpu_capture_arm_probe(c);
 +	else if (buf[0] == '1')
-+		dpu_capture_arm_capture(c, PIX_RGB);
++		dpu_capture_arm_shot(c, PIX_RGB);
 +	else if (buf[0] == '2')
-+		dpu_capture_arm_capture(c, PIX_NV12);
++		dpu_capture_arm_shot(c, PIX_NV12);
 +	else
-+		dpu_capture_disarm(c);
++		dpu_capture_disarm_shot(c);
 +	return count;
 +}
 +
 +static const struct file_operations arm_fops = {
-+	.open = simple_open,
-+	.write = arm_write,
-+	.llseek = default_llseek,
++	.open = simple_open, .write = arm_write, .llseek = default_llseek,
 +};
 +
 +static ssize_t status_read(struct file *file, char __user *ubuf,
 +			   size_t count, loff_t *ppos)
 +{
 +	struct dpu_capture *c = file->private_data;
-+	const char *m = c->mode == CAP_CAPTURE ? "capture" :
++	const char *m = c->mode == CAP_RECORD ? "record" :
++			c->mode == CAP_SHOT ? "shot" :
 +			c->mode == CAP_PROBE ? "probe" : "off";
 +	u32 size = c->pix == PIX_NV12 ? NV12_SIZE : RGB_SIZE;
-+	char buf[240];
++	char buf[256];
 +	int n;
 +
 +	n = scnprintf(buf, sizeof(buf),
-+		      "mode=%s pix=%s frames=%d w=%u h=%u size=%u rgb_stride=%u nv12_ystride=%u iova=0x%llx wb=%d cwb=[%d,%d] dcwb_pp=[%d,%d] merge3d=%d cdm=%d\n",
-+		      m, c->pix == PIX_NV12 ? "nv12" : "rgb",
-+		      atomic_read(&c->frames), CAP_W, CAP_H, size,
-+		      RGB_STRIDE, NV12_Y_STRIDE, (u64)c->iova,
-+		      c->wb ? c->wb->idx : -1,
-+		      c->cwb[0] ? c->cwb[0]->idx : -1,
-+		      c->cwb[1] ? c->cwb[1]->idx : -1,
-+		      c->dcwb_pp[0] ? c->dcwb_pp[0]->idx : -1,
-+		      c->dcwb_pp[1] ? c->dcwb_pp[1]->idx : -1,
-+		      c->merge3d ? c->merge3d->idx : -1,
-+		      c->cdm ? c->cdm->idx : -1);
++		"mode=%s pix=%s frames=%d rec_seq=%u w=%u h=%u shot_size=%u nv12_size=%u wb=%d cwb=[%d,%d] dcwb_pp=[%d,%d] merge3d=%d cdm=%d\n",
++		m, c->pix == PIX_NV12 ? "nv12" : "rgb",
++		atomic_read(&c->frames), c->ready_seq, CAP_W, CAP_H, size,
++		NV12_SIZE, c->wb ? c->wb->idx : -1,
++		c->cwb[0] ? c->cwb[0]->idx : -1, c->cwb[1] ? c->cwb[1]->idx : -1,
++		c->dcwb_pp[0] ? c->dcwb_pp[0]->idx : -1,
++		c->dcwb_pp[1] ? c->dcwb_pp[1]->idx : -1,
++		c->merge3d ? c->merge3d->idx : -1, c->cdm ? c->cdm->idx : -1);
 +	return simple_read_from_buffer(ubuf, count, ppos, buf, n);
 +}
 +
 +static const struct file_operations status_fops = {
-+	.open = simple_open,
-+	.read = status_read,
-+	.llseek = default_llseek,
++	.open = simple_open, .read = status_read, .llseek = default_llseek,
 +};
 +
 +static ssize_t frame_read(struct file *file, char __user *ubuf,
@@ -502,9 +772,7 @@ index 0000000..5b6c398
 +}
 +
 +static const struct file_operations frame_fops = {
-+	.open = simple_open,
-+	.read = frame_read,
-+	.llseek = default_llseek,
++	.open = simple_open, .read = frame_read, .llseek = default_llseek,
 +};
 +
 +/* ---- init / destroy ---- */
@@ -514,16 +782,10 @@ index 0000000..5b6c398
 +	struct dpu_rm *rm = &c->kms->rm;
 +	int i, n, pp0;
 +
-+	for (i = 0; i < ARRAY_SIZE(rm->hw_wb); i++) {
-+		if (rm->hw_wb[i]) {
-+			c->wb = rm->hw_wb[i];
-+			break;
-+		}
-+	}
-+	for (i = 0, n = 0; i < ARRAY_SIZE(rm->cwb_blks) && n < CAP_MAX_LM; i++) {
-+		if (rm->cwb_blks[i])
-+			c->cwb[n++] = to_dpu_hw_cwb(rm->cwb_blks[i]);
-+	}
++	for (i = 0; i < ARRAY_SIZE(rm->hw_wb); i++)
++		if (rm->hw_wb[i]) { c->wb = rm->hw_wb[i]; break; }
++	for (i = 0, n = 0; i < ARRAY_SIZE(rm->cwb_blks) && n < CAP_MAX_LM; i++)
++		if (rm->cwb_blks[i]) c->cwb[n++] = to_dpu_hw_cwb(rm->cwb_blks[i]);
 +	pp0 = PINGPONG_CWB_0 - PINGPONG_0;
 +	for (n = 0; n < CAP_MAX_LM; n++) {
 +		int idx = pp0 + n;
@@ -543,20 +805,19 @@ index 0000000..5b6c398
 +
 +	if (g_cap)
 +		return;
-+
 +	c = kzalloc(sizeof(*c), GFP_KERNEL);
 +	if (!c)
 +		return;
 +
 +	c->kms = dpu_kms;
 +	atomic_set(&c->frames, 0);
++	spin_lock_init(&c->rec_lock);
++	init_waitqueue_head(&c->rec_wq);
 +	dpu_capture_fetch_blocks(c);
 +
 +	if (!c->wb || !c->cwb[0] || !c->cwb[1] ||
 +	    !c->dcwb_pp[0] || !c->dcwb_pp[1] || !c->merge3d) {
-+		pr_warn("CWB blocks missing (wb=%p cwb=%p,%p dcwb_pp=%p,%p merge3d=%p); disabled\n",
-+			c->wb, c->cwb[0], c->cwb[1], c->dcwb_pp[0],
-+			c->dcwb_pp[1], c->merge3d);
++		pr_warn("CWB blocks missing; disabled\n");
 +		kfree(c);
 +		return;
 +	}
@@ -574,11 +835,18 @@ index 0000000..5b6c398
 +	debugfs_create_file("status", 0400, c->dir, c, &status_fops);
 +	debugfs_create_file("frame.raw", 0400, c->dir, c, &frame_fops);
 +
++	c->misc.minor = MISC_DYNAMIC_MINOR;
++	c->misc.name = "dpu_capture0";
++	c->misc.fops = &dpucap_fops;
++	c->misc_ok = (misc_register(&c->misc) == 0);
++	if (!c->misc_ok)
++		pr_warn("misc_register failed; recording node unavailable\n");
++
 +	g_cap = c;
-+	pr_info("init: wb=%d cwb=[%d,%d] dcwb_pp=[%d,%d] merge3d=%d cdm=%d nv12=%d wb_irq=%u\n",
++	pr_info("init: wb=%d cwb=[%d,%d] dcwb_pp=[%d,%d] merge3d=%d cdm=%d nv12=%d misc=%d wb_irq=%u\n",
 +		c->wb->idx, c->cwb[0]->idx, c->cwb[1]->idx,
 +		c->dcwb_pp[0]->idx, c->dcwb_pp[1]->idx, c->merge3d->idx,
-+		c->cdm ? c->cdm->idx : -1, c->nv12_fmt ? 1 : 0, c->wb_irq);
++		c->cdm ? c->cdm->idx : -1, c->nv12_fmt ? 1 : 0, c->misc_ok, c->wb_irq);
 +}
 +
 +void dpu_capture_destroy(struct dpu_kms *dpu_kms)
@@ -587,7 +855,10 @@ index 0000000..5b6c398
 +
 +	if (!c || c->kms != dpu_kms)
 +		return;
-+	dpu_capture_disarm(c);
++	rec_stop(c);
++	dpu_capture_disarm_shot(c);
++	if (c->misc_ok)
++		misc_deregister(&c->misc);
 +	debugfs_remove_recursive(c->dir);
 +	kfree(c);
 +	g_cap = NULL;
