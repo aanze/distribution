@@ -39,10 +39,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..a3cdfd5
+index 0000000..2962241
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,1044 @@
+@@ -0,0 +1,1077 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -491,6 +491,37 @@ index 0000000..a3cdfd5
 + * simply re-attaches on the next compositor's first kickoff, so one clip can
 + * span launching/leaving Steam (a few frames are dropped across the swap).
 + */
++/*
++ * Physically tear down the capture datapath blocks. Clearing the CTL ACTIVE
++ * bits is NOT enough: the CWB mux is a hardware tap bolted onto the live
++ * layer-mixer output, and it keeps sampling even with the WB inactive. Left
++ * tapping, it backpressures the realtime pipe the moment the *next* compositor
++ * drives the mixers -> ctl reset failure / black screen on the Steam handoff.
++ * So un-tap the CWB muxes (pp_idx = PINGPONG_NONE), drop the 3D merge, and
++ * detach the writeback from its pingpong. These are direct register writes that
++ * hold, so they take effect for whatever compositor next owns the mixers.
++ */
++static void cap_teardown_blocks(struct dpu_capture *c)
++{
++	struct dpu_hw_cwb_setup_cfg cwb_cfg = {
++		.input = INPUT_MODE_LM_OUT,
++		.pp_idx = PINGPONG_NONE,
++	};
++	int i;
++
++	for (i = 0; i < CAP_MAX_LM; i++)
++		if (c->cwb[i] && c->cwb[i]->ops.config_cwb)
++			c->cwb[i]->ops.config_cwb(c->cwb[i], &cwb_cfg);
++
++	if (c->merge3d && c->merge3d->ops.setup_3d_mode)
++		c->merge3d->ops.setup_3d_mode(c->merge3d, BLEND_3D_NONE);
++
++	if (c->wb && c->wb->ops.bind_pingpong_blk)
++		c->wb->ops.bind_pingpong_blk(c->wb, PINGPONG_NONE);
++
++	pr_info("teardown: cwb un-tapped\n");
++}
++
 +void dpu_capture_disarm(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl)
 +{
 +	struct dpu_capture *c = g_cap;
@@ -506,6 +537,7 @@ index 0000000..a3cdfd5
 +	if (ctl->ops.clear_capture_active)
 +		ctl->ops.clear_capture_active(ctl, c->wb->idx,
 +			c->last_cwb_mask, c->last_merge, c->last_cdm);
++	cap_teardown_blocks(c);
 +
 +	c->wb_outstanding = false;
 +	c->wb_stall = 0;
@@ -557,10 +589,11 @@ index 0000000..a3cdfd5
 +		pr_info("drain on ctl%d: idle\n", ctl->idx);
 +	}
 +
-+	/* clear our footprint off the still-live CTL */
++	/* clear our footprint off the still-live CTL + un-tap the CWB datapath */
 +	if (ctl->ops.clear_capture_active)
 +		ctl->ops.clear_capture_active(ctl, c->wb->idx,
 +			c->last_cwb_mask, c->last_merge, c->last_cdm);
++	cap_teardown_blocks(c);
 +	c->wb_outstanding = false;
 +	c->wb_stall = 0;
 +	c->armed_ctl = NULL;
