@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
-# Personal OTA updater for Anze's ROCKNIX builds.
+# Personal OTA updater for Anze's DUCKTALE builds (a ROCKNIX fork).
 #
 # Mirrors the contract of the stock `rocknix-update` script, but pulls the
 # update package from the personal GitHub releases at
@@ -103,7 +103,10 @@ main_update() {
     update_file="${UPDATE_DIR}/${filename}"
     checksum_file="${update_file}.sha256"
 
-    echo "Downloading ${filename} (version ${version})..."
+    # The on-disk filename stays ROCKNIX-<device>.<arch>-<date>.tar because the
+    # busybox init flasher keys off the distro name in the .tar — but the toast
+    # the user sees should read "DUCKTALE", not the raw ROCKNIX filename.
+    echo "Downloading DUCKTALE nightly ${version}..."
     if ! download_file "$tar_url" "$update_file"; then
         echo "Failed to download update file."
         rm -f "$update_file"
