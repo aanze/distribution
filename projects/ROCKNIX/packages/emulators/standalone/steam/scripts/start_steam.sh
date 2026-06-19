@@ -159,9 +159,12 @@ steam_launch_bigpicture() {
         gamescope $PREFER_OUTPUT -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
         /storage/.local/share/Steam/steamrtarm64/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       systemctl start essway
-      # screen-capture: capture is quiesced by steamos-session-select before
-      # gamescope is killed; resume now that ES/sway is coming back.
-      /usr/bin/rocknix-screenrecord resume 2>/dev/null
+      # screen-capture: steamos-session-select already drained+paused capture
+      # before gamescope was killed. Do NOT resume here -- ES/sway crash-restarts
+      # on return, and re-arming the writeback into that unstable window orphans
+      # it and wedges the display. Finalize the clip instead (one continuous
+      # ES -> gameplay recording, ending at Return to Desktop).
+      /usr/bin/rocknix-screenrecord stop 2>/dev/null
       exit 0
     fi
   else
@@ -175,9 +178,12 @@ steam_launch_bigpicture() {
         gamescope $PREFER_OUTPUT -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
         FEX /usr/bin/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       systemctl start essway
-      # screen-capture: capture is quiesced by steamos-session-select before
-      # gamescope is killed; resume now that ES/sway is coming back.
-      /usr/bin/rocknix-screenrecord resume 2>/dev/null
+      # screen-capture: steamos-session-select already drained+paused capture
+      # before gamescope was killed. Do NOT resume here -- ES/sway crash-restarts
+      # on return, and re-arming the writeback into that unstable window orphans
+      # it and wedges the display. Finalize the clip instead (one continuous
+      # ES -> gameplay recording, ending at Return to Desktop).
+      /usr/bin/rocknix-screenrecord stop 2>/dev/null
       exit 0
     fi
   fi
