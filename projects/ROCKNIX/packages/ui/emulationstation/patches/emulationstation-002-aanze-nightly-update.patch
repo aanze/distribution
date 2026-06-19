@@ -1,10 +1,10 @@
 From: Anze <aanzdev@gmail.com>
-Subject: [PATCH] Updates menu: add "UPDATE TO AANZE NIGHTLY" entry
+Subject: [PATCH] Updates menu: add DUCKTALE NIGHTLIES updater entry
 
 Add a second software-update action directly under the stock START UPDATE
 entry in the "UPDATES & DOWNLOADS" > "SOFTWARE UPDATES" menu, targeting the
-personal nightly releases published at github.com/aanze/distribution instead
-of the official update.rocknix.org endpoint.
+personal DUCKTALE nightly releases published at github.com/aanze/distribution
+instead of the official update.rocknix.org endpoint.
 
 Rather than duplicate the whole download/verify/progress/reboot UX, the patch
 parameterises the single hardcoded "rocknix-update" command string through the
@@ -15,7 +15,16 @@ existing flow:
     existing callers is unchanged.
   - GuiUpdate (and its inner ThreadedUpdater) gain an optional `updateCommand`
     that is threaded through to canUpdate()/updateSystem().
-  - GuiMenu pushes `new GuiUpdate(mWindow, "aanze-update")` for the new entry.
+  - GuiMenu pushes `new GuiUpdate(mWindow, "aanze-update")` for the new entry,
+    labelled "DUCKTALE NIGHTLIES" (a product name, shown identically in every
+    locale so nothing falls back to an untranslated English string).
+
+For the "aanze-update" path, GuiUpdate also replaces the stock "UNOFFICIAL
+SYSTEM MODIFICATIONS DETECTED / UPGRADING COULD BREAK YOUR SYSTEM" confirmation
+with a friendly "DUCKTALE NIGHTLY" reminder: every personal build carries
+custom modifications by design, so that warning is just noise. It reuses the
+already-translated "YOU ARE CURRENTLY USING VERSION ..." prompt, so the dialog
+stays fully localized (incl. French) with only the brand line in English.
 
 The aanze-update backend script mirrors rocknix-update's contract (`check`
 prints the available version and exits 0 when an update is available; the
@@ -25,7 +34,7 @@ official path.
 
 ---
 diff --git a/es-app/src/ApiSystem.cpp b/es-app/src/ApiSystem.cpp
-index a5b8e9be..72cca7a6 100644
+index 19acd7d..909dfb3 100644
 --- a/es-app/src/ApiSystem.cpp
 +++ b/es-app/src/ApiSystem.cpp
 @@ -188,11 +188,10 @@ bool ApiSystem::setOverclock(std::string mode)
@@ -56,7 +65,7 @@ index a5b8e9be..72cca7a6 100644
  		return false;
  
 diff --git a/es-app/src/ApiSystem.h b/es-app/src/ApiSystem.h
-index 03a1bb90..e84f6158 100644
+index cf63822..b073539 100644
 --- a/es-app/src/ApiSystem.h
 +++ b/es-app/src/ApiSystem.h
 @@ -197,14 +197,14 @@ public:
@@ -77,18 +86,20 @@ index 03a1bb90..e84f6158 100644
  	virtual bool isReadyFlagSet();
  
 diff --git a/es-app/src/guis/GuiMenu.cpp b/es-app/src/guis/GuiMenu.cpp
-index 96bea5a3..dfc1a0ab 100644
+index 13c8747..d8d7bc5 100644
 --- a/es-app/src/guis/GuiMenu.cpp
 +++ b/es-app/src/guis/GuiMenu.cpp
-@@ -1308,6 +1308,22 @@ void GuiMenu::openUpdatesSettings()
+@@ -1308,6 +1308,24 @@ void GuiMenu::openUpdatesSettings()
  				mWindow->pushGui(new GuiUpdate(mWindow));
  			}
  		});
 +
-+		// Start update from Anze's personal nightly releases (github.com/aanze/distribution).
-+		// Reuses the stock GuiUpdate/ApiSystem flow but points it at the "aanze-update"
-+		// backend instead of "rocknix-update"; staging + apply-on-reboot are identical.
-+		updateGui->addEntry(_("UPDATE TO AANZE NIGHTLY"), true, [this]
++		// Start update from the personal DUCKTALE nightly releases
++		// (github.com/aanze/distribution). Reuses the stock GuiUpdate/ApiSystem
++		// flow but points it at the "aanze-update" backend instead of
++		// "rocknix-update"; staging + apply-on-reboot are identical.
++		// "DUCKTALE NIGHTLIES" is a product name, shown identically in every locale.
++		updateGui->addEntry(_("DUCKTALE NIGHTLIES"), true, [this]
 +		{
 +			if (GuiUpdate::state == GuiUpdateState::State::UPDATER_RUNNING)
 +				mWindow->pushGui(new GuiMsgBox(mWindow, _("UPDATER IS ALREADY RUNNING")));
@@ -104,7 +115,7 @@ index 96bea5a3..dfc1a0ab 100644
  
  	mWindow->pushGui(updateGui);
 diff --git a/es-app/src/guis/GuiUpdate.cpp b/es-app/src/guis/GuiUpdate.cpp
-index ace47925..bb02999d 100644
+index ace4792..7c4df78 100644
 --- a/es-app/src/guis/GuiUpdate.cpp
 +++ b/es-app/src/guis/GuiUpdate.cpp
 @@ -14,7 +14,7 @@ GuiUpdateState::State GuiUpdate::state = GuiUpdateState::State::NO_UPDATE;
@@ -147,7 +158,39 @@ index ace47925..bb02999d 100644
  		{
  			if (msgtbl.size() == 1)
  				mUpdateVersion = msgtbl[0];
-@@ -177,7 +178,7 @@ void GuiUpdate::update(int deltaTime)
+@@ -163,13 +164,26 @@ void GuiUpdate::update(int deltaTime)
+ 
+ 			std::string message = _("REALLY UPDATE?");
+ 
+-			if (!mUpdateVersion.empty()) 
++			if (!mUpdateVersion.empty())
+ 			{
+-				std::string versionExtra = ApiSystem::getInstance()->getVersion(true);
+-				if (versionExtra == "official" || versionExtra == "nightly")
+-					message = Utils::String::format(_("YOU ARE CURRENTLY USING VERSION %s\nDO YOU WANT TO UPDATE TO VERSION %s?").c_str(), ApiSystem::getInstance()->getVersion().c_str(), mUpdateVersion.c_str());
++				if (mUpdateCommand == "aanze-update")
++				{
++					// DUCKTALE nightly: every personal build carries custom
++					// system modifications by design, so do NOT show the stock
++					// "UNOFFICIAL SYSTEM MODIFICATIONS DETECTED" scare here.
++					// Just remind the user this is a DUCKTALE nightly and reuse
++					// the already-translated version prompt (stays localized in
++					// every language, incl. French, no English leak).
++					message = std::string("DUCKTALE NIGHTLY\n\n") + Utils::String::format(_("YOU ARE CURRENTLY USING VERSION %s\nDO YOU WANT TO UPDATE TO VERSION %s?").c_str(), ApiSystem::getInstance()->getVersion().c_str(), mUpdateVersion.c_str());
++				}
+ 				else
+-					message = Utils::String::format(_("UNOFFICIAL SYSTEM MODIFICATIONS DETECTED.\nUPGRADING COULD BREAK YOUR SYSTEM.\nDO YOU WANT TO UPDATE TO VERSION %s?").c_str(), mUpdateVersion.c_str());
++				{
++					std::string versionExtra = ApiSystem::getInstance()->getVersion(true);
++					if (versionExtra == "official" || versionExtra == "nightly")
++						message = Utils::String::format(_("YOU ARE CURRENTLY USING VERSION %s\nDO YOU WANT TO UPDATE TO VERSION %s?").c_str(), ApiSystem::getInstance()->getVersion().c_str(), mUpdateVersion.c_str());
++					else
++						message = Utils::String::format(_("UNOFFICIAL SYSTEM MODIFICATIONS DETECTED.\nUPGRADING COULD BREAK YOUR SYSTEM.\nDO YOU WANT TO UPDATE TO VERSION %s?").c_str(), mUpdateVersion.c_str());
++				}
+ 
+ 				window->pushGui(new GuiMsgBox(window, message, _("YES"), [this]
+ 				{
+@@ -177,7 +191,7 @@ void GuiUpdate::update(int deltaTime)
  					mLoading = true;
  
  					mState = -1;
@@ -157,7 +200,7 @@ index ace47925..bb02999d 100644
  				}, _("NO"), [this] { mState = -1; }));
  			}
 diff --git a/es-app/src/guis/GuiUpdate.h b/es-app/src/guis/GuiUpdate.h
-index a4a6be0e..fddea10a 100644
+index a4a6be0..fddea10 100644
 --- a/es-app/src/guis/GuiUpdate.h
 +++ b/es-app/src/guis/GuiUpdate.h
 @@ -21,7 +21,7 @@ class GuiUpdate : public GuiComponent
