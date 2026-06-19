@@ -496,20 +496,21 @@ set +e
         fi
       ;;
      (${FUNCTION_HOTKEY_BTN_WEST_EVENT})
-        if [ "${HOTKEY_A_PRESSED}" = true ]; then
+        if [ "${HOME_LEFT_PRESSED}" = true ]; then
+          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_WEST_EVENT}: Screen record toggle (left home + Y)"
+          # System-wide screen recording via DPU CWB + Iris encoder (works in
+          # emulators AND gamescope/Steam); start/stop with one toggle.
+          # Bound to left-home + Y (on this device's InputPlumber map the
+          # physical Y button reports as BTN_WEST) so it can't collide with the
+          # in-menu L1 (tab switch) / A (confirm) hotkeys.
+          /usr/bin/rocknix-screenrecord toggle
+        elif [ "${HOTKEY_A_PRESSED}" = true ]; then
           ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_WEST_EVENT}: Config MangoHud"
           /usr/bin/mangohud_set toggle
         fi
       ;;
      (${FUNCTION_HOTKEY_BTN_NORTH_EVENT})
-       if [ "${HOME_LEFT_PRESSED}" = true ]; then
-         ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_NORTH_EVENT}: Screen record toggle (left home + Y)"
-         # System-wide screen recording via DPU CWB + Iris encoder (works in
-         # emulators AND gamescope/Steam); start/stop with one toggle.
-         # Bound to left-home + Y so it can't collide with the in-menu
-         # L1 (tab switch) / A (confirm) hotkeys.
-         /usr/bin/rocknix-screenrecord toggle
-       elif [ "${HOTKEY_A_PRESSED}" = true ]; then
+       if [ "${HOTKEY_A_PRESSED}" = true ]; then
          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_NORTH_EVENT}: Opening Game Guide"
          /usr/bin/game-guides-tool
        fi
