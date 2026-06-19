@@ -8,7 +8,9 @@
 # (black screen, force reboot). Quiesce capture FIRST, while gamescope is still
 # live, so its writeback drains cleanly and nothing is armed when gamescope dies.
 # No-op unless a recording is active. Capture resumes once ES/sway is back.
+echo "[$(date '+%H:%M:%S')] steamos-session-select: pause+kill" >> /storage/screenrecord.log 2>/dev/null
 /usr/bin/rocknix-screenrecord pause 2>/dev/null
+dmesg 2>/dev/null | grep -iE "dpu_capture" | tail -4 | sed 's/^/      /' >> /storage/screenrecord.log 2>/dev/null
 
 killall gamescope steam FEX
 killall -9 gamescope steam FEX
