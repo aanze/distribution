@@ -3,18 +3,19 @@
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 #
 # ES "screensaver-start" event hook ($1 = ScreenSaverBehavior).
-# Pair the OLED anti-image-retention overlay with the "black" screensaver type:
-# ES draws/holds black (and sleeps), our input-transparent overlay paints the
-# sweeping noise band on top. Any button press reaches ES (overlay is
-# input-transparent) -> ES cancels the screensaver -> fires screensaver-stop
-# -> the overlay is killed.
+# Pair the OLED anti-image-retention overlay with the dedicated "oled"
+# screensaver type (ES patch 010): ES draws/holds black (and sleeps), our
+# input-transparent overlay paints the sweeping noise band on top. Any button
+# press reaches ES (overlay is input-transparent) -> ES cancels the screensaver
+# -> fires screensaver-stop -> the overlay is killed. The stock "black" type is
+# left as a plain black screen (no overlay).
 
 # ES passes the ScreenSaverBehavior as an arg, but its position differs by
 # convention: scripts in a scripts/<event>/ subdir (our case) are called as
-# `<script> <behavior>` ($1=black); top-level scripts get `<script> <event>
-# <behavior>`. Match "black" anywhere in the args to cover both.
+# `<script> <behavior>` ($1=oled); top-level scripts get `<script> <event>
+# <behavior>`. Match "oled" anywhere in the args to cover both.
 case " $* " in
-  *" black "*) : ;;
+  *" oled "*) : ;;
   *) exit 0 ;;
 esac
 pidof oledsaver >/dev/null 2>&1 && exit 0
