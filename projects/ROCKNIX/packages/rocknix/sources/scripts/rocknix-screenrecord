@@ -1,33 +1,35 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0
-# rocknix-screenrecord {start|stop|toggle|status} -- system-wide screen recording
-# via the DPU CWB capture ring (/dev/dpu_capture0) + Iris H.264 encoder.
+# rocknix-screenrecord {start|stop|toggle|pause|resume|status} -- system-wide
+# screen recording via the DPU CWB capture ring (/dev/dpu_capture0) + Iris
+# H.264 encoder.
 #
 # The recorder runs in its OWN transient systemd unit (systemd-run) so it is
-# independent of input.service / sway / essway -- those restart during an
-# ES<->Steam handoff and would otherwise kill a recorder in their cgroup. This
-# is what lets one recording span launching/leaving Steam.
+# independent of input.service / sway / essway / gamescope -- those start and
+# stop during an ES<->Steam switch and would otherwise kill a recorder in their
+# cgroup. That, plus the pause/resume watcher below, is what lets ONE recording
+# span the whole session: ES -> gameplay -> ES.
 
 . /etc/profile 2>/dev/null
 
 REC=/usr/bin/rocknix-cwb-record
 DIR=/storage/roms/screenshots/video
 UNIT=rocknix-screenrecord
+WATCH=rocknix-screenrecord-watch
 OUTF=/tmp/.screenrecord.out
 FPS=30
 # Display rotation baked into the .mp4 so it plays landscape on a PC. The panel
-# is portrait-native; 90 undoes the compositor rotation. Override with
-# `screenrecord.rotation` (0|90|180|270) if a clip comes out upside down.
+# is portrait-native; 270 undoes the compositor rotation. Override with
+# `screenrecord.rotation` (0|90|180|270) if a clip comes out rotated wrong.
 ROT="$(get_setting screenrecord.rotation 2>/dev/null)"
 [ -z "$ROT" ] && ROT=270
 
 is_running() { systemctl is-active --quiet "${UNIT}.service" 2>/dev/null; }
 
-# Kernel capture pause/resume knob. Used to quiesce the DPU writeback BEFORE a
-# compositor switch (sway<->gamescope) while the old display is still live, so
-# no writeback is left armed when the compositor tears down (an orphaned WB
-# hangs the display CTL = black screen). The recorder keeps running in its own
-# scope, so one clip spans the whole session: ES -> gameplay -> ES.
+# Kernel capture pause/resume knob. Quiesces the DPU writeback (drains the
+# in-flight WB while the current compositor is still live, then holds capture
+# off) so nothing is armed when a compositor tears down -- an orphaned writeback
+# hangs the display CTL (black screen / hard hang).
 PAUSE_KNOB=/sys/kernel/debug/dpu_capture/pause
 
 case "$1" in
@@ -37,19 +39,24 @@ case "$1" in
       echo "no /dev/dpu_capture0"; exit 1
     fi
     is_running && { echo "already recording"; exit 0; }
-    systemctl reset-failed "${UNIT}.service" 2>/dev/null
+    systemctl reset-failed "${UNIT}.service" "${WATCH}.service" 2>/dev/null
     mkdir -p "$DIR"
     OUT="$DIR/$(date +'%Y-%m-%d-%H%M%S').mp4"
     echo "$OUT" > "$OUTF"
-    # own unit -> survives input.service/sway restarts across the Steam handoff
+    # own unit -> survives input.service/sway/gamescope restarts across the switch
     systemd-run --collect --quiet --unit="$UNIT" "$REC" "$OUT" 0 "$FPS" "$ROT" || {
       /usr/bin/mako-notify "Recording failed to start" -no-ra 2>/dev/null
       echo "systemd-run failed"; exit 1
     }
+    # resume watcher: re-arms capture after a Steam/gamescope session, but only
+    # once the compositor is solidly back (rides out the post-Steam restart
+    # churn) so we never arm into an unstable display.
+    systemd-run --collect --quiet --unit="$WATCH" "$0" __resumewatch 2>/dev/null
     /usr/bin/mako-notify "Recording started" -no-ra 2>/dev/null
     echo "recording -> $OUT"
     ;;
   stop)
+    systemctl stop "${WATCH}.service" 2>/dev/null
     is_running || { rm -f "$OUTF"; exit 0; }
     systemctl stop "${UNIT}.service" 2>/dev/null   # SIGTERM -> encoder drains -> exit
     /usr/bin/mako-notify "Recording saved" -no-ra 2>/dev/null
@@ -60,14 +67,40 @@ case "$1" in
     if is_running; then "$0" stop; else "$0" start; fi
     ;;
   pause)
-    # No-op unless a recording is active. Drains the in-flight writeback while
-    # the current compositor is still live, then holds capture off.
+    # Drain + hold capture off. Called by steamos-session-select before it kills
+    # gamescope (Return to Desktop), while gamescope is still live. No-op unless
+    # recording.
     is_running || exit 0
     [ -w "$PAUSE_KNOB" ] && echo 1 > "$PAUSE_KNOB"
     ;;
   resume)
     is_running || exit 0
     [ -w "$PAUSE_KNOB" ] && echo 0 > "$PAUSE_KNOB"
+    ;;
+  __resumewatch)
+    # Internal: runs in its own scope for the life of the recording. When a
+    # gamescope (Steam) session ends, wait until sway+essway have been
+    # continuously active for several seconds (the post-Steam compositor
+    # crash-restarts briefly; arming into that wedges the display), then resume
+    # capture so the single clip continues in ES.
+    saw_gs=0; stable=0
+    while is_running; do
+      if pgrep -x gamescope >/dev/null 2>&1; then
+        saw_gs=1; stable=0
+      elif [ "$saw_gs" = 1 ]; then
+        if systemctl is-active --quiet sway 2>/dev/null && \
+           systemctl is-active --quiet essway 2>/dev/null; then
+          stable=$((stable + 1))
+        else
+          stable=0
+        fi
+        if [ "$stable" -ge 8 ]; then     # ~8s solidly back in ES
+          [ -w "$PAUSE_KNOB" ] && echo 0 > "$PAUSE_KNOB"
+          saw_gs=0; stable=0
+        fi
+      fi
+      sleep 1
+    done
     ;;
   status)
     is_running && echo recording || echo idle
