@@ -39,10 +39,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..2962241
+index 0000000..e3bc67c
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,1077 @@
+@@ -0,0 +1,1110 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -172,6 +172,7 @@ index 0000000..2962241
 +	int wb_retries;
 +	int resume_skip;	/* don't re-arm for N kickoffs after a teardown */
 +	bool paused;		/* userspace held capture off across a compositor switch */
++	bool untap_pending;	/* latch the CWB un-tap on the next compositor's kickoff */
 +	u32 last_cwb_mask;
 +	enum dpu_merge_3d last_merge;
 +	enum dpu_cdm last_cdm;
@@ -400,6 +401,8 @@ index 0000000..2962241
 +	return -1;
 +}
 +
++static void cap_teardown_blocks(struct dpu_capture *c);
++
 +/* called from the realtime encoder kickoff, under enc_spinlock */
 +void dpu_capture_kickoff(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl,
 +			 const enum dpu_pingpong *rt_pp, int num_pp)
@@ -434,6 +437,24 @@ index 0000000..2962241
 +	 * footprint off the CTL and sets resume_skip, and we then hold off arming
 +	 * until the new display path has settled.
 +	 */
++	/*
++	 * Latch a pending CWB un-tap onto THIS compositor's frame. The un-tap
++	 * registers were written at teardown but are shadowed; flushing the CWB
++	 * blocks on this CTL makes the encoder's own trigger (right after this
++	 * hook) commit the un-tap with its first frame, before the mux can
++	 * backpressure the mixer. Runs even while paused.
++	 */
++	if (c->untap_pending) {
++		int j;
++
++		cap_teardown_blocks(c);		/* re-assert the un-tap registers */
++		for (j = 0; j < CAP_MAX_LM; j++)
++			if (c->cwb[j] && ctl->ops.update_pending_flush_cwb)
++				ctl->ops.update_pending_flush_cwb(ctl, c->cwb[j]->idx);
++		c->untap_pending = false;
++		pr_info("untap latched on ctl%d\n", ctl->idx);
++	}
++
 +	/* userspace paused us across a compositor switch -- do not arm */
 +	if (c->paused)
 +		return;
@@ -538,6 +559,7 @@ index 0000000..2962241
 +		ctl->ops.clear_capture_active(ctl, c->wb->idx,
 +			c->last_cwb_mask, c->last_merge, c->last_cdm);
 +	cap_teardown_blocks(c);
++	c->untap_pending = true;	/* latch on next compositor's kickoff */
 +
 +	c->wb_outstanding = false;
 +	c->wb_stall = 0;
@@ -594,6 +616,17 @@ index 0000000..2962241
 +		ctl->ops.clear_capture_active(ctl, c->wb->idx,
 +			c->last_cwb_mask, c->last_merge, c->last_cdm);
 +	cap_teardown_blocks(c);
++	/*
++	 * The un-tap registers are written but SHADOWED -- they only become active
++	 * on a CTL flush+start, which the compositor we are leaving will not issue.
++	 * Rather than trigger its CTL out-of-band (a cmd-mode CTL_START without TE
++	 * sync can itself time out and wedge), defer the latch: the next
++	 * compositor's first kickoff flushes the un-tap on its own CTL (see
++	 * dpu_capture_kickoff), so it commits with that compositor's first frame
++	 * and the mux is un-tapped before it can backpressure the mixer.
++	 */
++	c->untap_pending = true;
++
 +	c->wb_outstanding = false;
 +	c->wb_stall = 0;
 +	c->armed_ctl = NULL;
