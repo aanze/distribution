@@ -39,10 +39,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..c32666e
+index 0000000..a3cdfd5
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,1042 @@
+@@ -0,0 +1,1044 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -680,6 +680,8 @@ index 0000000..c32666e
 +	c->wb_outstanding = false;
 +	c->wb_stall = 0;
 +	c->wb_retries = 0;
++	c->resume_skip = 0;
++	c->paused = false;	/* a fresh recording always starts live */
 +	c->wr_idx = -1;
 +	c->ready_idx = 0;
 +	c->ready_seq = 0;

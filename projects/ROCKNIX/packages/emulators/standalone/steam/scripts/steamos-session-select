@@ -3,5 +3,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 
+# screen-capture: "Return to Desktop" kills gamescope with SIGKILL below, which
+# would orphan an in-flight DPU capture writeback and wedge the display CTL
+# (black screen, force reboot). Quiesce capture FIRST, while gamescope is still
+# live, so its writeback drains cleanly and nothing is armed when gamescope dies.
+# No-op unless a recording is active. Capture resumes once ES/sway is back.
+/usr/bin/rocknix-screenrecord pause 2>/dev/null
+
 killall gamescope steam FEX
 killall -9 gamescope steam FEX
