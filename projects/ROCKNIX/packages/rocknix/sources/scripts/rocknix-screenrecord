@@ -23,6 +23,13 @@ ROT="$(get_setting screenrecord.rotation 2>/dev/null)"
 
 is_running() { systemctl is-active --quiet "${UNIT}.service" 2>/dev/null; }
 
+# Kernel capture pause/resume knob. Used to quiesce the DPU writeback BEFORE a
+# compositor switch (sway<->gamescope) while the old display is still live, so
+# no writeback is left armed when the compositor tears down (an orphaned WB
+# hangs the display CTL = black screen). The recorder keeps running in its own
+# scope, so one clip spans the whole session: ES -> gameplay -> ES.
+PAUSE_KNOB=/sys/kernel/debug/dpu_capture/pause
+
 case "$1" in
   start)
     if [ ! -e /dev/dpu_capture0 ]; then
@@ -52,10 +59,20 @@ case "$1" in
   toggle)
     if is_running; then "$0" stop; else "$0" start; fi
     ;;
+  pause)
+    # No-op unless a recording is active. Drains the in-flight writeback while
+    # the current compositor is still live, then holds capture off.
+    is_running || exit 0
+    [ -w "$PAUSE_KNOB" ] && echo 1 > "$PAUSE_KNOB"
+    ;;
+  resume)
+    is_running || exit 0
+    [ -w "$PAUSE_KNOB" ] && echo 0 > "$PAUSE_KNOB"
+    ;;
   status)
     is_running && echo recording || echo idle
     ;;
   *)
-    echo "usage: $0 {start|stop|toggle|status}"; exit 1
+    echo "usage: $0 {start|stop|toggle|pause|resume|status}"; exit 1
     ;;
 esac

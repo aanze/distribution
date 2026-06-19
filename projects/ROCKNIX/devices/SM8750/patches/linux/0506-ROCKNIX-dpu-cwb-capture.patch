@@ -1,31 +1,28 @@
 From: Anze <aanzdev@gmail.com>
-Subject: [PATCH] ROCKNIX: drm/msm/dpu: out-of-band CWB screen capture (RGB/NV12 + recording ring), handoff-safe
+Subject: [PATCH] ROCKNIX: drm/msm/dpu: out-of-band CWB screen capture (RGB/NV12 + recording ring) with userspace pause for compositor switches
 
 Out-of-band Concurrent WriteBack capture (CWB mux -> CWB pingpong -> MERGE_3D ->
-[CDM] -> WB), kernel-initiated and master-independent, surviving the ES<->Steam
-compositor handoff. debugfs screenshot (RGB/NV12 via CDM) + /dev/dpu_capture0
-NV12 dmabuf ring for the Iris H.264 encoder.
+[CDM] -> WB), kernel-initiated and master-independent. debugfs screenshot
+(RGB/NV12 via CDM) + /dev/dpu_capture0 NV12 dmabuf ring for the Iris H.264
+encoder. The writeback rides the realtime CTL's pending flush each kickoff so it
+latches with the live frame (a detached CTL has no timing source).
 
-CWB is concurrent: the writeback only completes when flushed on the realtime CTL
-that drives the layer mixers, so it latches with the live frame. So the WB rides
-the realtime CTL's pending flush each kickoff.
+Compositor-switch safety. An in-flight writeback that gets orphaned when the
+encoder is torn down at the gamescope<->sway swap hangs the CTL at the hardware
+level; the subsequent reset then fails forever (black screen on Steam exit).
+There is no in-kernel teardown hook early enough to retire it (the master switch
+does not go through a clean atomic_disable), so retirement is driven from
+userspace WHILE THE OLD COMPOSITOR IS STILL LIVE:
 
-Handoff safety. An in-flight writeback that gets orphaned when the encoder is
-torn down at the gamescope<->sway swap hangs the CTL at the hardware level; the
-subsequent reset then fails forever (black screen on Steam exit, force reboot).
-Clearing CTL ACTIVE bits or resetting the CTL does NOT abort an in-flight WB, so
-the fix is to retire the WB while the display is still live:
+  debugfs dpu_capture/pause: write 1 to PAUSE (stop arming + drain the in-flight
+  WB on the armed CTL while it still scans, then clear the footprint), write 0 to
+  RESUME. start_steam.sh writes these around the sway<->gamescope switches, so no
+  WB is ever armed when a compositor tears down. The recorder keeps running in
+  its own scope, so one clip spans ES -> gameplay -> ES.
 
- - dpu_capture_drain(), called at the TOP of dpu_encoder_virt_atomic_disable()
-   (before wait_for_tx_complete / any teardown): stop arming, wait for the
-   outstanding WB to finish naturally against the still-scanning frame, then
-   clear our footprint off the CTL. After this the teardown sees no capture WB.
- - dpu_capture_disarm() remains as a belt-and-suspenders in phys_cleanup and the
-   hw_reset recovery path.
- - resume_skip: after any drain/disarm, hold off re-arming for a window of
-   kickoffs so capture can't arm into a still-settling display path. Recording
-   stays armed and resumes once stable, so one clip spans the handoff (short gap
-   across the swap). A path that keeps stalling auto-offs.
+  dpu_capture_drain()/disarm() remain wired into atomic_disable / phys_cleanup /
+  hw_reset as best-effort fallbacks; resume_skip holds off re-arming until the
+  new display path settles.
 
 Signed-off-by: Anze <aanzdev@gmail.com>
 diff --git a/drivers/gpu/drm/msm/Makefile b/drivers/gpu/drm/msm/Makefile
@@ -42,10 +39,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..8f3e746
+index 0000000..c32666e
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,1000 @@
+@@ -0,0 +1,1042 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -174,6 +171,7 @@ index 0000000..8f3e746
 +	int wb_stall;
 +	int wb_retries;
 +	int resume_skip;	/* don't re-arm for N kickoffs after a teardown */
++	bool paused;		/* userspace held capture off across a compositor switch */
 +	u32 last_cwb_mask;
 +	enum dpu_merge_3d last_merge;
 +	enum dpu_cdm last_cdm;
@@ -436,6 +434,10 @@ index 0000000..8f3e746
 +	 * footprint off the CTL and sets resume_skip, and we then hold off arming
 +	 * until the new display path has settled.
 +	 */
++	/* userspace paused us across a compositor switch -- do not arm */
++	if (c->paused)
++		return;
++
 +	if (c->resume_skip > 0) {
 +		c->resume_skip--;
 +		return;
@@ -915,6 +917,42 @@ index 0000000..8f3e746
 +	.open = simple_open, .write = arm_write, .llseek = default_llseek,
 +};
 +
++/*
++ * Userspace-driven pause/resume around a compositor switch (start_steam.sh).
++ * Write "1" to PAUSE: stop arming and drain the in-flight writeback while the
++ * current compositor's display is still live, so no WB is left armed when the
++ * compositor tears down (that orphaned WB is what wedges the display). Write "0"
++ * to RESUME once the next compositor is up. This is the only timing at which the
++ * drain is reliable -- the kernel teardown path has no early-enough hook.
++ */
++static ssize_t pause_write(struct file *file, const char __user *ubuf,
++			   size_t count, loff_t *ppos)
++{
++	struct dpu_capture *c = file->private_data;
++	char buf[8];
++	size_t n = min(count, sizeof(buf) - 1);
++
++	if (copy_from_user(buf, ubuf, n))
++		return -EFAULT;
++	buf[n] = '\0';
++
++	if (buf[0] == '1') {
++		c->paused = true;	/* block new arming right away */
++		if (c->armed_ctl)	/* drain in-flight WB + clear footprint */
++			dpu_capture_drain(c->kms, c->armed_ctl);
++		pr_info("paused\n");
++	} else {
++		c->paused = false;
++		c->resume_skip = CAP_RESUME_SKIP;
++		pr_info("resumed\n");
++	}
++	return count;
++}
++
++static const struct file_operations pause_fops = {
++	.open = simple_open, .write = pause_write, .llseek = default_llseek,
++};
++
 +static ssize_t status_read(struct file *file, char __user *ubuf,
 +			   size_t count, loff_t *ppos)
 +{
@@ -1015,6 +1053,7 @@ index 0000000..8f3e746
 +
 +	c->dir = debugfs_create_dir("dpu_capture", NULL);
 +	debugfs_create_file("arm", 0200, c->dir, c, &arm_fops);
++	debugfs_create_file("pause", 0200, c->dir, c, &pause_fops);
 +	debugfs_create_file("status", 0400, c->dir, c, &status_fops);
 +	debugfs_create_file("frame.raw", 0400, c->dir, c, &frame_fops);
 +

@@ -154,11 +154,17 @@ steam_launch_bigpicture() {
       SDL_VIDEODRIVER=x11 LD_LIBRARY_PATH=/storage/.local/share/Steam/lib/aarch64-linux-gnu/ ${EMUPERF} /storage/.local/share/Steam/steamrtarm64/steam -nofriendsui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       exit 0
     else
+      # screen-capture: quiesce the DPU writeback while sway is still live, so
+      # no capture WB is orphaned when sway stops (orphaned WB = black screen).
+      /usr/bin/rocknix-screenrecord pause 2>/dev/null
       systemctl stop sway
+      # resume inside gamescope (records gameplay); pause again the instant Steam
+      # quits -- runs while gamescope is still live, before it tears down.
       GAMESCOPE_MODE_SAVE_FILE="${gamescope_mode_file}" GAMESCOPE_FAKE_OUTPUT_MM=508x286 env -u WAYLAND_DISPLAY LD_LIBRARY_PATH=/storage/.local/share/Steam/lib/aarch64-linux-gnu/ ${EMUPERF} \
         gamescope $PREFER_OUTPUT -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
-        /storage/.local/share/Steam/steamrtarm64/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
+        bash -c '/usr/bin/rocknix-screenrecord resume 2>/dev/null; /storage/.local/share/Steam/steamrtarm64/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${1:+"$1"}; /usr/bin/rocknix-screenrecord pause 2>/dev/null' _ "${game_uri}"
       systemctl start essway
+      /usr/bin/rocknix-screenrecord resume 2>/dev/null
       exit 0
     fi
   else
@@ -167,11 +173,17 @@ steam_launch_bigpicture() {
       ${EMUPERF} FEX /usr/bin/steam -nofriendsui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       exit 0
     else
+      # screen-capture: quiesce the DPU writeback while sway is still live, so
+      # no capture WB is orphaned when sway stops (orphaned WB = black screen).
+      /usr/bin/rocknix-screenrecord pause 2>/dev/null
       systemctl stop sway
+      # resume inside gamescope (records gameplay); pause again the instant Steam
+      # quits -- runs while gamescope is still live, before it tears down.
       GAMESCOPE_MODE_SAVE_FILE="${gamescope_mode_file}" GAMESCOPE_FAKE_OUTPUT_MM=508x286 env -u WAYLAND_DISPLAY ${EMUPERF} \
         gamescope $PREFER_OUTPUT -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
-        FEX /usr/bin/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
+        bash -c '/usr/bin/rocknix-screenrecord resume 2>/dev/null; FEX /usr/bin/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${1:+"$1"}; /usr/bin/rocknix-screenrecord pause 2>/dev/null' _ "${game_uri}"
       systemctl start essway
+      /usr/bin/rocknix-screenrecord resume 2>/dev/null
       exit 0
     fi
   fi
