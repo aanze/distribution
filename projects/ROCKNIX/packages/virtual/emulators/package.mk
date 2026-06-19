@@ -1659,7 +1659,10 @@ makeinstall_target() {
   add_es_system tools
 
   ### Screenshots
-  add_es_system imageviewer
+  # ROCKNIX/DUCKTALE: screen-capture feature saves to /storage/roms/screenshots,
+  # which would make the upstream "imageviewer" ES section appear. Not wanted as
+  # a main-menu section on this build, so it stays disabled.
+  # add_es_system imageviewer
 
   ### Create es_systems
   mk_es_systems
