@@ -190,8 +190,6 @@ static void write_moov(int fd, uint32_t cw, uint32_t ch, int fps, int rot)
 	const uint32_t vts = 1000;		/* movie timescale */
 	const uint32_t vdur = fps > 0 ? (uint32_t)((uint64_t)nsamp * 1000 / fps) : 0;
 	/* presentation size after rotation */
-	uint32_t pw = (rot == 90 || rot == 270) ? ch : cw;
-	uint32_t ph = (rot == 90 || rot == 270) ? cw : ch;
 	struct buf b = {0};
 	size_t moov, trak, mdia, minf, stbl, stsd, avc1, avcC, e;
 
@@ -213,7 +211,13 @@ static void write_moov(int fd, uint32_t cw, uint32_t ch, int fps, int rot)
 	u32b(&b, 0); u32b(&b, 0); u32b(&b, 1); u32b(&b, 0); u32b(&b, vdur);
 	u32b(&b, 0); u32b(&b, 0); u16b(&b, 0); u16b(&b, 0); u16b(&b, 0); u16b(&b, 0);
 	put_matrix(&b, rot, cw, ch);
-	u32b(&b, pw << 16); u32b(&b, ph << 16);	/* presentation w/h (16.16) */
+	/*
+	 * tkhd width/height are the CODED dims, not the post-rotation size: the
+	 * matrix above does the rotation. This is the Android/ffmpeg convention and
+	 * is what rotates correctly across players (VLC included). Setting these to
+	 * the swapped size instead makes some players double-transform and squish.
+	 */
+	u32b(&b, cw << 16); u32b(&b, ch << 16);	/* coded w/h (16.16) */
 	box_end(&b, e);
 
 	mdia = box_start(&b, "mdia");
@@ -335,37 +339,25 @@ int main(int argc, char **argv)
 		o_planes, o_sizeimage, g.total_size);
 
 	/*
-	 * Landscape via ENCODER rotation (universal: the coded pixels come out
-	 * landscape, so every player shows it right -- no rotation-matrix metadata
-	 * that some players, e.g. VLC, mishandle). The Iris encoder supports
-	 * V4L2_CID_ROTATE; for 90/270 the coded (CAPTURE) frame is the swapped
-	 * size. Set the rotate control BEFORE the CAPTURE format.
+	 * Landscape via a tkhd rotation matrix. The coded frame stays portrait
+	 * (what the panel/CWB produces); the matrix tells the player to rotate it
+	 * to landscape. tkhd width/height are the CODED dims (the Android/ffmpeg
+	 * convention) -- the matrix does the rotation -- which is what plays
+	 * correctly across players including VLC. (Encoder-side V4L2_CID_ROTATE was
+	 * tried but this iris build treats the swapped size as scaling and rejects
+	 * the input with EIO, so it is not used.)
 	 */
-	int swap = (rot == 90 || rot == 270);
 	struct v4l2_control ctrl;
-	if (rot) {
-		ctrl.id = V4L2_CID_ROTATE; ctrl.value = rot;
-		if (ioctl(enc, VIDIOC_S_CTRL, &ctrl) < 0)
-			fprintf(stderr, "S_CTRL ROTATE %d: %s (will fall back to matrix)\n",
-				rot, strerror(errno));
-	}
-
 	struct v4l2_format cfmt = {0};
 	cfmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-	cfmt.fmt.pix_mp.width  = swap ? g.height : g.width;
-	cfmt.fmt.pix_mp.height = swap ? g.width  : g.height;
+	cfmt.fmt.pix_mp.width  = g.width;
+	cfmt.fmt.pix_mp.height = g.height;
 	cfmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_H264;
 	cfmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
 	if (IOCTL(enc, VIDIOC_S_FMT, &cfmt) < 0) die("S_FMT CAPTURE\n");
 	int c_planes = cfmt.fmt.pix_mp.num_planes;
-	/* coded dims the driver actually accepted */
-	uint32_t coded_w = cfmt.fmt.pix_mp.width;
-	uint32_t coded_h = cfmt.fmt.pix_mp.height;
-	/* did the encoder accept the rotated (swapped) coded size? */
-	int enc_rotated = swap ? (coded_w == g.height && coded_h == g.width)
-			       : (rot == 0 || rot == 180);
-	fprintf(stderr, "enc CAPTURE H264 coded=%ux%u rot=%d enc_rotated=%d\n",
-		coded_w, coded_h, rot, enc_rotated);
+	fprintf(stderr, "enc CAPTURE H264 coded=%ux%u rot(matrix)=%d\n",
+		g.width, g.height, rot);
 
 	ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE; ctrl.value = 12000000;
 	ioctl(enc, VIDIOC_S_CTRL, &ctrl);
@@ -532,12 +524,7 @@ int main(int argc, char **argv)
 		lseek(outfd, FTYP_SIZE, SEEK_SET);
 		write(outfd, szb, 4);
 		lseek(outfd, 0, SEEK_END);
-		if (enc_rotated)
-			/* coded pixels are already correctly oriented -> identity */
-			write_moov(outfd, coded_w, coded_h, fps, 0);
-		else
-			/* encoder didn't rotate -> tag portrait coded + rotation matrix */
-			write_moov(outfd, g.width, g.height, fps, rot);
+		write_moov(outfd, g.width, g.height, fps, rot);
 	} else {
 		fprintf(stderr, "no samples/SPS/PPS; mp4 not finalized\n");
 	}
