@@ -15,6 +15,11 @@ DIR=/storage/roms/screenshots/video
 UNIT=rocknix-screenrecord
 OUTF=/tmp/.screenrecord.out
 FPS=30
+# Display rotation baked into the .mp4 so it plays landscape on a PC. The panel
+# is portrait-native; 90 undoes the compositor rotation. Override with
+# `screenrecord.rotation` (0|90|180|270) if a clip comes out upside down.
+ROT="$(get_setting screenrecord.rotation 2>/dev/null)"
+[ -z "$ROT" ] && ROT=90
 
 is_running() { systemctl is-active --quiet "${UNIT}.service" 2>/dev/null; }
 
@@ -27,10 +32,10 @@ case "$1" in
     is_running && { echo "already recording"; exit 0; }
     systemctl reset-failed "${UNIT}.service" 2>/dev/null
     mkdir -p "$DIR"
-    OUT="$DIR/$(date +'%Y-%m-%d-%H%M%S').h264"
+    OUT="$DIR/$(date +'%Y-%m-%d-%H%M%S').mp4"
     echo "$OUT" > "$OUTF"
     # own unit -> survives input.service/sway restarts across the Steam handoff
-    systemd-run --collect --quiet --unit="$UNIT" "$REC" "$OUT" 0 "$FPS" || {
+    systemd-run --collect --quiet --unit="$UNIT" "$REC" "$OUT" 0 "$FPS" "$ROT" || {
       /usr/bin/mako-notify "Recording failed to start" -no-ra 2>/dev/null
       echo "systemd-run failed"; exit 1
     }

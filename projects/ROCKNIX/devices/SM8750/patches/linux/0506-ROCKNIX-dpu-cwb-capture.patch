@@ -1,18 +1,20 @@
 From: Anze <aanzdev@gmail.com>
-Subject: [PATCH] ROCKNIX: drm/msm/dpu: out-of-band CWB screen capture (RGB/NV12 + recording ring + display-safety watchdog)
+Subject: [PATCH] ROCKNIX: drm/msm/dpu: out-of-band CWB screen capture on a dedicated CTL (RGB/NV12 + recording ring)
 
 Out-of-band Concurrent WriteBack capture (CWB mux -> dedicated CWB pingpong ->
-MERGE_3D -> [CDM] -> WB) added to the realtime CTL's flush each kickoff; kernel-
-initiated, master-independent, survives the ES<->Steam compositor handoff.
-debugfs screenshot (RGB/NV12 via CDM) + /dev/dpu_capture0 NV12 dmabuf ring for
-the Iris H.264 encoder.
+MERGE_3D -> [CDM] -> WB), kernel-initiated and master-independent, so it
+survives the ES<->Steam compositor handoff. debugfs screenshot (RGB/NV12 via
+CDM) + /dev/dpu_capture0 NV12 dmabuf ring for the Iris H.264 encoder.
 
-Display-safety watchdog: riding the realtime CTL means a stalled writeback would
-block the display commit (seen as a black screen on the gamescope->sway re-init
-after Steam). If a WB doesn't complete by the next kickoff, clear_capture_active
-removes it from the CTL so the display commits cleanly; retry briefly to ride
-through the transition, and auto-off if it keeps stalling. The display can never
-stay blocked.
+Display-safety by isolation (own CTL): the writeback datapath runs on its OWN
+dedicated CTL (the highest free CTL block), programmed and triggered
+independently of the realtime display CTL. The encoder kickoff only samples the
+active layer-mixer pingpongs for the CWB tap; it never touches the realtime
+CTL's flush/active. A stalled writeback therefore times out on the capture CTL
+and can NEVER block the display commit -- so entering/leaving Steam can't wedge
+the screen (no more black-screen-on-exit, no force reboot). If a WB doesn't
+complete by the next kickoff we simply skip kicking another, and auto-off after
+a few stalls so a stuck encoder only stops recording.
 
 Signed-off-by: Anze <aanzdev@gmail.com>
 diff --git a/drivers/gpu/drm/msm/Makefile b/drivers/gpu/drm/msm/Makefile
@@ -29,10 +31,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..1d0cef3
+index 0000000..8b0bcb8
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,887 @@
+@@ -0,0 +1,909 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -132,6 +134,7 @@ index 0000000..1d0cef3
 +	struct dpu_hw_pingpong *dcwb_pp[CAP_MAX_LM];	/* PINGPONG_CWB_0/1 */
 +	struct dpu_hw_merge_3d *merge3d;		/* MERGE_3D_4 */
 +	struct dpu_hw_cdm *cdm;				/* CDM_0 */
++	struct dpu_hw_ctl *cap_ctl;			/* dedicated CTL (NOT the realtime one) */
 +	const struct msm_format *rgb_fmt, *nv12_fmt;
 +	unsigned int wb_irq;
 +
@@ -269,10 +272,11 @@ index 0000000..1d0cef3
 +}
 +
 +/* program the CWB datapath to write @iova in @pix and flush on the realtime CTL */
-+static void cap_program(struct dpu_capture *c, struct dpu_hw_ctl *ctl,
++static void cap_program(struct dpu_capture *c,
 +			const enum dpu_pingpong *rt_pp, int num_pp,
 +			u64 iova, enum cap_pix pix)
 +{
++	struct dpu_hw_ctl *ctl = c->cap_ctl;	/* dedicated CTL, NOT the realtime one */
 +	const struct dpu_perf_cfg *perf = c->kms->catalog->perf;
 +	bool nv12 = (pix == PIX_NV12);
 +	struct dpu_hw_cwb_setup_cfg cwb_cfg;
@@ -281,6 +285,9 @@ index 0000000..1d0cef3
 +	enum dpu_cdm cdm_idx = 0;
 +	u32 cwb_mask = 0;
 +	int i;
++
++	if (ctl->ops.clear_pending_flush)
++		ctl->ops.clear_pending_flush(ctl);
 +
 +	for (i = 0; i < num_pp; i++) {
 +		cwb_cfg.input = INPUT_MODE_LM_OUT;
@@ -357,6 +364,13 @@ index 0000000..1d0cef3
 +		ctl->ops.update_pending_flush_cdm(ctl, cdm_idx);
 +	if (ctl->ops.update_pending_flush_wb)
 +		ctl->ops.update_pending_flush_wb(ctl, c->wb->idx);
++
++	/* kick our dedicated CTL -- independent of the realtime display CTL, so a
++	 * stalled writeback times out here and never blocks the display. */
++	if (ctl->ops.trigger_flush)
++		ctl->ops.trigger_flush(ctl);
++	if (ctl->ops.trigger_start)
++		ctl->ops.trigger_start(ctl);
 +}
 +
 +/* pick the next ring buffer to write (round-robin, skip userspace-held) */
@@ -394,25 +408,23 @@ index 0000000..1d0cef3
 +		return;
 +	}
 +
-+	if (num_pp < 1 || num_pp > CAP_MAX_LM)
++	if (num_pp < 1 || num_pp > CAP_MAX_LM || !c->cap_ctl)
 +		return;
 +
++	(void)ctl;	/* realtime CTL is intentionally NOT touched (own-CTL design) */
++
 +	/*
-+	 * Display-safety watchdog. If the previous frame's writeback hasn't
-+	 * completed by now, it is stalling -- clear it off the realtime CTL so
-+	 * the display commits cleanly, and skip this frame. Retry after a few
-+	 * frames (rides through a brief compositor transition); give up (auto-
-+	 * off) if it keeps stalling so the display can never stay blocked.
++	 * The writeback runs on its OWN CTL (c->cap_ctl), independent of the
++	 * realtime display CTL, so a stalled writeback can never wedge the
++	 * display. If the previous WB hasn't completed, just don't kick another
++	 * (avoid piling up); auto-off if it stays stuck (only recording stops).
 +	 */
 +	if (c->wb_outstanding) {
-+		if (ctl->ops.clear_capture_active)
-+			ctl->ops.clear_capture_active(ctl, c->wb->idx,
-+				c->last_cwb_mask, c->last_merge, c->last_cdm);
 +		if (++c->wb_stall >= CAP_RETRY_AFTER) {
 +			c->wb_stall = 0;
 +			c->wb_outstanding = false;	/* allow a fresh retry */
 +			if (++c->wb_retries >= CAP_MAX_RETRIES) {
-+				pr_warn("WB stalled; capture stopped to protect display\n");
++				pr_warn("WB stalled; capture stopped\n");
 +				c->mode = CAP_OFF;
 +			}
 +		}
@@ -426,7 +438,7 @@ index 0000000..1d0cef3
 +		spin_unlock_irqrestore(&c->rec_lock, flags);
 +		if (idx < 0)
 +			return;		/* all buffers held; drop this frame */
-+		cap_program(c, ctl, rt_pp, num_pp, c->ring[idx].iova, PIX_NV12);
++		cap_program(c, rt_pp, num_pp, c->ring[idx].iova, PIX_NV12);
 +		c->wb_outstanding = true;
 +		return;
 +	}
@@ -434,7 +446,7 @@ index 0000000..1d0cef3
 +	/* CAP_SHOT: single debugfs buffer */
 +	if (!c->iova)
 +		return;
-+	cap_program(c, ctl, rt_pp, num_pp, c->iova, c->pix);
++	cap_program(c, rt_pp, num_pp, c->iova, c->pix);
 +	c->wb_outstanding = true;
 +}
 +
@@ -854,6 +866,18 @@ index 0000000..1d0cef3
 +		c->merge3d = c->dcwb_pp[0]->merge_3d;
 +	if (rm->cdm_blk)
 +		c->cdm = to_dpu_hw_cdm(rm->cdm_blk);
++	/*
++	 * Dedicated CTL for the writeback path: pick the HIGHEST available CTL
++	 * (the realtime display + gamescope use the low ones), so the WB runs on
++	 * its own CTL and a stalled writeback can NEVER block the realtime
++	 * display CTL -> the screen can't wedge.
++	 */
++	for (i = ARRAY_SIZE(rm->ctl_blks) - 1; i >= 0; i--) {
++		if (rm->ctl_blks[i]) {
++			c->cap_ctl = to_dpu_hw_ctl(rm->ctl_blks[i]);
++			break;
++		}
++	}
 +}
 +
 +void dpu_capture_init(struct dpu_kms *dpu_kms)
@@ -873,7 +897,7 @@ index 0000000..1d0cef3
 +	dpu_capture_fetch_blocks(c);
 +
 +	if (!c->wb || !c->cwb[0] || !c->cwb[1] ||
-+	    !c->dcwb_pp[0] || !c->dcwb_pp[1] || !c->merge3d) {
++	    !c->dcwb_pp[0] || !c->dcwb_pp[1] || !c->merge3d || !c->cap_ctl) {
 +		pr_warn("CWB blocks missing; disabled\n");
 +		kfree(c);
 +		return;

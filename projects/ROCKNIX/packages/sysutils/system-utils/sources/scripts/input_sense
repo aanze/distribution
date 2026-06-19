@@ -72,6 +72,12 @@ FUNCTION_HOTKEY_BTN_WEST_EVENT="*(BTN_WEST), value 1*"
 FUNCTION_HOTKEY_BTN_SOUTH_EVENT="*(BTN_SOUTH), value 1*"
 FUNCTION_HOTKEY_BTN_EAST_EVENT="*(BTN_EAST), value 1*"
 
+# AYN Odin 3 left "home" button (InputPlumber maps it to Guide = BTN_MODE).
+# Used as a modifier so screen-record (left home + Y) doesn't collide with the
+# in-menu L1 (tab switch) / A (confirm) hotkeys.
+FUNCTION_HOTKEY_BTN_MODE_EVENT='*(BTN_MODE), value *'
+HOME_LEFT_PRESSED=false
+
 FUNCTION_HOTKEY_BTN_BACK_EVENT="*(BTN_BACK), value 1*"
 FUNCTION_HOTKEY_KEY_F1_EVENT="*(KEY_F1), value 1*"
 
@@ -400,6 +406,15 @@ set +e
 
     # Hotkey logic
     case ${line} in
+      (${FUNCTION_HOTKEY_BTN_MODE_EVENT})
+        if [[ "${line}" =~ ${PRESS} ]]; then
+          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_MODE_EVENT}: Pressed (left home)"
+          HOME_LEFT_PRESSED=true
+        elif [[ "${line}" =~ ${RELEASE} ]]; then
+          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_MODE_EVENT}: Released (left home)"
+          HOME_LEFT_PRESSED=false
+        fi
+      ;;
       (${FUNCTION_HOTKEY_A_EVENT})
         if [[ "${line}" =~ ${PRESS} ]]; then
           ${DEBUG} && log $0 "${FUNCTION_HOTKEY_A_EVENT}: Pressed"
@@ -487,17 +502,16 @@ set +e
         fi
       ;;
      (${FUNCTION_HOTKEY_BTN_NORTH_EVENT})
-       if [ "${HOTKEY_A_PRESSED}" = true ]; then
-         ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_NORTH_EVENT}: Opening Game Guide"
-         /usr/bin/game-guides-tool
-       fi
-     ;;
-     (${FUNCTION_HOTKEY_BTN_SOUTH_EVENT})
-       if [ "${HOTKEY_A_PRESSED}" = true ]; then
-         ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_SOUTH_EVENT}: Screen record toggle"
+       if [ "${HOME_LEFT_PRESSED}" = true ]; then
+         ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_NORTH_EVENT}: Screen record toggle (left home + Y)"
          # System-wide screen recording via DPU CWB + Iris encoder (works in
          # emulators AND gamescope/Steam); start/stop with one toggle.
+         # Bound to left-home + Y so it can't collide with the in-menu
+         # L1 (tab switch) / A (confirm) hotkeys.
          /usr/bin/rocknix-screenrecord toggle
+       elif [ "${HOTKEY_A_PRESSED}" = true ]; then
+         ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_NORTH_EVENT}: Opening Game Guide"
+         /usr/bin/game-guides-tool
        fi
      ;;
   esac
