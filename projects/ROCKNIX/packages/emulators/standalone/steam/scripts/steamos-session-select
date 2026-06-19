@@ -3,14 +3,18 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 
-# screen-capture: "Return to Desktop" kills gamescope with SIGKILL below, which
-# would orphan an in-flight DPU capture writeback and wedge the display CTL
-# (black screen, force reboot). Quiesce capture FIRST, while gamescope is still
-# live, so its writeback drains cleanly and nothing is armed when gamescope dies.
-# No-op unless a recording is active. Capture resumes once ES/sway is back.
-echo "[$(date '+%H:%M:%S')] steamos-session-select: pause+kill" >> /storage/screenrecord.log 2>/dev/null
+# screen-capture: "Return to Desktop" kills gamescope with SIGKILL below. Keeping
+# capture alive across that proved to wedge the display on re-init (lingering DPU
+# capture state collides with sway re-initialising). So fully RETIRE capture here
+# -- while gamescope is still live and the writeback can drain cleanly -- before
+# the kill: pause (drain the in-flight WB), then stop (finalise the clip and free
+# all capture resources). The single clip is ES navigation -> Steam launch ->
+# gameplay, ending at Return to Desktop. No-op unless a recording is active.
+echo "[$(date '+%H:%M:%S')] steamos-session-select: pause+stop+kill" >> /storage/screenrecord.log 2>/dev/null
 /usr/bin/rocknix-screenrecord pause 2>/dev/null
 dmesg 2>/dev/null | grep -iE "dpu_capture" | tail -4 | sed 's/^/      /' >> /storage/screenrecord.log 2>/dev/null
+/usr/bin/rocknix-screenrecord stop 2>/dev/null
+dmesg 2>/dev/null | grep -iE "dpu_capture" | tail -3 | sed 's/^/      /' >> /storage/screenrecord.log 2>/dev/null
 
 killall gamescope steam FEX
 killall -9 gamescope steam FEX
