@@ -6,13 +6,11 @@ Capture the live panel scanout via the dedicated Concurrent WriteBack datapath
 realtime CTL's flush each kickoff. Kernel-initiated, master-independent, works
 under any compositor (ES/sway and gamescope/Steam) and survives the handoff.
 
-- Screenshot via debugfs /sys/kernel/debug/dpu_capture/{arm,status,frame.raw}:
-  arm 'p'=probe, '1'=XRGB grab, '2'=NV12 grab (CDM RGB->YUV420), '0'=off.
-- Recording via /dev/dpu_capture0: a 4-buffer NV12 ring whose buffers are
-  exported as dma-bufs for zero-copy feeding to the Iris H.264 encoder. ioctls
-  QUERY/EXPBUF/DQBUF/QBUF + poll(); open starts the ring, release stops it.
-- Dual layer-mixer stitched via MERGE_3D; CTL set_capture_active also drives
-  CTL_MERGE_3D_ACTIVE and CTL_CDM_ACTIVE.
+- Screenshot via debugfs /sys/kernel/debug/dpu_capture/{arm,status,frame.raw}.
+- Recording via /dev/dpu_capture0: a 4-buffer NV12 ring exported as dma-bufs for
+  zero-copy feeding to the Iris H.264 encoder (ioctls QUERY/EXPBUF/DQBUF/QBUF +
+  poll). NV12 Y stride is 128-aligned (1152) to match the encoder's sizeimage.
+  DQBUF blocks until a frame newer than the last handed out (dq_seq).
 
 Signed-off-by: Anze <aanzdev@gmail.com>
 diff --git a/drivers/gpu/drm/msm/Makefile b/drivers/gpu/drm/msm/Makefile
@@ -29,10 +27,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..2f572df
+index 0000000..a6f8013
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,830 @@
+@@ -0,0 +1,834 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -86,9 +84,10 @@ index 0000000..2f572df
 +#define RGB_STRIDE	ALIGN(CAP_W * 4, 256)
 +#define RGB_SIZE	(RGB_STRIDE * CAP_H)
 +
-+#define NV12_Y_STRIDE	CAP_W
++/* Y stride 128-aligned to match the Iris encoder's expected NV12 sizeimage */
++#define NV12_Y_STRIDE	ALIGN(CAP_W, 128)
 +#define NV12_Y_SIZE	(NV12_Y_STRIDE * CAP_H)
-+#define NV12_UV_STRIDE	CAP_W
++#define NV12_UV_STRIDE	ALIGN(CAP_W, 128)
 +#define NV12_UV_SIZE	(NV12_UV_STRIDE * (CAP_H / 2))
 +#define NV12_SIZE	(NV12_Y_SIZE + NV12_UV_SIZE)
 +
@@ -146,6 +145,7 @@ index 0000000..2f572df
 +	int wr_idx;			/* buffer currently being written (-1 none) */
 +	int ready_idx;			/* last completed buffer */
 +	u32 ready_seq;			/* completed-frame counter */
++	u32 dq_seq;			/* last frame handed to userspace */
 +	u64 ready_ts;
 +	spinlock_t rec_lock;
 +	wait_queue_head_t rec_wq;
@@ -503,6 +503,7 @@ index 0000000..2f572df
 +	c->wr_idx = -1;
 +	c->ready_idx = 0;
 +	c->ready_seq = 0;
++	c->dq_seq = 0;
 +
 +	ret = dpu_core_irq_register_callback(c->kms, c->wb_irq,
 +					     dpu_capture_wb_done_irq, c);
@@ -564,7 +565,7 @@ index 0000000..2f572df
 +
 +	poll_wait(file, &c->rec_wq, wait);
 +	spin_lock_irqsave(&c->rec_lock, flags);
-+	if (c->ready_seq)
++	if (c->ready_seq != c->dq_seq)
 +		mask |= EPOLLIN | EPOLLRDNORM;
 +	spin_unlock_irqrestore(&c->rec_lock, flags);
 +	return mask;
@@ -608,7 +609,7 @@ index 0000000..2f572df
 +		struct dpucap_frame f;
 +		int idx;
 +
-+		if (wait_event_interruptible(c->rec_wq, c->ready_seq != 0))
++		if (wait_event_interruptible(c->rec_wq, c->ready_seq != c->dq_seq))
 +			return -ERESTARTSYS;
 +		spin_lock_irqsave(&c->rec_lock, flags);
 +		idx = c->ready_idx;
@@ -617,6 +618,7 @@ index 0000000..2f572df
 +		f.index = idx;
 +		f.sequence = c->ready_seq;
 +		f.timestamp_ns = c->ready_ts;
++		c->dq_seq = c->ready_seq;
 +		spin_unlock_irqrestore(&c->rec_lock, flags);
 +		return copy_to_user(uarg, &f, sizeof(f)) ? -EFAULT : 0;
 +	}
