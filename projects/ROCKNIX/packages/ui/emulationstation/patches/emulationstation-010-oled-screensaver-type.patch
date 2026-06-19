@@ -1,0 +1,69 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] screensaver: add dedicated "oled" anti-image-retention type
+
+Add a new "oled" value to the SCREENSAVER TYPE list, alongside dim/black/
+random video/slideshow/suspend.
+
+Until now the compositor-level OLED anti-image-retention overlay (the oledsaver
+package) was paired with the stock "black" screensaver type, which was
+confusing: selecting "black" both made the screen look off AND launched the
+sweeping pixel-refresh overlay. "oled" is now its own entry, so plain "black"
+stays a plain black screen and "oled" is the dedicated burn-in-protection mode.
+
+No SystemScreenSaver change is needed: "oled" is not video/slideshow/suspend,
+so startScreenSaver() falls through to the standard STATE_SCREENSAVER_ACTIVE
+path (static screen, no media); renderScreenSaver() draws opaque black for any
+non-"dim" behavior; and Scripting::fireEvent("screensaver-start", behavior) /
+"screensaver-stop" already fire for every type. The oledsaver screensaver-start
+hook is repointed from "black" to "oled" in its own package.
+
+The French translation is provided ("OLED (anti-rémanence)") so the option is
+not shown as untranslated English in the FR UI; other locales fall back to the
+"oled" term (universal). msgmerge -U --no-fuzzy-matching preserves the added
+translation at build time.
+
+---
+diff --git a/es-app/src/guis/GuiGeneralScreensaverOptions.cpp b/es-app/src/guis/GuiGeneralScreensaverOptions.cpp
+index d64c8c4..e0ed888 100644
+--- a/es-app/src/guis/GuiGeneralScreensaverOptions.cpp
++++ b/es-app/src/guis/GuiGeneralScreensaverOptions.cpp
+@@ -13,6 +13,7 @@
+ 
+ #define fake_gettext_dim			_("dim")
+ #define fake_gettext_black			_("black")
++#define fake_gettext_oled			_("oled")
+ #define fake_gettext_randomvideo	_("random video")
+ #define fake_gettext_slideshow		_("slideshow")
+ #define fake_gettext_suspend		_("suspend")
+@@ -44,10 +45,15 @@ GuiGeneralScreensaverOptions::GuiGeneralScreensaverOptions(Window* window, int s
+ 	// Screensaver behavior
+ 	auto ctlBehavior = std::make_shared< OptionListComponent<std::string> >(mWindow, _("SCREENSAVER TYPE"), false);
+ 
++	// "oled" is a dedicated anti-image-retention screensaver: ES draws a static
++	// black screen (handled exactly like "black") and fires screensaver-start/
++	// -stop, while the compositor-level oledsaver overlay paints a sweeping
++	// pixel-refresh band on top. Kept separate from "black" so plain "black"
++	// stays a plain black screen.
+ 	if (ApiSystem::getInstance()->isScriptingSupported(ApiSystem::SUSPEND))
+-		ctlBehavior->addRange({ "dim", "black", "random video", "slideshow", "suspend" }, ssBehavior);
++		ctlBehavior->addRange({ "dim", "black", "oled", "random video", "slideshow", "suspend" }, ssBehavior);
+ 	else
+-		ctlBehavior->addRange({ "dim", "black", "random video", "slideshow" }, ssBehavior);
++		ctlBehavior->addRange({ "dim", "black", "oled", "random video", "slideshow" }, ssBehavior);
+ 
+ 	addWithLabel(_("SCREENSAVER TYPE"), ctlBehavior, selectItem == 1);
+ 	ctlBehavior->setSelectedChangedCallback([this](const std::string& name)
+diff --git a/locale/lang/fr/LC_MESSAGES/emulationstation2.po b/locale/lang/fr/LC_MESSAGES/emulationstation2.po
+index 34cf203..f5e55ce 100644
+--- a/locale/lang/fr/LC_MESSAGES/emulationstation2.po
++++ b/locale/lang/fr/LC_MESSAGES/emulationstation2.po
+@@ -1648,6 +1648,9 @@ msgstr "écran assombri"
+ msgid "black"
+ msgstr "écran noir"
+ 
++msgid "oled"
++msgstr "OLED (anti-rémanence)"
++
+ msgid "random video"
+ msgstr "vidéo"
+ 
