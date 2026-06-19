@@ -7,18 +7,22 @@
 #  1) Quiesce capture (drain WB + un-tap CWB) while gamescope is still live; the
 #     recorder stays ALIVE (paused) so the clip continues into ES on resume.
 #  2) Let gamescope/Steam exit CLEANLY so the DSI panel + MDP tear down properly
-#     (an abrupt SIGKILL after a capture session leaves the panel un-bring-up-able
+#     (abrupt SIGKILL after a capture session leaves the panel un-bring-up-able
 #     -> dsi cmd dma -110 -> black screen).
 #
-# The kill+wait MUST run detached: this script is a child of the gamescope/steam
-# session, so killing them SIGHUPs us. setsid puts the kill sequence in its own
-# session so it survives and can wait for a real shutdown before any SIGKILL.
+# The kill+wait MUST outlive this script AND the gamescope cgroup: we are a child
+# of steam-bigpicture.scope, which systemd tears down (killing its whole cgroup)
+# as gamescope dies. setsid only escapes the session, not the cgroup -- so run
+# the kill sequence in its own transient systemd unit (like the recorder), which
+# survives the scope teardown and can wait for a real gamescope shutdown before
+# any SIGKILL fallback.
 LOG=/storage/screenrecord.log
-echo "[$(date '+%H:%M:%S')] steamos-session-select: pause + detached clean-exit" >> "$LOG" 2>/dev/null
+echo "[$(date '+%H:%M:%S')] steamos-session-select: pause + systemd-run clean-exit" >> "$LOG" 2>/dev/null
 /usr/bin/rocknix-screenrecord pause 2>/dev/null
 dmesg 2>/dev/null | grep -iE "dpu_capture" | tail -4 | sed 's/^/      /' >> "$LOG" 2>/dev/null
 
-setsid /bin/bash -c '
+systemctl reset-failed steam-cleanexit.service 2>/dev/null
+systemd-run --collect --quiet --unit=steam-cleanexit /bin/bash -c '
   killall gamescope steam FEX 2>/dev/null
   for _i in $(seq 1 60); do pgrep -x gamescope >/dev/null 2>&1 || break; sleep 0.1; done
   if pgrep -x gamescope >/dev/null 2>&1; then
@@ -30,4 +34,4 @@ setsid /bin/bash -c '
   sleep 4
   echo "[$(date +%H:%M:%S)] gamescope: $st" >> /storage/screenrecord.log
   dmesg | grep -iE "panel|dsi_cmds|failed to initialize|ctl 1 reset|cmd dma tx" | tail -6 | sed "s/^/      /" >> /storage/screenrecord.log
-' </dev/null >/dev/null 2>&1 &
+'
