@@ -297,7 +297,7 @@ int main(int argc, char **argv)
 	const char *outpath = argv[1];
 	double max_s = argc > 2 ? atof(argv[2]) : 0;
 	int fps = argc > 3 ? atoi(argv[3]) : 30;
-	int rot = argc > 4 ? atoi(argv[4]) : 90;
+	int rot = argc > 4 ? atoi(argv[4]) : 270;
 	if (rot != 0 && rot != 90 && rot != 180 && rot != 270) rot = 90;
 	uint64_t frame_interval = fps > 0 ? 1000000000ull / fps : 0;
 
@@ -334,16 +334,39 @@ int main(int argc, char **argv)
 	fprintf(stderr, "enc OUTPUT NV12 planes=%d sizeimage=%u (buf=%u)\n",
 		o_planes, o_sizeimage, g.total_size);
 
+	/*
+	 * Landscape via ENCODER rotation (universal: the coded pixels come out
+	 * landscape, so every player shows it right -- no rotation-matrix metadata
+	 * that some players, e.g. VLC, mishandle). The Iris encoder supports
+	 * V4L2_CID_ROTATE; for 90/270 the coded (CAPTURE) frame is the swapped
+	 * size. Set the rotate control BEFORE the CAPTURE format.
+	 */
+	int swap = (rot == 90 || rot == 270);
+	struct v4l2_control ctrl;
+	if (rot) {
+		ctrl.id = V4L2_CID_ROTATE; ctrl.value = rot;
+		if (ioctl(enc, VIDIOC_S_CTRL, &ctrl) < 0)
+			fprintf(stderr, "S_CTRL ROTATE %d: %s (will fall back to matrix)\n",
+				rot, strerror(errno));
+	}
+
 	struct v4l2_format cfmt = {0};
 	cfmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-	cfmt.fmt.pix_mp.width = g.width;
-	cfmt.fmt.pix_mp.height = g.height;
+	cfmt.fmt.pix_mp.width  = swap ? g.height : g.width;
+	cfmt.fmt.pix_mp.height = swap ? g.width  : g.height;
 	cfmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_H264;
 	cfmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
 	if (IOCTL(enc, VIDIOC_S_FMT, &cfmt) < 0) die("S_FMT CAPTURE\n");
 	int c_planes = cfmt.fmt.pix_mp.num_planes;
+	/* coded dims the driver actually accepted */
+	uint32_t coded_w = cfmt.fmt.pix_mp.width;
+	uint32_t coded_h = cfmt.fmt.pix_mp.height;
+	/* did the encoder accept the rotated (swapped) coded size? */
+	int enc_rotated = swap ? (coded_w == g.height && coded_h == g.width)
+			       : (rot == 0 || rot == 180);
+	fprintf(stderr, "enc CAPTURE H264 coded=%ux%u rot=%d enc_rotated=%d\n",
+		coded_w, coded_h, rot, enc_rotated);
 
-	struct v4l2_control ctrl;
 	ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE; ctrl.value = 12000000;
 	ioctl(enc, VIDIOC_S_CTRL, &ctrl);
 	ctrl.id = V4L2_CID_MPEG_VIDEO_GOP_SIZE; ctrl.value = fps;
@@ -509,7 +532,12 @@ int main(int argc, char **argv)
 		lseek(outfd, FTYP_SIZE, SEEK_SET);
 		write(outfd, szb, 4);
 		lseek(outfd, 0, SEEK_END);
-		write_moov(outfd, g.width, g.height, fps, rot);
+		if (enc_rotated)
+			/* coded pixels are already correctly oriented -> identity */
+			write_moov(outfd, coded_w, coded_h, fps, 0);
+		else
+			/* encoder didn't rotate -> tag portrait coded + rotation matrix */
+			write_moov(outfd, g.width, g.height, fps, rot);
 	} else {
 		fprintf(stderr, "no samples/SPS/PPS; mp4 not finalized\n");
 	}

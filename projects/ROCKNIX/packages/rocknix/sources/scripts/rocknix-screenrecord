@@ -19,7 +19,7 @@ FPS=30
 # is portrait-native; 90 undoes the compositor rotation. Override with
 # `screenrecord.rotation` (0|90|180|270) if a clip comes out upside down.
 ROT="$(get_setting screenrecord.rotation 2>/dev/null)"
-[ -z "$ROT" ] && ROT=90
+[ -z "$ROT" ] && ROT=270
 
 is_running() { systemctl is-active --quiet "${UNIT}.service" 2>/dev/null; }
 

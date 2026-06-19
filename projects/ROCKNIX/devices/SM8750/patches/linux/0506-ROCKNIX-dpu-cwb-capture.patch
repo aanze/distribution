@@ -6,20 +6,27 @@ MERGE_3D -> [CDM] -> WB), kernel-initiated and master-independent, so it
 survives the ES<->Steam compositor handoff. debugfs screenshot (RGB/NV12 via
 CDM) + /dev/dpu_capture0 NV12 dmabuf ring for the Iris H.264 encoder.
 
-CWB is concurrent: the writeback only completes when it is flushed on the SAME
+CWB is concurrent: the writeback only completes when flushed on the SAME
 realtime CTL that drives the layer mixers, so it latches with the live frame.
-(Driving it from a detached CTL was tried and the WB never completes -- it has
-no timing source.) So the WB rides the realtime CTL's pending flush each kickoff.
+(A detached CTL has no timing source and the WB never fires.) So the WB rides
+the realtime CTL's pending flush each kickoff.
 
-Handoff safety (dpu_capture_disarm): riding the realtime CTL means an in-flight
-WB left on that CTL when the encoder is torn down would fail the CTL reset and
-wedge the display during the gamescope<->sway swap (black screen on Steam exit,
-force reboot). dpu_encoder_helper_phys_cleanup() now calls dpu_capture_disarm()
-BEFORE ctl->ops.reset(): it clears our WB/CWB/MERGE_3D/CDM ACTIVE bits off the
-CTL and resets the outstanding-WB state, so the reset is always clean. The
-capture MODE is left armed, so recording re-attaches on the next compositor's
-first kickoff and one clip spans launching/leaving Steam (a few frames dropped
-across the swap).
+Handoff safety. Riding the realtime CTL means a writeback that stalls -- which
+happens when the display path is mid-transition during the gamescope<->sway
+swap -- blocks frame-done and wedges the display (black screen on Steam exit,
+force reboot). Two mechanisms keep the display alive:
+
+ 1. dpu_capture_disarm() clears our WB/CWB/MERGE_3D/CDM ACTIVE bits off the CTL.
+    It is called both from dpu_encoder_helper_phys_cleanup() (clean teardown,
+    before the CTL reset) and from dpu_encoder_helper_hw_reset() (the kickoff-
+    timeout recovery path), so the recovery reset can actually succeed instead
+    of failing repeatedly with the capture footprint still on the CTL.
+
+ 2. After any disarm we set resume_skip: capture holds off re-arming for a
+    window of kickoffs so it can't arm into the still-settling display path and
+    immediately re-stall. Recording stays armed across the handoff and resumes
+    once the new compositor is stable (one clip spans launching/leaving Steam,
+    a short gap across the swap). A path that keeps stalling auto-offs.
 
 Signed-off-by: Anze <aanzdev@gmail.com>
 diff --git a/drivers/gpu/drm/msm/Makefile b/drivers/gpu/drm/msm/Makefile
@@ -36,10 +43,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..960d439
+index 0000000..853318e
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,932 @@
+@@ -0,0 +1,953 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -93,6 +100,14 @@ index 0000000..960d439
 + * retry cycles before giving up (auto-off) -- bounds any display glitch. */
 +#define CAP_RETRY_AFTER	4
 +#define CAP_MAX_RETRIES	8
++/*
++ * After any display teardown/recovery (compositor handoff, CTL reset) skip
++ * re-arming the writeback for this many kickoffs. The CWB rides the realtime
++ * CTL, and arming while the new display path is still settling makes the WB
++ * stall -> frame-done timeout -> wedge. Let the display run clean first, then
++ * resume capture (~2s at 60fps). One recording still spans the handoff.
++ */
++#define CAP_RESUME_SKIP	120
 +
 +#define RGB_STRIDE	ALIGN(CAP_W * 4, 256)
 +#define RGB_SIZE	(RGB_STRIDE * CAP_H)
@@ -159,6 +174,7 @@ index 0000000..960d439
 +	bool wb_outstanding;
 +	int wb_stall;
 +	int wb_retries;
++	int resume_skip;	/* don't re-arm for N kickoffs after a teardown */
 +	u32 last_cwb_mask;
 +	enum dpu_merge_3d last_merge;
 +	enum dpu_cdm last_cdm;
@@ -416,11 +432,17 @@ index 0000000..960d439
 +	 * CWB is concurrent: the writeback only latches when it is flushed on the
 +	 * SAME realtime CTL that drives the layer mixers, so it samples the live
 +	 * frame. (A detached CTL has no timing source and the WB never completes.)
-+	 * The wedge that this used to cause on the ES<->Steam handoff is handled
-+	 * separately by dpu_capture_disarm() in the encoder cleanup path: it clears
-+	 * our footprint off the CTL before it is reset, so a pending WB can never
-+	 * block the display teardown.
-+	 *
++	 * The wedge this can cause across the ES<->Steam handoff is handled by
++	 * dpu_capture_disarm(): on encoder teardown/CTL-reset it clears our
++	 * footprint off the CTL and sets resume_skip, and we then hold off arming
++	 * until the new display path has settled.
++	 */
++	if (c->resume_skip > 0) {
++		c->resume_skip--;
++		return;
++	}
++
++	/*
 +	 * If the previous WB hasn't completed yet, don't kick another (avoid
 +	 * piling up); auto-off only recording if it stays genuinely stuck.
 +	 */
@@ -486,8 +508,14 @@ index 0000000..960d439
 +
 +	c->wb_outstanding = false;
 +	c->wb_stall = 0;
-+	c->wb_retries = 0;
 +	c->armed_ctl = NULL;
++	/*
++	 * Don't re-arm immediately: the display path is mid-teardown/recovery.
++	 * Let it run clean for a while, then capture resumes. (wb_retries is
++	 * intentionally NOT reset, so a path that keeps stalling eventually
++	 * auto-offs instead of stuttering forever.)
++	 */
++	c->resume_skip = CAP_RESUME_SKIP;
 +}
 +
 +static void dpu_capture_wb_done_irq(void *arg)
@@ -1024,7 +1052,7 @@ index 0000000..8e6b720
 +
 +#endif /* _DPU_CAPTURE_H_ */
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
-index 2756c57..98ef8b4 100644
+index 2756c57..c649a92 100644
 --- a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
 @@ -34,6 +34,7 @@
@@ -1035,7 +1063,24 @@ index 2756c57..98ef8b4 100644
  #include "disp/msm_disp_snapshot.h"
  
  #define DPU_DEBUG_ENC(e, fmt, ...) DRM_DEBUG_ATOMIC("enc%d " fmt,\
-@@ -1813,6 +1814,24 @@ static void _dpu_encoder_kickoff_phys(struct dpu_encoder_virt *dpu_enc)
+@@ -1784,6 +1785,16 @@ static void dpu_encoder_helper_hw_reset(struct dpu_encoder_phys *phys_enc)
+ 	DRM_DEBUG_KMS("id:%u ctl %d reset\n", DRMID(drm_enc),
+ 		      ctl->idx);
+ 
++	/*
++	 * A stalled out-of-band CWB capture writeback on this CTL is a prime
++	 * cause of the kickoff/frame-done timeout that lands us here. Clear the
++	 * capture footprint off the CTL first so the reset can actually succeed
++	 * (otherwise the reset fails and the display stays wedged). Capture holds
++	 * off re-arming afterwards (resume_skip) so it can't immediately re-stall.
++	 */
++	if (phys_enc->dpu_kms)
++		dpu_capture_disarm(phys_enc->dpu_kms, ctl);
++
+ 	rc = ctl->ops.reset(ctl);
+ 	if (rc) {
+ 		DPU_ERROR_ENC(dpu_enc, "ctl %d reset failure\n",  ctl->idx);
+@@ -1813,6 +1824,24 @@ static void _dpu_encoder_kickoff_phys(struct dpu_encoder_virt *dpu_enc)
  	/* update pending counts and trigger kickoff ctl flush atomically */
  	spin_lock_irqsave(&dpu_enc->enc_spinlock, lock_flags);
  
@@ -1060,7 +1105,7 @@ index 2756c57..98ef8b4 100644
  	/* don't perform flush/start operations for slave encoders */
  	for (i = 0; i < dpu_enc->num_phys_encs; i++) {
  		struct dpu_encoder_phys *phys = dpu_enc->phys_encs[i];
-@@ -2283,6 +2302,15 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
+@@ -2283,6 +2312,15 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
  
  	dpu_enc = to_dpu_encoder_virt(phys_enc->parent);
  
