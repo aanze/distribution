@@ -39,10 +39,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..e3bc67c
+index 0000000..934dba8
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,1110 @@
+@@ -0,0 +1,1118 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -590,6 +590,7 @@ index 0000000..e3bc67c
 +{
 +	struct dpu_capture *c = g_cap;
 +	long ret;
++	int i;
 +
 +	if (!c || c->kms != dpu_kms || !ctl)
 +		return;
@@ -617,15 +618,22 @@ index 0000000..e3bc67c
 +			c->last_cwb_mask, c->last_merge, c->last_cdm);
 +	cap_teardown_blocks(c);
 +	/*
-+	 * The un-tap registers are written but SHADOWED -- they only become active
-+	 * on a CTL flush+start, which the compositor we are leaving will not issue.
-+	 * Rather than trigger its CTL out-of-band (a cmd-mode CTL_START without TE
-+	 * sync can itself time out and wedge), defer the latch: the next
-+	 * compositor's first kickoff flushes the un-tap on its own CTL (see
-+	 * dpu_capture_kickoff), so it commits with that compositor's first frame
-+	 * and the mux is un-tapped before it can backpressure the mixer.
++	 * The un-tap registers are SHADOWED -- they only go active on a CTL
++	 * flush+start. The compositor we are leaving is still live RIGHT NOW (we
++	 * are called before its kill), and it is the only CTL that will commit a
++	 * frame before the next compositor's first frame. So latch the un-tap here,
++	 * on this live CTL, by flushing the CWB blocks and forcing one trigger.
++	 * (Deferring to the next compositor's kickoff is a frame too late -- its
++	 * first frame already scans out through the still-tapping mux and wedges.)
 +	 */
-+	c->untap_pending = true;
++	for (i = 0; i < CAP_MAX_LM; i++)
++		if (c->cwb[i] && ctl->ops.update_pending_flush_cwb)
++			ctl->ops.update_pending_flush_cwb(ctl, c->cwb[i]->idx);
++	if (ctl->ops.trigger_flush)
++		ctl->ops.trigger_flush(ctl);
++	if (ctl->ops.trigger_start)
++		ctl->ops.trigger_start(ctl);
++	pr_info("untap latched (live ctl%d)\n", ctl->idx);
 +
 +	c->wb_outstanding = false;
 +	c->wb_stall = 0;
