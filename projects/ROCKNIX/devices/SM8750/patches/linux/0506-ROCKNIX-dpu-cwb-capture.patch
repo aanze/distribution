@@ -1,0 +1,1453 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] ROCKNIX: drm/msm/dpu: out-of-band CWB screen capture (RGB/NV12 + recording ring) with userspace pause for compositor switches
+
+Out-of-band Concurrent WriteBack capture (CWB mux -> CWB pingpong -> MERGE_3D ->
+[CDM] -> WB), kernel-initiated and master-independent. debugfs screenshot
+(RGB/NV12 via CDM) + /dev/dpu_capture0 NV12 dmabuf ring for the Iris H.264
+encoder. The writeback rides the realtime CTL's pending flush each kickoff so it
+latches with the live frame (a detached CTL has no timing source).
+
+Compositor-switch safety. An in-flight writeback that gets orphaned when the
+encoder is torn down at the gamescope<->sway swap hangs the CTL at the hardware
+level; the subsequent reset then fails forever (black screen on Steam exit).
+There is no in-kernel teardown hook early enough to retire it (the master switch
+does not go through a clean atomic_disable), so retirement is driven from
+userspace WHILE THE OLD COMPOSITOR IS STILL LIVE:
+
+  debugfs dpu_capture/pause: write 1 to PAUSE (stop arming + drain the in-flight
+  WB on the armed CTL while it still scans, then clear the footprint), write 0 to
+  RESUME. start_steam.sh writes these around the sway<->gamescope switches, so no
+  WB is ever armed when a compositor tears down. The recorder keeps running in
+  its own scope, so one clip spans ES -> gameplay -> ES.
+
+  dpu_capture_drain()/disarm() remain wired into atomic_disable / phys_cleanup /
+  hw_reset as best-effort fallbacks; resume_skip holds off re-arming until the
+  new display path settles.
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+diff --git a/drivers/gpu/drm/msm/Makefile b/drivers/gpu/drm/msm/Makefile
+index ba45e99..d81acbb 100644
+--- a/drivers/gpu/drm/msm/Makefile
++++ b/drivers/gpu/drm/msm/Makefile
+@@ -69,6 +69,7 @@ msm-display-$(CONFIG_DRM_MSM_MDP5) += \
+ 	disp/mdp5/mdp5_smp.o \
+ 
+ msm-display-$(CONFIG_DRM_MSM_DPU) += \
++	disp/dpu1/dpu_capture.o \
+ 	disp/dpu1/dpu_core_perf.o \
+ 	disp/dpu1/dpu_crtc.o \
+ 	disp/dpu1/dpu_encoder.o \
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
+new file mode 100644
+index 0000000..7f3b768
+--- /dev/null
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
+@@ -0,0 +1,1131 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
++ *
++ * Programs the dedicated CWB datapath (CWB mux -> dedicated CWB pingpong ->
++ * MERGE_3D -> [CDM] -> WB) directly and adds the writeback to the *realtime*
++ * CTL's flush during each kickoff -- kernel-initiated, so capture is independent
++ * of whichever compositor (sway/ES, gamescope/Steam) holds the DRM master and
++ * survives a handoff.
++ *
++ *   Screenshot (debugfs): /sys/kernel/debug/dpu_capture/{arm,status,frame.raw}
++ *       arm 'p'=probe, '1'=XRGB single grab, '2'=NV12 single grab, '0'=off.
++ *   Recording (misc dev): /dev/dpu_capture0 -- an NV12 ring whose buffers are
++ *       exported as dma-bufs (zero-copy) so a userspace app can feed them to the
++ *       Iris H.264 encoder. ioctls: QUERY, EXPBUF, DQBUF, QBUF + poll().
++ */
++#define pr_fmt(fmt) "dpu_capture: " fmt
++
++#include <linux/debugfs.h>
++#include <linux/io.h>
++#include <linux/slab.h>
++#include <linux/miscdevice.h>
++#include <linux/poll.h>
++#include <linux/dma-buf.h>
++#include <linux/ktime.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_prime.h>
++
++#include "msm_kms.h"
++#include "msm_gem.h"
++#include "dpu_kms.h"
++#include "dpu_hw_mdss.h"
++#include "dpu_hw_catalog.h"
++#include "dpu_hw_ctl.h"
++#include "dpu_hw_wb.h"
++#include "dpu_hw_cwb.h"
++#include "dpu_hw_cdm.h"
++#include "dpu_hw_top.h"
++#include "dpu_hw_util.h"
++#include "dpu_hw_pingpong.h"
++#include "dpu_hw_merge3d.h"
++#include "dpu_core_irq.h"
++#include "dpu_vbif.h"
++#include "dpu_capture.h"
++
++#define CAP_W		1080
++#define CAP_H		1920
++#define CAP_MAX_LM	2
++#define REC_NBUF	4
++/* watchdog: frames a stalled WB is cleared+skipped before a retry, and how many
++ * retry cycles before giving up (auto-off) -- bounds any display glitch. */
++#define CAP_RETRY_AFTER	4
++#define CAP_MAX_RETRIES	8
++/*
++ * After any display teardown/recovery (compositor handoff, CTL reset) skip
++ * re-arming the writeback for this many kickoffs. The CWB rides the realtime
++ * CTL, and arming while the new display path is still settling makes the WB
++ * stall -> frame-done timeout -> wedge. Let the display run clean first, then
++ * resume capture (~2s at 60fps). One recording still spans the handoff.
++ */
++#define CAP_RESUME_SKIP	120
++
++#define RGB_STRIDE	ALIGN(CAP_W * 4, 256)
++#define RGB_SIZE	(RGB_STRIDE * CAP_H)
++
++/* Y stride 128-aligned to match the Iris encoder's expected NV12 sizeimage */
++#define NV12_Y_STRIDE	ALIGN(CAP_W, 128)
++#define NV12_Y_SIZE	(NV12_Y_STRIDE * CAP_H)
++#define NV12_UV_STRIDE	ALIGN(CAP_W, 128)
++#define NV12_UV_SIZE	(NV12_UV_STRIDE * (CAP_H / 2))
++#define NV12_SIZE	(NV12_Y_SIZE + NV12_UV_SIZE)
++
++#define CAP_BUF_SIZE	RGB_SIZE	/* single screenshot buffer (larger fits) */
++
++/* ---- /dev/dpu_capture0 uapi (duplicated in the userspace recorder) ---- */
++struct dpucap_geom {
++	__u32 width, height, fourcc, num_buffers;
++	__u32 y_stride, y_size, uv_stride, uv_size, total_size;
++};
++struct dpucap_expbuf { __u32 index; __s32 fd; };
++struct dpucap_frame { __u32 index, sequence; __u64 timestamp_ns; };
++#define DPUCAP_MAGIC	'D'
++#define DPUCAP_QUERY	_IOR(DPUCAP_MAGIC, 0, struct dpucap_geom)
++#define DPUCAP_EXPBUF	_IOWR(DPUCAP_MAGIC, 1, struct dpucap_expbuf)
++#define DPUCAP_DQBUF	_IOR(DPUCAP_MAGIC, 2, struct dpucap_frame)
++#define DPUCAP_QBUF	_IOW(DPUCAP_MAGIC, 3, __u32)
++
++enum cap_mode { CAP_OFF = 0, CAP_PROBE, CAP_SHOT, CAP_RECORD };
++enum cap_pix  { PIX_RGB = 0, PIX_NV12 };
++
++struct rec_buf {
++	struct drm_gem_object *bo;
++	void *vaddr;
++	u64 iova;
++	struct dma_buf *dmabuf;
++	bool busy;		/* held by userspace (DQ'd, not yet Q'd) */
++	bool ready;
++};
++
++struct dpu_capture {
++	struct dpu_kms *kms;
++
++	struct dpu_hw_wb *wb;				/* WB_2 */
++	struct dpu_hw_cwb *cwb[CAP_MAX_LM];		/* CWB_0, CWB_1 */
++	struct dpu_hw_pingpong *dcwb_pp[CAP_MAX_LM];	/* PINGPONG_CWB_0/1 */
++	struct dpu_hw_merge_3d *merge3d;		/* MERGE_3D_4 */
++	struct dpu_hw_cdm *cdm;				/* CDM_0 */
++	struct dpu_hw_ctl *armed_ctl;			/* realtime CTL we last armed on */
++	const struct msm_format *rgb_fmt, *nv12_fmt;
++	unsigned int wb_irq;
++
++	/* single-shot (debugfs) buffer */
++	struct drm_gem_object *bo;
++	void *vaddr;
++	u64 iova;
++
++	enum cap_mode mode;
++	enum cap_pix pix;
++	bool irq_on;
++	int probe_logs;
++	atomic_t frames;
++
++	/* display-safety watchdog: a WB queued onto the realtime CTL that never
++	 * completes would stall the display commit; track it and clear it off. */
++	bool wb_outstanding;
++	int wb_stall;
++	int wb_retries;
++	int resume_skip;	/* don't re-arm for N kickoffs after a teardown */
++	bool paused;		/* userspace held capture off across a compositor switch */
++	bool untap_pending;	/* latch the CWB un-tap on the next compositor's kickoff */
++	u32 last_cwb_mask;
++	enum dpu_merge_3d last_merge;
++	enum dpu_cdm last_cdm;
++
++	/* recording ring */
++	struct rec_buf ring[REC_NBUF];
++	int wr_idx;			/* buffer currently being written (-1 none) */
++	int ready_idx;			/* last completed buffer */
++	u32 ready_seq;			/* completed-frame counter */
++	u32 dq_seq;			/* last frame handed to userspace */
++	u64 ready_ts;
++	spinlock_t rec_lock;
++	wait_queue_head_t rec_wq;
++
++	struct dentry *dir;
++	struct miscdevice misc;
++	bool misc_ok;
++};
++
++static struct dpu_capture *g_cap;
++
++/* --- WB programming helpers (mirror dpu_encoder_phys_wb.c) --- */
++
++static bool cap_clk_force(struct dpu_capture *c, bool en, bool *forced)
++{
++	struct dpu_hw_wb *wb = c->wb;
++	struct dpu_hw_mdp *mdp = c->kms->hw_mdp;
++
++	if (wb->ops.setup_clk_force_ctrl) {
++		*forced = wb->ops.setup_clk_force_ctrl(wb, en);
++		return true;
++	}
++	if (mdp && mdp->ops.setup_clk_force_ctrl) {
++		*forced = mdp->ops.setup_clk_force_ctrl(mdp, wb->caps->clk_ctrl, en);
++		return true;
++	}
++	return false;
++}
++
++static void cap_set_ot_limit(struct dpu_capture *c)
++{
++	struct dpu_vbif_set_ot_params ot = {0};
++	bool forced = false;
++
++	ot.xin_id = c->wb->caps->xin_id;
++	ot.num = c->wb->idx - WB_0;
++	ot.width = CAP_W;
++	ot.height = CAP_H;
++	ot.is_wfd = false;
++	ot.frame_rate = 120;
++	ot.vbif_idx = c->wb->caps->vbif_idx;
++	ot.rd = false;
++
++	if (!cap_clk_force(c, true, &forced))
++		return;
++	dpu_vbif_set_ot_limit(c->kms, &ot);
++	if (forced)
++		cap_clk_force(c, false, &forced);
++}
++
++static void cap_set_qos_remap(struct dpu_capture *c)
++{
++	struct dpu_vbif_set_qos_params q = {0};
++	bool forced = false;
++
++	q.vbif_idx = c->wb->caps->vbif_idx;
++	q.xin_id = c->wb->caps->xin_id;
++	q.num = c->wb->idx - WB_0;
++	q.is_rt = true;
++
++	if (!cap_clk_force(c, true, &forced))
++		return;
++	dpu_vbif_set_qos_remap(c->kms, &q);
++	if (forced)
++		cap_clk_force(c, false, &forced);
++}
++
++static void cap_set_qos(struct dpu_capture *c)
++{
++	const struct dpu_perf_cfg *perf = c->kms->catalog->perf;
++	const struct dpu_qos_lut_tbl *tbl;
++	struct dpu_hw_qos_cfg qos = {0};
++
++	qos.danger_safe_en = true;
++	qos.danger_lut = perf->danger_lut_tbl[DPU_QOS_LUT_USAGE_NRT];
++	qos.safe_lut = perf->safe_lut_tbl[DPU_QOS_LUT_USAGE_NRT];
++	tbl = &perf->qos_lut_tbl[DPU_QOS_LUT_USAGE_NRT];
++	qos.creq_lut = _dpu_hw_get_qos_lut(tbl, 0);
++
++	if (c->wb->ops.setup_qos_lut)
++		c->wb->ops.setup_qos_lut(c->wb, &qos);
++}
++
++static void cap_setup_cdm(struct dpu_capture *c, enum dpu_pingpong pp, bool enable)
++{
++	struct dpu_hw_cdm_cfg cfg = {0};
++
++	if (!c->cdm)
++		return;
++	if (!enable) {
++		if (c->cdm->ops.bind_pingpong_blk)
++			c->cdm->ops.bind_pingpong_blk(c->cdm, PINGPONG_NONE);
++		return;
++	}
++	cfg.output_width = CAP_W;
++	cfg.output_height = CAP_H;
++	cfg.output_fmt = c->nv12_fmt;
++	cfg.output_type = CDM_CDWN_OUTPUT_WB;
++	cfg.output_bit_depth = CDM_CDWN_OUTPUT_8BIT;
++	cfg.csc_cfg = &dpu_csc10_rgb2yuv_601l;
++	cfg.h_cdwn_type = CDM_CDWN_COSITE;
++	cfg.v_cdwn_type = CDM_CDWN_OFFSITE;
++	cfg.pp_id = pp;
++	if (c->cdm->ops.enable)
++		c->cdm->ops.enable(c->cdm, &cfg);
++}
++
++/* program the CWB datapath to write @iova in @pix and flush on the realtime CTL */
++static void cap_program(struct dpu_capture *c, struct dpu_hw_ctl *ctl,
++			const enum dpu_pingpong *rt_pp, int num_pp,
++			u64 iova, enum cap_pix pix)
++{
++	const struct dpu_perf_cfg *perf = c->kms->catalog->perf;
++	bool nv12 = (pix == PIX_NV12);
++	struct dpu_hw_cwb_setup_cfg cwb_cfg;
++	struct dpu_hw_wb_cfg wb_cfg;
++	enum dpu_merge_3d merge = 0;
++	enum dpu_cdm cdm_idx = 0;
++	u32 cwb_mask = 0;
++	int i;
++
++	for (i = 0; i < num_pp; i++) {
++		cwb_cfg.input = INPUT_MODE_LM_OUT;
++		cwb_cfg.pp_idx = rt_pp[i];
++		c->cwb[i]->ops.config_cwb(c->cwb[i], &cwb_cfg);
++		cwb_mask |= BIT(c->cwb[i]->idx - CWB_0);
++	}
++
++	if (num_pp == CAP_MAX_LM && c->merge3d) {
++		if (c->merge3d->ops.setup_3d_mode)
++			c->merge3d->ops.setup_3d_mode(c->merge3d, BLEND_3D_H_ROW_INT);
++		merge = c->merge3d->idx;
++	} else if (c->merge3d && c->merge3d->ops.setup_3d_mode) {
++		c->merge3d->ops.setup_3d_mode(c->merge3d, BLEND_3D_NONE);
++	}
++
++	cap_set_ot_limit(c);
++	cap_set_qos_remap(c);
++	cap_set_qos(c);
++
++	cap_setup_cdm(c, c->dcwb_pp[0]->idx, nv12);
++	if (nv12 && c->cdm)
++		cdm_idx = c->cdm->idx;
++
++	memset(&wb_cfg, 0, sizeof(wb_cfg));
++	wb_cfg.intf_mode = INTF_MODE_WB_LINE;
++	wb_cfg.roi.x1 = 0;
++	wb_cfg.roi.x2 = CAP_W;
++	wb_cfg.roi.y1 = 0;
++	wb_cfg.roi.y2 = CAP_H;
++	wb_cfg.dest.width = CAP_W;
++	wb_cfg.dest.height = CAP_H;
++	if (nv12) {
++		wb_cfg.dest.num_planes = 2;
++		wb_cfg.dest.plane_addr[0] = lower_32_bits(iova);
++		wb_cfg.dest.plane_pitch[0] = NV12_Y_STRIDE;
++		wb_cfg.dest.plane_size[0] = NV12_Y_SIZE;
++		wb_cfg.dest.plane_addr[1] = lower_32_bits(iova) + NV12_Y_SIZE;
++		wb_cfg.dest.plane_pitch[1] = NV12_UV_STRIDE;
++		wb_cfg.dest.plane_size[1] = NV12_UV_SIZE;
++	} else {
++		wb_cfg.dest.num_planes = 1;
++		wb_cfg.dest.plane_addr[0] = lower_32_bits(iova);
++		wb_cfg.dest.plane_pitch[0] = RGB_STRIDE;
++		wb_cfg.dest.plane_size[0] = RGB_SIZE;
++	}
++
++	if (c->wb->ops.setup_roi)
++		c->wb->ops.setup_roi(c->wb, &wb_cfg);
++	if (c->wb->ops.setup_outformat)
++		c->wb->ops.setup_outformat(c->wb, &wb_cfg,
++			nv12 ? c->nv12_fmt : c->rgb_fmt);
++	if (c->wb->ops.setup_cdp)
++		c->wb->ops.setup_cdp(c->wb, nv12 ? c->nv12_fmt : c->rgb_fmt,
++			perf->cdp_cfg[DPU_PERF_CDP_USAGE_RT].wr_enable);
++	if (c->wb->ops.setup_outaddress)
++		c->wb->ops.setup_outaddress(c->wb, &wb_cfg);
++	if (c->wb->ops.bind_pingpong_blk)
++		c->wb->ops.bind_pingpong_blk(c->wb, c->dcwb_pp[0]->idx);
++
++	/* remember what we activated so the watchdog can clear exactly these */
++	c->last_cwb_mask = cwb_mask;
++	c->last_merge = merge;
++	c->last_cdm = cdm_idx;
++
++	if (ctl->ops.set_capture_active)
++		ctl->ops.set_capture_active(ctl, c->wb->idx, cwb_mask, merge, cdm_idx);
++	for (i = 0; i < num_pp; i++)
++		if (ctl->ops.update_pending_flush_cwb)
++			ctl->ops.update_pending_flush_cwb(ctl, c->cwb[i]->idx);
++	if (merge && ctl->ops.update_pending_flush_merge_3d)
++		ctl->ops.update_pending_flush_merge_3d(ctl, merge);
++	if (cdm_idx && ctl->ops.update_pending_flush_cdm)
++		ctl->ops.update_pending_flush_cdm(ctl, cdm_idx);
++	if (ctl->ops.update_pending_flush_wb)
++		ctl->ops.update_pending_flush_wb(ctl, c->wb->idx);
++
++	/*
++	 * No trigger here: we added the writeback to the realtime CTL's pending
++	 * flush, and the encoder's own kickoff (which called us) will do the
++	 * trigger_flush/trigger_start, latching the WB concurrently with the live
++	 * frame so it actually completes.
++	 */
++}
++
++/* pick the next ring buffer to write (round-robin, skip userspace-held) */
++static int rec_next_free(struct dpu_capture *c)
++{
++	int i, idx;
++
++	for (i = 1; i <= REC_NBUF; i++) {
++		idx = (c->ready_idx + i) % REC_NBUF;
++		if (!c->ring[idx].busy)
++			return idx;
++	}
++	return -1;
++}
++
++static void cap_teardown_blocks(struct dpu_capture *c);
++
++/* called from the realtime encoder kickoff, under enc_spinlock */
++void dpu_capture_kickoff(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl,
++			 const enum dpu_pingpong *rt_pp, int num_pp)
++{
++	struct dpu_capture *c = g_cap;
++	unsigned long flags;
++	int idx;
++
++	if (!c || c->mode == CAP_OFF || !ctl || c->kms != dpu_kms)
++		return;
++
++	if (c->mode == CAP_PROBE) {
++		if (c->probe_logs < 8) {
++			pr_info("probe: ctl=%d num_pp=%d pp=[%d %d]\n",
++				ctl->idx, num_pp,
++				num_pp > 0 ? rt_pp[0] : -1,
++				num_pp > 1 ? rt_pp[1] : -1);
++			c->probe_logs++;
++		}
++		return;
++	}
++
++	if (num_pp < 1 || num_pp > CAP_MAX_LM)
++		return;
++
++	/*
++	 * CWB is concurrent: the writeback only latches when it is flushed on the
++	 * SAME realtime CTL that drives the layer mixers, so it samples the live
++	 * frame. (A detached CTL has no timing source and the WB never completes.)
++	 * The wedge this can cause across the ES<->Steam handoff is handled by
++	 * dpu_capture_disarm(): on encoder teardown/CTL-reset it clears our
++	 * footprint off the CTL and sets resume_skip, and we then hold off arming
++	 * until the new display path has settled.
++	 */
++	/*
++	 * Latch a pending CWB un-tap onto THIS compositor's frame. The un-tap
++	 * registers were written at teardown but are shadowed; flushing the CWB
++	 * blocks on this CTL makes the encoder's own trigger (right after this
++	 * hook) commit the un-tap with its first frame, before the mux can
++	 * backpressure the mixer. Runs even while paused.
++	 */
++	if (c->untap_pending) {
++		int j;
++
++		cap_teardown_blocks(c);		/* re-assert the un-tap registers */
++		for (j = 0; j < CAP_MAX_LM; j++)
++			if (c->cwb[j] && ctl->ops.update_pending_flush_cwb)
++				ctl->ops.update_pending_flush_cwb(ctl, c->cwb[j]->idx);
++		c->untap_pending = false;
++		pr_info("untap latched on ctl%d\n", ctl->idx);
++	}
++
++	/* userspace paused us across a compositor switch -- do not arm */
++	if (c->paused)
++		return;
++
++	if (c->resume_skip > 0) {
++		c->resume_skip--;
++		return;
++	}
++
++	/*
++	 * If the previous WB hasn't completed yet, don't kick another (avoid
++	 * piling up); auto-off only recording if it stays genuinely stuck.
++	 */
++	if (c->wb_outstanding) {
++		if (++c->wb_stall >= CAP_RETRY_AFTER) {
++			c->wb_stall = 0;
++			c->wb_outstanding = false;	/* allow a fresh retry */
++			if (++c->wb_retries >= CAP_MAX_RETRIES) {
++				pr_warn("WB stalled; capture stopped\n");
++				c->mode = CAP_OFF;
++			}
++		}
++		return;
++	}
++
++	if (c->mode == CAP_RECORD) {
++		spin_lock_irqsave(&c->rec_lock, flags);
++		idx = rec_next_free(c);
++		c->wr_idx = idx;
++		spin_unlock_irqrestore(&c->rec_lock, flags);
++		if (idx < 0)
++			return;		/* all buffers held; drop this frame */
++		cap_program(c, ctl, rt_pp, num_pp, c->ring[idx].iova, PIX_NV12);
++		c->wb_outstanding = true;
++		c->armed_ctl = ctl;
++		return;
++	}
++
++	/* CAP_SHOT: single debugfs buffer */
++	if (!c->iova)
++		return;
++	cap_program(c, ctl, rt_pp, num_pp, c->iova, c->pix);
++	c->wb_outstanding = true;
++	c->armed_ctl = ctl;
++}
++
++/*
++ * Called from the encoder cleanup path (dpu_encoder_helper_phys_cleanup) BEFORE
++ * the CTL is reset. Because the CWB writeback rides the realtime CTL, an
++ * in-flight WB left on that CTL would make the reset fail and wedge the display
++ * during the ES<->Steam compositor handoff (black screen, force reboot). Clear
++ * our WB/CWB/MERGE_3D/CDM ACTIVE bits off the CTL so the reset is clean.
++ *
++ * The capture MODE is intentionally left untouched: recording stays armed and
++ * simply re-attaches on the next compositor's first kickoff, so one clip can
++ * span launching/leaving Steam (a few frames are dropped across the swap).
++ */
++/*
++ * Physically tear down the capture datapath blocks. Clearing the CTL ACTIVE
++ * bits is NOT enough: the CWB mux is a hardware tap bolted onto the live
++ * layer-mixer output, and it keeps sampling even with the WB inactive. Left
++ * tapping, it backpressures the realtime pipe the moment the *next* compositor
++ * drives the mixers -> ctl reset failure / black screen on the Steam handoff.
++ * So un-tap the CWB muxes (pp_idx = PINGPONG_NONE), drop the 3D merge, and
++ * detach the writeback from its pingpong. These are direct register writes that
++ * hold, so they take effect for whatever compositor next owns the mixers.
++ */
++static void cap_teardown_blocks(struct dpu_capture *c)
++{
++	struct dpu_hw_cwb_setup_cfg cwb_cfg = {
++		.input = INPUT_MODE_LM_OUT,
++		.pp_idx = PINGPONG_NONE,
++	};
++	int i;
++
++	for (i = 0; i < CAP_MAX_LM; i++)
++		if (c->cwb[i] && c->cwb[i]->ops.config_cwb)
++			c->cwb[i]->ops.config_cwb(c->cwb[i], &cwb_cfg);
++
++	if (c->merge3d && c->merge3d->ops.setup_3d_mode)
++		c->merge3d->ops.setup_3d_mode(c->merge3d, BLEND_3D_NONE);
++
++	if (c->wb && c->wb->ops.bind_pingpong_blk)
++		c->wb->ops.bind_pingpong_blk(c->wb, PINGPONG_NONE);
++
++	/*
++	 * Disable the CDM too. Capture enables it every frame (RGB->NV12); left
++	 * enabled it keeps the MDP datapath busy, which can block the MDSS
++	 * power-collapse that resets the DSI PHY -> panel re-init -110 on return.
++	 */
++	cap_setup_cdm(c, PINGPONG_NONE, false);
++
++	pr_info("teardown: cwb un-tapped + cdm off\n");
++}
++
++void dpu_capture_disarm(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl)
++{
++	struct dpu_capture *c = g_cap;
++
++	if (!c || c->kms != dpu_kms || !ctl)
++		return;
++	if (c->mode != CAP_RECORD && c->mode != CAP_SHOT)
++		return;
++	/* only touch the CTL we actually armed on (the realtime one being reset) */
++	if (c->armed_ctl != ctl && c->armed_ctl)
++		return;
++
++	if (ctl->ops.clear_capture_active)
++		ctl->ops.clear_capture_active(ctl, c->wb->idx,
++			c->last_cwb_mask, c->last_merge, c->last_cdm);
++	cap_teardown_blocks(c);
++	c->untap_pending = true;	/* latch on next compositor's kickoff */
++
++	c->wb_outstanding = false;
++	c->wb_stall = 0;
++	c->armed_ctl = NULL;
++	/*
++	 * Don't re-arm immediately: the display path is mid-teardown/recovery.
++	 * Let it run clean for a while, then capture resumes. (wb_retries is
++	 * intentionally NOT reset, so a path that keeps stalling eventually
++	 * auto-offs instead of stuttering forever.)
++	 */
++	c->resume_skip = CAP_RESUME_SKIP;
++	pr_info("disarm on ctl%d\n", ctl->idx);
++}
++
++/*
++ * Called at the very TOP of the encoder disable (atomic_disable), while the
++ * display is STILL LIVE, before any teardown/reset. This is the only safe place
++ * to retire an in-flight capture writeback: stop arming, wait for the
++ * outstanding WB to finish naturally (it completes against the still-scanning
++ * frame), then clear our footprint off the CTL. If the WB is instead orphaned
++ * by the teardown it hangs the CTL at the hardware level and the later reset
++ * fails -> black screen on the ES<->Steam handoff.
++ *
++ * Capture stays armed (resume_skip), so it re-attaches once the new compositor
++ * is stable and one recording spans the handoff.
++ */
++void dpu_capture_drain(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl)
++{
++	struct dpu_capture *c = g_cap;
++	long ret;
++	int i;
++
++	if (!c || c->kms != dpu_kms || !ctl)
++		return;
++	if (c->mode != CAP_RECORD && c->mode != CAP_SHOT)
++		return;
++	if (c->armed_ctl != ctl && c->armed_ctl)
++		return;
++
++	/* stop arming new writebacks across the upcoming teardown */
++	c->resume_skip = CAP_RESUME_SKIP;
++
++	/* let the in-flight WB finish while the display is still scanning */
++	if (c->wb_outstanding) {
++		ret = wait_event_timeout(c->rec_wq, !c->wb_outstanding,
++					 msecs_to_jiffies(80));
++		pr_info("drain on ctl%d: wb %s\n", ctl->idx,
++			ret ? "completed" : "TIMED OUT");
++	} else {
++		pr_info("drain on ctl%d: idle\n", ctl->idx);
++	}
++
++	/* clear our footprint off the still-live CTL + un-tap the CWB datapath */
++	if (ctl->ops.clear_capture_active)
++		ctl->ops.clear_capture_active(ctl, c->wb->idx,
++			c->last_cwb_mask, c->last_merge, c->last_cdm);
++	cap_teardown_blocks(c);
++	/*
++	 * The un-tap registers are SHADOWED -- they only go active on a CTL
++	 * flush+start. The compositor we are leaving is still live RIGHT NOW (we
++	 * are called before its kill), and it is the only CTL that will commit a
++	 * frame before the next compositor's first frame. So latch the un-tap here,
++	 * on this live CTL, by flushing the CWB blocks and forcing one trigger.
++	 * (Deferring to the next compositor's kickoff is a frame too late -- its
++	 * first frame already scans out through the still-tapping mux and wedges.)
++	 */
++	for (i = 0; i < CAP_MAX_LM; i++)
++		if (c->cwb[i] && ctl->ops.update_pending_flush_cwb)
++			ctl->ops.update_pending_flush_cwb(ctl, c->cwb[i]->idx);
++	if (c->last_merge && ctl->ops.update_pending_flush_merge_3d)
++		ctl->ops.update_pending_flush_merge_3d(ctl, c->last_merge);
++	if (c->last_cdm && ctl->ops.update_pending_flush_cdm)
++		ctl->ops.update_pending_flush_cdm(ctl, c->last_cdm);
++	if (ctl->ops.update_pending_flush_wb)
++		ctl->ops.update_pending_flush_wb(ctl, c->wb->idx);
++	if (ctl->ops.trigger_flush)
++		ctl->ops.trigger_flush(ctl);
++	if (ctl->ops.trigger_start)
++		ctl->ops.trigger_start(ctl);
++	pr_info("untap+cdm-off latched (live ctl%d)\n", ctl->idx);
++
++	c->wb_outstanding = false;
++	c->wb_stall = 0;
++	c->armed_ctl = NULL;
++}
++
++static void dpu_capture_wb_done_irq(void *arg)
++{
++	struct dpu_capture *c = arg;
++	unsigned long flags;
++
++	atomic_inc(&c->frames);
++
++	/* WB completed -> not stalled */
++	c->wb_outstanding = false;
++	c->wb_stall = 0;
++	c->wb_retries = 0;
++
++	if (c->mode != CAP_RECORD)
++		return;
++
++	spin_lock_irqsave(&c->rec_lock, flags);
++	if (c->wr_idx >= 0) {
++		c->ready_idx = c->wr_idx;
++		c->ring[c->ready_idx].ready = true;
++		c->ready_seq++;
++		c->ready_ts = ktime_get_ns();
++		c->wr_idx = -1;
++	}
++	spin_unlock_irqrestore(&c->rec_lock, flags);
++	wake_up_interruptible(&c->rec_wq);
++}
++
++/* ---- buffer alloc ---- */
++
++static int dpu_capture_alloc_buf(struct dpu_capture *c)
++{
++	c->vaddr = msm_gem_kernel_new(c->kms->dev, CAP_BUF_SIZE, MSM_BO_WC,
++				      c->kms->base.vm, &c->bo, &c->iova);
++	if (IS_ERR(c->vaddr)) {
++		int ret = PTR_ERR(c->vaddr);
++
++		c->vaddr = NULL; c->bo = NULL; c->iova = 0;
++		return ret;
++	}
++	memset(c->vaddr, 0, CAP_BUF_SIZE);
++	return 0;
++}
++
++static void dpu_capture_free_buf(struct dpu_capture *c)
++{
++	if (c->bo) {
++		msm_gem_unpin_iova(c->bo, c->kms->base.vm);
++		drm_gem_object_put(c->bo);
++	}
++	c->bo = NULL; c->vaddr = NULL; c->iova = 0;
++}
++
++static void rec_free_ring(struct dpu_capture *c)
++{
++	int i;
++
++	for (i = 0; i < REC_NBUF; i++) {
++		if (c->ring[i].dmabuf) {
++			dma_buf_put(c->ring[i].dmabuf);
++			c->ring[i].dmabuf = NULL;
++		}
++		if (c->ring[i].bo) {
++			msm_gem_unpin_iova(c->ring[i].bo, c->kms->base.vm);
++			drm_gem_object_put(c->ring[i].bo);
++		}
++		memset(&c->ring[i], 0, sizeof(c->ring[i]));
++	}
++}
++
++static int rec_alloc_ring(struct dpu_capture *c)
++{
++	int i;
++
++	for (i = 0; i < REC_NBUF; i++) {
++		c->ring[i].vaddr = msm_gem_kernel_new(c->kms->dev, NV12_SIZE,
++				MSM_BO_WC, c->kms->base.vm,
++				&c->ring[i].bo, &c->ring[i].iova);
++		if (IS_ERR(c->ring[i].vaddr)) {
++			int ret = PTR_ERR(c->ring[i].vaddr);
++
++			c->ring[i].vaddr = NULL; c->ring[i].bo = NULL;
++			rec_free_ring(c);
++			return ret;
++		}
++		c->ring[i].dmabuf = drm_gem_prime_export(c->ring[i].bo, O_RDWR);
++		if (IS_ERR(c->ring[i].dmabuf)) {
++			int ret = PTR_ERR(c->ring[i].dmabuf);
++
++			c->ring[i].dmabuf = NULL;
++			rec_free_ring(c);
++			return ret;
++		}
++	}
++	return 0;
++}
++
++/* ---- recording start/stop (driven by /dev/dpu_capture0 open/release) ---- */
++
++static int rec_start(struct dpu_capture *c)
++{
++	int ret;
++
++	if (c->mode != CAP_OFF)
++		return -EBUSY;
++
++	ret = rec_alloc_ring(c);
++	if (ret) {
++		pr_err("ring alloc failed: %d\n", ret);
++		return ret;
++	}
++	atomic_set(&c->frames, 0);
++	c->wb_outstanding = false;
++	c->wb_stall = 0;
++	c->wb_retries = 0;
++	c->resume_skip = 0;
++	c->paused = false;	/* a fresh recording always starts live */
++	c->wr_idx = -1;
++	c->ready_idx = 0;
++	c->ready_seq = 0;
++	c->dq_seq = 0;
++
++	ret = dpu_core_irq_register_callback(c->kms, c->wb_irq,
++					     dpu_capture_wb_done_irq, c);
++	if (ret) {
++		rec_free_ring(c);
++		return ret;
++	}
++	c->irq_on = true;
++	c->mode = CAP_RECORD;
++	pr_info("record start: %d x NV12 ring\n", REC_NBUF);
++	return 0;
++}
++
++static void rec_stop(struct dpu_capture *c)
++{
++	if (c->mode != CAP_RECORD)
++		return;
++	c->mode = CAP_OFF;
++	if (c->irq_on) {
++		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
++		c->irq_on = false;
++	}
++	rec_free_ring(c);
++	pr_info("record stop (%d frames)\n", atomic_read(&c->frames));
++}
++
++/* ---- /dev/dpu_capture0 ---- */
++
++static int dpucap_open(struct inode *ino, struct file *file)
++{
++	struct dpu_capture *c = g_cap;
++	int ret;
++
++	if (!c)
++		return -ENODEV;
++	if (!c->cdm || !c->nv12_fmt)
++		return -ENODEV;
++	ret = rec_start(c);
++	if (ret)
++		return ret;
++	file->private_data = c;
++	return 0;
++}
++
++static int dpucap_release(struct inode *ino, struct file *file)
++{
++	struct dpu_capture *c = file->private_data;
++
++	if (c)
++		rec_stop(c);
++	return 0;
++}
++
++static __poll_t dpucap_poll(struct file *file, poll_table *wait)
++{
++	struct dpu_capture *c = file->private_data;
++	__poll_t mask = 0;
++	unsigned long flags;
++
++	poll_wait(file, &c->rec_wq, wait);
++	spin_lock_irqsave(&c->rec_lock, flags);
++	if (c->ready_seq != c->dq_seq)
++		mask |= EPOLLIN | EPOLLRDNORM;
++	spin_unlock_irqrestore(&c->rec_lock, flags);
++	return mask;
++}
++
++static long dpucap_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	struct dpu_capture *c = file->private_data;
++	void __user *uarg = (void __user *)arg;
++	unsigned long flags;
++
++	switch (cmd) {
++	case DPUCAP_QUERY: {
++		struct dpucap_geom g = {
++			.width = CAP_W, .height = CAP_H,
++			.fourcc = DRM_FORMAT_NV12, .num_buffers = REC_NBUF,
++			.y_stride = NV12_Y_STRIDE, .y_size = NV12_Y_SIZE,
++			.uv_stride = NV12_UV_STRIDE, .uv_size = NV12_UV_SIZE,
++			.total_size = NV12_SIZE,
++		};
++		return copy_to_user(uarg, &g, sizeof(g)) ? -EFAULT : 0;
++	}
++	case DPUCAP_EXPBUF: {
++		struct dpucap_expbuf e;
++		int fd;
++
++		if (copy_from_user(&e, uarg, sizeof(e)))
++			return -EFAULT;
++		if (e.index >= REC_NBUF || !c->ring[e.index].dmabuf)
++			return -EINVAL;
++		get_dma_buf(c->ring[e.index].dmabuf);
++		fd = dma_buf_fd(c->ring[e.index].dmabuf, O_CLOEXEC);
++		if (fd < 0) {
++			dma_buf_put(c->ring[e.index].dmabuf);
++			return fd;
++		}
++		e.fd = fd;
++		return copy_to_user(uarg, &e, sizeof(e)) ? -EFAULT : 0;
++	}
++	case DPUCAP_DQBUF: {
++		struct dpucap_frame f;
++		int idx;
++
++		if (wait_event_interruptible(c->rec_wq, c->ready_seq != c->dq_seq))
++			return -ERESTARTSYS;
++		spin_lock_irqsave(&c->rec_lock, flags);
++		idx = c->ready_idx;
++		c->ring[idx].busy = true;
++		c->ring[idx].ready = false;
++		f.index = idx;
++		f.sequence = c->ready_seq;
++		f.timestamp_ns = c->ready_ts;
++		c->dq_seq = c->ready_seq;
++		spin_unlock_irqrestore(&c->rec_lock, flags);
++		return copy_to_user(uarg, &f, sizeof(f)) ? -EFAULT : 0;
++	}
++	case DPUCAP_QBUF: {
++		u32 idx;
++
++		if (copy_from_user(&idx, uarg, sizeof(idx)))
++			return -EFAULT;
++		if (idx >= REC_NBUF)
++			return -EINVAL;
++		spin_lock_irqsave(&c->rec_lock, flags);
++		c->ring[idx].busy = false;
++		spin_unlock_irqrestore(&c->rec_lock, flags);
++		return 0;
++	}
++	}
++	return -ENOTTY;
++}
++
++static const struct file_operations dpucap_fops = {
++	.owner = THIS_MODULE,
++	.open = dpucap_open,
++	.release = dpucap_release,
++	.unlocked_ioctl = dpucap_ioctl,
++	.poll = dpucap_poll,
++	.llseek = noop_llseek,
++};
++
++/* ---- debugfs (screenshot) ---- */
++
++static int dpu_capture_arm_probe(struct dpu_capture *c)
++{
++	if (c->mode == CAP_RECORD)
++		return -EBUSY;
++	if (c->irq_on) {
++		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
++		c->irq_on = false;
++	}
++	dpu_capture_free_buf(c);
++	c->probe_logs = 0;
++	c->mode = CAP_PROBE;
++	pr_info("armed: PROBE\n");
++	return 0;
++}
++
++static int dpu_capture_arm_shot(struct dpu_capture *c, enum cap_pix pix)
++{
++	int ret;
++
++	if (c->mode == CAP_RECORD)
++		return -EBUSY;
++	if (pix == PIX_NV12 && (!c->cdm || !c->nv12_fmt))
++		return -ENODEV;
++	if (c->irq_on) {
++		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
++		c->irq_on = false;
++	}
++	dpu_capture_free_buf(c);
++
++	ret = dpu_capture_alloc_buf(c);
++	if (ret)
++		return ret;
++	atomic_set(&c->frames, 0);
++	c->wb_outstanding = false;
++	c->wb_stall = 0;
++	c->wb_retries = 0;
++	c->probe_logs = 0;
++	c->pix = pix;
++	ret = dpu_core_irq_register_callback(c->kms, c->wb_irq,
++					     dpu_capture_wb_done_irq, c);
++	if (ret) {
++		dpu_capture_free_buf(c);
++		return ret;
++	}
++	c->irq_on = true;
++	c->mode = CAP_SHOT;
++	pr_info("armed: SHOT %s\n", pix == PIX_NV12 ? "NV12" : "XRGB");
++	return 0;
++}
++
++static void dpu_capture_disarm_shot(struct dpu_capture *c)
++{
++	if (c->mode != CAP_SHOT && c->mode != CAP_PROBE)
++		return;
++	c->mode = CAP_OFF;
++	if (c->irq_on) {
++		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
++		c->irq_on = false;
++	}
++	dpu_capture_free_buf(c);
++}
++
++static ssize_t arm_write(struct file *file, const char __user *ubuf,
++			 size_t count, loff_t *ppos)
++{
++	struct dpu_capture *c = file->private_data;
++	char buf[8];
++	size_t n = min(count, sizeof(buf) - 1);
++
++	if (copy_from_user(buf, ubuf, n))
++		return -EFAULT;
++	buf[n] = '\0';
++
++	if (buf[0] == 'p' || buf[0] == 'P')
++		dpu_capture_arm_probe(c);
++	else if (buf[0] == '1')
++		dpu_capture_arm_shot(c, PIX_RGB);
++	else if (buf[0] == '2')
++		dpu_capture_arm_shot(c, PIX_NV12);
++	else
++		dpu_capture_disarm_shot(c);
++	return count;
++}
++
++static const struct file_operations arm_fops = {
++	.open = simple_open, .write = arm_write, .llseek = default_llseek,
++};
++
++/*
++ * Userspace-driven pause/resume around a compositor switch (start_steam.sh).
++ * Write "1" to PAUSE: stop arming and drain the in-flight writeback while the
++ * current compositor's display is still live, so no WB is left armed when the
++ * compositor tears down (that orphaned WB is what wedges the display). Write "0"
++ * to RESUME once the next compositor is up. This is the only timing at which the
++ * drain is reliable -- the kernel teardown path has no early-enough hook.
++ */
++static ssize_t pause_write(struct file *file, const char __user *ubuf,
++			   size_t count, loff_t *ppos)
++{
++	struct dpu_capture *c = file->private_data;
++	char buf[8];
++	size_t n = min(count, sizeof(buf) - 1);
++
++	if (copy_from_user(buf, ubuf, n))
++		return -EFAULT;
++	buf[n] = '\0';
++
++	if (buf[0] == '1') {
++		c->paused = true;	/* block new arming right away */
++		if (c->armed_ctl)	/* drain in-flight WB + clear footprint */
++			dpu_capture_drain(c->kms, c->armed_ctl);
++		pr_info("paused\n");
++	} else {
++		c->paused = false;
++		c->resume_skip = CAP_RESUME_SKIP;
++		pr_info("resumed\n");
++	}
++	return count;
++}
++
++static const struct file_operations pause_fops = {
++	.open = simple_open, .write = pause_write, .llseek = default_llseek,
++};
++
++static ssize_t status_read(struct file *file, char __user *ubuf,
++			   size_t count, loff_t *ppos)
++{
++	struct dpu_capture *c = file->private_data;
++	const char *m = c->mode == CAP_RECORD ? "record" :
++			c->mode == CAP_SHOT ? "shot" :
++			c->mode == CAP_PROBE ? "probe" : "off";
++	u32 size = c->pix == PIX_NV12 ? NV12_SIZE : RGB_SIZE;
++	char buf[256];
++	int n;
++
++	n = scnprintf(buf, sizeof(buf),
++		"mode=%s pix=%s frames=%d rec_seq=%u w=%u h=%u shot_size=%u nv12_size=%u wb=%d cwb=[%d,%d] dcwb_pp=[%d,%d] merge3d=%d cdm=%d\n",
++		m, c->pix == PIX_NV12 ? "nv12" : "rgb",
++		atomic_read(&c->frames), c->ready_seq, CAP_W, CAP_H, size,
++		NV12_SIZE, c->wb ? c->wb->idx : -1,
++		c->cwb[0] ? c->cwb[0]->idx : -1, c->cwb[1] ? c->cwb[1]->idx : -1,
++		c->dcwb_pp[0] ? c->dcwb_pp[0]->idx : -1,
++		c->dcwb_pp[1] ? c->dcwb_pp[1]->idx : -1,
++		c->merge3d ? c->merge3d->idx : -1, c->cdm ? c->cdm->idx : -1);
++	return simple_read_from_buffer(ubuf, count, ppos, buf, n);
++}
++
++static const struct file_operations status_fops = {
++	.open = simple_open, .read = status_read, .llseek = default_llseek,
++};
++
++static ssize_t frame_read(struct file *file, char __user *ubuf,
++			  size_t count, loff_t *ppos)
++{
++	struct dpu_capture *c = file->private_data;
++	u32 size = c->pix == PIX_NV12 ? NV12_SIZE : RGB_SIZE;
++
++	if (!c->vaddr)
++		return 0;
++	dma_rmb();
++	return simple_read_from_buffer(ubuf, count, ppos, c->vaddr, size);
++}
++
++static const struct file_operations frame_fops = {
++	.open = simple_open, .read = frame_read, .llseek = default_llseek,
++};
++
++/* ---- init / destroy ---- */
++
++static void dpu_capture_fetch_blocks(struct dpu_capture *c)
++{
++	struct dpu_rm *rm = &c->kms->rm;
++	int i, n, pp0;
++
++	for (i = 0; i < ARRAY_SIZE(rm->hw_wb); i++)
++		if (rm->hw_wb[i]) { c->wb = rm->hw_wb[i]; break; }
++	for (i = 0, n = 0; i < ARRAY_SIZE(rm->cwb_blks) && n < CAP_MAX_LM; i++)
++		if (rm->cwb_blks[i]) c->cwb[n++] = to_dpu_hw_cwb(rm->cwb_blks[i]);
++	pp0 = PINGPONG_CWB_0 - PINGPONG_0;
++	for (n = 0; n < CAP_MAX_LM; n++) {
++		int idx = pp0 + n;
++
++		if (idx < ARRAY_SIZE(rm->pingpong_blks) && rm->pingpong_blks[idx])
++			c->dcwb_pp[n] = to_dpu_hw_pingpong(rm->pingpong_blks[idx]);
++	}
++	if (c->dcwb_pp[0] && c->dcwb_pp[0]->merge_3d)
++		c->merge3d = c->dcwb_pp[0]->merge_3d;
++	if (rm->cdm_blk)
++		c->cdm = to_dpu_hw_cdm(rm->cdm_blk);
++}
++
++void dpu_capture_init(struct dpu_kms *dpu_kms)
++{
++	struct dpu_capture *c;
++
++	if (g_cap)
++		return;
++	c = kzalloc(sizeof(*c), GFP_KERNEL);
++	if (!c)
++		return;
++
++	c->kms = dpu_kms;
++	atomic_set(&c->frames, 0);
++	spin_lock_init(&c->rec_lock);
++	init_waitqueue_head(&c->rec_wq);
++	dpu_capture_fetch_blocks(c);
++
++	if (!c->wb || !c->cwb[0] || !c->cwb[1] ||
++	    !c->dcwb_pp[0] || !c->dcwb_pp[1] || !c->merge3d) {
++		pr_warn("CWB blocks missing; disabled\n");
++		kfree(c);
++		return;
++	}
++	c->wb_irq = c->wb->caps->intr_wb_done;
++	c->rgb_fmt = mdp_get_format(&dpu_kms->base, DRM_FORMAT_XRGB8888, 0);
++	c->nv12_fmt = mdp_get_format(&dpu_kms->base, DRM_FORMAT_NV12, 0);
++	if (!c->rgb_fmt) {
++		pr_warn("no XRGB8888 format; disabled\n");
++		kfree(c);
++		return;
++	}
++
++	c->dir = debugfs_create_dir("dpu_capture", NULL);
++	debugfs_create_file("arm", 0200, c->dir, c, &arm_fops);
++	debugfs_create_file("pause", 0200, c->dir, c, &pause_fops);
++	debugfs_create_file("status", 0400, c->dir, c, &status_fops);
++	debugfs_create_file("frame.raw", 0400, c->dir, c, &frame_fops);
++
++	c->misc.minor = MISC_DYNAMIC_MINOR;
++	c->misc.name = "dpu_capture0";
++	c->misc.fops = &dpucap_fops;
++	c->misc_ok = (misc_register(&c->misc) == 0);
++	if (!c->misc_ok)
++		pr_warn("misc_register failed; recording node unavailable\n");
++
++	g_cap = c;
++	pr_info("init: wb=%d cwb=[%d,%d] dcwb_pp=[%d,%d] merge3d=%d cdm=%d nv12=%d misc=%d wb_irq=%u\n",
++		c->wb->idx, c->cwb[0]->idx, c->cwb[1]->idx,
++		c->dcwb_pp[0]->idx, c->dcwb_pp[1]->idx, c->merge3d->idx,
++		c->cdm ? c->cdm->idx : -1, c->nv12_fmt ? 1 : 0, c->misc_ok, c->wb_irq);
++}
++
++void dpu_capture_destroy(struct dpu_kms *dpu_kms)
++{
++	struct dpu_capture *c = g_cap;
++
++	if (!c || c->kms != dpu_kms)
++		return;
++	rec_stop(c);
++	dpu_capture_disarm_shot(c);
++	if (c->misc_ok)
++		misc_deregister(&c->misc);
++	debugfs_remove_recursive(c->dir);
++	kfree(c);
++	g_cap = NULL;
++}
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.h b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.h
+new file mode 100644
+index 0000000..060ed50
+--- /dev/null
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.h
+@@ -0,0 +1,52 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
++ *
++ * Captures the live panel scanout into a kernel buffer by piggybacking on the
++ * realtime display's CTL flush, independent of the userspace DRM master. This
++ * lets capture survive a compositor handoff (e.g. sway -> gamescope).
++ *
++ * Milestone M1: debugfs-armed capture to a single kernel buffer, dumpable for
++ * validation. V4L2 + HW encode are layered on top once this is proven.
++ */
++#ifndef _DPU_CAPTURE_H_
++#define _DPU_CAPTURE_H_
++
++#include "dpu_hw_mdss.h"
++
++struct dpu_kms;
++struct dpu_hw_ctl;
++
++/* Set up the capture engine (fetch hw blocks, create debugfs). No allocation. */
++void dpu_capture_init(struct dpu_kms *dpu_kms);
++void dpu_capture_destroy(struct dpu_kms *dpu_kms);
++
++/*
++ * Called from the realtime encoder kickoff, under enc_spinlock, just before the
++ * master CTL flush/start. When armed, programs the CWB mux to tap the active
++ * realtime pingpong(s) and adds the writeback to @ctl's pending flush so the
++ * existing trigger captures the frame. No-op when not armed.
++ *
++ * @ctl:     the realtime master CTL
++ * @rt_pp:   active realtime pingpong indices (feeding the layer mixers)
++ * @num_pp:  number of entries in @rt_pp
++ */
++void dpu_capture_kickoff(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl,
++			 const enum dpu_pingpong *rt_pp, int num_pp);
++
++/*
++ * Called from the encoder cleanup path BEFORE the CTL is reset, to clear the
++ * capture writeback's footprint off @ctl so the reset can't wedge the display
++ * across a compositor handoff. Recording stays armed and re-attaches on the
++ * next kickoff. No-op when not armed on @ctl.
++ */
++void dpu_capture_disarm(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl);
++
++/*
++ * Called at the top of the encoder disable, while the display is still live, to
++ * drain an in-flight capture writeback before any teardown so it can't hang the
++ * CTL. Capture stays armed and resumes after the handoff.
++ */
++void dpu_capture_drain(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl);
++
++#endif /* _DPU_CAPTURE_H_ */
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+index 2756c57..520302b 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+@@ -34,6 +34,7 @@
+ #include "dpu_crtc.h"
+ #include "dpu_trace.h"
+ #include "dpu_core_irq.h"
++#include "dpu_capture.h"
+ #include "disp/msm_disp_snapshot.h"
+ 
+ #define DPU_DEBUG_ENC(e, fmt, ...) DRM_DEBUG_ATOMIC("enc%d " fmt,\
+@@ -1427,6 +1428,17 @@ static void dpu_encoder_virt_atomic_disable(struct drm_encoder *drm_enc,
+ 
+ 	trace_dpu_enc_disable(DRMID(drm_enc));
+ 
++	/*
++	 * Retire any in-flight out-of-band CWB capture writeback now, while the
++	 * display is still live, so it completes naturally instead of being
++	 * orphaned by the teardown below (an orphaned WB hangs the CTL and the
++	 * later reset fails -> black screen on the ES<->Steam handoff).
++	 */
++	if (dpu_enc->cur_master && dpu_enc->cur_master->hw_ctl &&
++	    dpu_enc->cur_master->dpu_kms)
++		dpu_capture_drain(dpu_enc->cur_master->dpu_kms,
++				  dpu_enc->cur_master->hw_ctl);
++
+ 	/* wait for idle */
+ 	dpu_encoder_wait_for_tx_complete(drm_enc);
+ 
+@@ -1784,6 +1796,16 @@ static void dpu_encoder_helper_hw_reset(struct dpu_encoder_phys *phys_enc)
+ 	DRM_DEBUG_KMS("id:%u ctl %d reset\n", DRMID(drm_enc),
+ 		      ctl->idx);
+ 
++	/*
++	 * A stalled out-of-band CWB capture writeback on this CTL is a prime
++	 * cause of the kickoff/frame-done timeout that lands us here. Clear the
++	 * capture footprint off the CTL first so the reset can actually succeed
++	 * (otherwise the reset fails and the display stays wedged). Capture holds
++	 * off re-arming afterwards (resume_skip) so it can't immediately re-stall.
++	 */
++	if (phys_enc->dpu_kms)
++		dpu_capture_disarm(phys_enc->dpu_kms, ctl);
++
+ 	rc = ctl->ops.reset(ctl);
+ 	if (rc) {
+ 		DPU_ERROR_ENC(dpu_enc, "ctl %d reset failure\n",  ctl->idx);
+@@ -1813,6 +1835,24 @@ static void _dpu_encoder_kickoff_phys(struct dpu_encoder_virt *dpu_enc)
+ 	/* update pending counts and trigger kickoff ctl flush atomically */
+ 	spin_lock_irqsave(&dpu_enc->enc_spinlock, lock_flags);
+ 
++	/*
++	 * Out-of-band CWB screen capture: when a real display (has an INTF) is
++	 * flushing, piggyback the writeback onto this realtime CTL so capture
++	 * is independent of the userspace DRM master. No-op unless armed.
++	 */
++	if (dpu_enc->cur_master && dpu_enc->cur_master->hw_ctl &&
++	    dpu_enc->cur_master->hw_intf) {
++		enum dpu_pingpong cap_pp[MAX_CHANNELS_PER_ENC];
++		int cap_np = 0;
++
++		for (i = 0; i < ARRAY_SIZE(dpu_enc->hw_pp); i++)
++			if (dpu_enc->hw_pp[i])
++				cap_pp[cap_np++] = dpu_enc->hw_pp[i]->idx;
++
++		dpu_capture_kickoff(dpu_enc->cur_master->dpu_kms,
++				    dpu_enc->cur_master->hw_ctl, cap_pp, cap_np);
++	}
++
+ 	/* don't perform flush/start operations for slave encoders */
+ 	for (i = 0; i < dpu_enc->num_phys_encs; i++) {
+ 		struct dpu_encoder_phys *phys = dpu_enc->phys_encs[i];
+@@ -2283,6 +2323,15 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
+ 
+ 	dpu_enc = to_dpu_encoder_virt(phys_enc->parent);
+ 
++	/*
++	 * Clear any out-of-band CWB capture writeback off this CTL before the
++	 * reset. The capture rides the realtime CTL; an in-flight WB left here
++	 * would fail the reset and wedge the display across the ES<->Steam
++	 * compositor handoff. Recording stays armed and re-attaches afterwards.
++	 */
++	if (phys_enc->dpu_kms)
++		dpu_capture_disarm(phys_enc->dpu_kms, ctl);
++
+ 	ctl->ops.reset(ctl);
+ 
+ 	dpu_encoder_helper_reset_mixers(phys_enc);
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
+index 36a497f..59f6772 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
+@@ -334,6 +334,54 @@ static void dpu_hw_ctl_update_pending_flush_cwb_v1(struct dpu_hw_ctl *ctx,
+ 	ctx->pending_flush_mask |= BIT(CWB_IDX);
+ }
+ 
++static void dpu_hw_ctl_set_capture_active(struct dpu_hw_ctl *ctx,
++		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d,
++		enum dpu_cdm cdm)
++{
++	struct dpu_hw_blk_reg_map *c = &ctx->hw;
++	u32 wb_active = DPU_REG_READ(c, CTL_WB_ACTIVE);
++	u32 cwb_active = DPU_REG_READ(c, CTL_CWB_ACTIVE);
++
++	wb_active |= BIT(wb - WB_0);
++	cwb_active |= cwb_mask;
++
++	DPU_REG_WRITE(c, CTL_WB_ACTIVE, wb_active);
++	DPU_REG_WRITE(c, CTL_CWB_ACTIVE, cwb_active);
++
++	if (merge_3d) {
++		u32 m3d_active = DPU_REG_READ(c, CTL_MERGE_3D_ACTIVE);
++
++		m3d_active |= BIT(merge_3d - MERGE_3D_0);
++		DPU_REG_WRITE(c, CTL_MERGE_3D_ACTIVE, m3d_active);
++	}
++
++	/* CDM ACTIVE takes the block id directly (matches dpu_hw_ctl_intf_cfg_v1) */
++	if (cdm)
++		DPU_REG_WRITE(c, CTL_CDM_ACTIVE, cdm);
++}
++
++static void dpu_hw_ctl_clear_capture_active(struct dpu_hw_ctl *ctx,
++		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d,
++		enum dpu_cdm cdm)
++{
++	struct dpu_hw_blk_reg_map *c = &ctx->hw;
++	u32 wb_active = DPU_REG_READ(c, CTL_WB_ACTIVE) & ~BIT(wb - WB_0);
++	u32 cwb_active = DPU_REG_READ(c, CTL_CWB_ACTIVE) & ~cwb_mask;
++
++	DPU_REG_WRITE(c, CTL_WB_ACTIVE, wb_active);
++	DPU_REG_WRITE(c, CTL_CWB_ACTIVE, cwb_active);
++
++	if (merge_3d) {
++		u32 m3d_active = DPU_REG_READ(c, CTL_MERGE_3D_ACTIVE) &
++				~BIT(merge_3d - MERGE_3D_0);
++		DPU_REG_WRITE(c, CTL_MERGE_3D_ACTIVE, m3d_active);
++	}
++
++	/* realtime RGB path never uses CDM, so clearing it outright is safe */
++	if (cdm)
++		DPU_REG_WRITE(c, CTL_CDM_ACTIVE, 0);
++}
++
+ static void dpu_hw_ctl_update_pending_flush_intf_v1(struct dpu_hw_ctl *ctx,
+ 		enum dpu_intf intf)
+ {
+@@ -828,6 +876,8 @@ struct dpu_hw_ctl *dpu_hw_ctl_init(struct drm_device *dev,
+ 			dpu_hw_ctl_update_pending_flush_merge_3d_v1;
+ 		c->ops.update_pending_flush_wb = dpu_hw_ctl_update_pending_flush_wb_v1;
+ 		c->ops.update_pending_flush_cwb = dpu_hw_ctl_update_pending_flush_cwb_v1;
++		c->ops.set_capture_active = dpu_hw_ctl_set_capture_active;
++		c->ops.clear_capture_active = dpu_hw_ctl_clear_capture_active;
+ 		c->ops.update_pending_flush_dsc =
+ 			dpu_hw_ctl_update_pending_flush_dsc_v1;
+ 		c->ops.update_pending_flush_cdm = dpu_hw_ctl_update_pending_flush_cdm_v1;
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h
+index e535bf0..c204952 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h
+@@ -131,6 +131,27 @@ struct dpu_hw_ctl_ops {
+ 	void (*update_pending_flush_cwb)(struct dpu_hw_ctl *ctx,
+ 		enum dpu_cwb blk);
+ 
++	/**
++	 * @set_capture_active: OR a writeback + CWB mux mask into the CTL's
++	 * WB/CWB ACTIVE registers without touching INTF/CTL_TOP. Used by the
++	 * out-of-band CWB screen-capture path to ride the realtime CTL flush.
++	 * @ctx       : ctl path ctx pointer
++	 * @wb        : writeback block index
++	 * @cwb_mask  : bitmask of CWB muxes (BIT(cwb - CWB_0))
++	 */
++	void (*set_capture_active)(struct dpu_hw_ctl *ctx,
++		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d,
++		enum dpu_cdm cdm);
++
++	/**
++	 * @clear_capture_active: clear the WB/CWB/merge_3d/CDM ACTIVE bits the
++	 * out-of-band capture set, so a stalled writeback cannot block the
++	 * realtime CTL's commit (display-safety watchdog).
++	 */
++	void (*clear_capture_active)(struct dpu_hw_ctl *ctx,
++		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d,
++		enum dpu_cdm cdm);
++
+ 	/**
+ 	 * @update_pending_flush_intf: OR in the given flushbits to the
+ 	 * cached pending_(intf_)flush_mask.
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_kms.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_kms.c
+index 014b2c5..d914529 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_kms.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_kms.c
+@@ -36,6 +36,7 @@
+ #include "dpu_plane.h"
+ #include "dpu_vbif.h"
+ #include "dpu_writeback.h"
++#include "dpu_capture.h"
+ 
+ #define CREATE_TRACE_POINTS
+ #include "dpu_trace.h"
+@@ -888,6 +889,9 @@ static void _dpu_kms_hw_destroy(struct dpu_kms *dpu_kms)
+ {
+ 	int i;
+ 
++	/* free capture buffers (uses the vm) before the MMU is torn down */
++	dpu_capture_destroy(dpu_kms);
++
+ 	dpu_kms->hw_intr = NULL;
+ 
+ 	/* safe to call these more than once during shutdown */
+@@ -1286,6 +1290,8 @@ static int dpu_kms_hw_init(struct msm_kms *kms)
+ 
+ 	dpu_vbif_init_memtypes(dpu_kms);
+ 
++	dpu_capture_init(dpu_kms);
++
+ 	pm_runtime_put_sync(&dpu_kms->pdev->dev);
+ 
+ 	return 0;
