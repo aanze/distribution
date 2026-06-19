@@ -1,0 +1,58 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026-present ROCKNIX/DUCKTALE
+#
+# System-wide screenshot via the DPU Concurrent WriteBack capture engine
+# (kernel: dpu_capture, patch 0506). Unlike grim (wlroots/sway only), this grabs
+# the frame at the display-controller level, so it works under ANY compositor --
+# EmulationStation/sway, RetroArch, standalone emulators, AND gamescope/Steam.
+#
+# Saves a timestamped PNG to /storage/roms/screenshots. The caller (input_sense)
+# shows the "Screenshot Saved" toast on exit 0.
+
+. /etc/profile 2>/dev/null
+
+CAP=/sys/kernel/debug/dpu_capture
+SAVE_DIR=/storage/roms/screenshots
+RAW=/tmp/.cwb-shot.raw
+# capture geometry: XRGB8888, stride padded to 256B -> 1088 px wide
+W=1080; H=1920; SW=1088
+
+# Fall back to the grim-based capture if the kernel CWB engine is unavailable.
+if [ ! -e "${CAP}/arm" ]; then
+  [ -x /usr/bin/rocknix-screenshot ] && exec /usr/bin/rocknix-screenshot
+  echo "dpu_capture not available"
+  exit 1
+fi
+
+mkdir -p "${SAVE_DIR}"
+OUT="${SAVE_DIR}/$(date +'%Y-%m-%d-%H%M%S').png"
+
+# Arm, wait for a fresh frame to land (bounded busy-poll, snappier than sleep),
+# grab the latest, disarm.
+echo 1 > "${CAP}/arm"
+i=0
+while [ ${i} -lt 400 ]; do
+  f=$(sed -n 's/.*frames=\([0-9]*\).*/\1/p' "${CAP}/status" 2>/dev/null)
+  [ "${f:-0}" -ge 2 ] && break
+  i=$((i + 1))
+done
+cp "${CAP}/frame.raw" "${RAW}" 2>/dev/null
+echo 0 > "${CAP}/arm"
+
+if [ ! -s "${RAW}" ]; then
+  echo "capture produced no data"
+  exit 1
+fi
+
+# raw BGRX -> PNG, cropping the stride padding away.
+convert -size ${SW}x${H} -depth 8 bgra:"${RAW}" -crop ${W}x${H}+0+0 +repage "${OUT}" 2>/dev/null
+RC=$?
+rm -f "${RAW}"
+
+if [ ${RC} -eq 0 ] && [ -s "${OUT}" ]; then
+  echo "Screenshot saved: ${OUT}"
+  exit 0
+fi
+echo "screenshot failed (convert rc=${RC})"
+exit 1
