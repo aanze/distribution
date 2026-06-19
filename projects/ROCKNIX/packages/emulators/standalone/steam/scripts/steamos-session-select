@@ -3,28 +3,31 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 
-# "Return to Desktop". Two things matter for screen-capture continuity:
+# "Return to Desktop".
+#  1) Quiesce capture (drain WB + un-tap CWB) while gamescope is still live; the
+#     recorder stays ALIVE (paused) so the clip continues into ES on resume.
+#  2) Let gamescope/Steam exit CLEANLY so the DSI panel + MDP tear down properly
+#     (an abrupt SIGKILL after a capture session leaves the panel un-bring-up-able
+#     -> dsi cmd dma -110 -> black screen).
 #
-# 1) Quiesce capture FIRST (drain the in-flight writeback + un-tap the CWB) while
-#    gamescope is still live, so no writeback is orphaned. The recorder stays
-#    ALIVE (paused), so the single clip continues into ES once capture resumes.
-#
-# 2) Let gamescope/Steam exit CLEANLY so the DSI panel + MDP tear down properly.
-#    The old code SIGKILLed gamescope immediately, which -- after a capture
-#    session -- left the panel un-reinitialisable on the way back (DSI cmd DMA
-#    -110 -> black screen). Send SIGTERM, wait for a real shutdown, and only
-#    SIGKILL as a last resort.
+# The kill+wait MUST run detached: this script is a child of the gamescope/steam
+# session, so killing them SIGHUPs us. setsid puts the kill sequence in its own
+# session so it survives and can wait for a real shutdown before any SIGKILL.
 LOG=/storage/screenrecord.log
-echo "[$(date '+%H:%M:%S')] steamos-session-select: pause + clean-exit" >> "$LOG" 2>/dev/null
+echo "[$(date '+%H:%M:%S')] steamos-session-select: pause + detached clean-exit" >> "$LOG" 2>/dev/null
 /usr/bin/rocknix-screenrecord pause 2>/dev/null
 dmesg 2>/dev/null | grep -iE "dpu_capture" | tail -4 | sed 's/^/      /' >> "$LOG" 2>/dev/null
 
-killall gamescope steam FEX 2>/dev/null
-# wait up to ~5s for gamescope to shut down its DRM/DSI cleanly
-for _i in $(seq 1 50); do
-  pgrep -x gamescope >/dev/null 2>&1 || break
-  sleep 0.1
-done
-gs_gone=$(pgrep -x gamescope >/dev/null 2>&1 && echo "STILL-ALIVE(SIGKILL)" || echo "clean-exit")
-echo "[$(date '+%H:%M:%S')] gamescope: $gs_gone" >> "$LOG" 2>/dev/null
-killall -9 gamescope steam FEX 2>/dev/null
+setsid /bin/bash -c '
+  killall gamescope steam FEX 2>/dev/null
+  for _i in $(seq 1 60); do pgrep -x gamescope >/dev/null 2>&1 || break; sleep 0.1; done
+  if pgrep -x gamescope >/dev/null 2>&1; then
+    st="STILL-ALIVE->SIGKILL"
+    killall -9 gamescope steam FEX 2>/dev/null
+  else
+    st="clean-exit"
+  fi
+  sleep 4
+  echo "[$(date +%H:%M:%S)] gamescope: $st" >> /storage/screenrecord.log
+  dmesg | grep -iE "panel|dsi_cmds|failed to initialize|ctl 1 reset|cmd dma tx" | tail -6 | sed "s/^/      /" >> /storage/screenrecord.log
+' </dev/null >/dev/null 2>&1 &
