@@ -4,17 +4,14 @@
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 
 # "Return to Desktop".
-#  1) Quiesce capture (drain WB + un-tap CWB + CDM off) while gamescope is live;
-#     the recorder stays ALIVE (paused) so the clip continues into ES on resume.
-#  2) SIGKILL gamescope/Steam IMMEDIATELY -- do NOT let them exit cleanly. A clean
-#     atomic-disable saves the DSI PLL/PHY state and sway restores it on the way
-#     back; after a capture session that saved state is stale and the panel
-#     re-init cmd DMA times out (-110 -> black screen). An immediate SIGKILL skips
-#     the save, so sway's enable does a full PLL re-lock from scratch -> correct
-#     clocks -> panel re-inits cleanly. (Measured: clean-exit fails, SIGKILL works.)
-LOG=/storage/screenrecord.log
-echo "[$(date '+%H:%M:%S')] steamos-session-select: pause + immediate SIGKILL" >> "$LOG" 2>/dev/null
+#  1) Quiesce screen-capture (drain the writeback + un-tap the CWB + CDM off)
+#     while gamescope is still live, so nothing is orphaned. The recorder stays
+#     alive (paused), so one clip continues into ES once capture resumes.
+#  2) SIGKILL gamescope/Steam immediately -- do NOT let them exit cleanly. A clean
+#     atomic-disable saves the DSI PLL/PHY state which sway then restores; after a
+#     capture session that saved state is stale and the panel re-init times out
+#     (-110 -> black screen). An immediate SIGKILL skips the save, so sway's
+#     enable does a full PLL re-lock from scratch and the panel comes back clean.
 /usr/bin/rocknix-screenrecord pause 2>/dev/null
-dmesg 2>/dev/null | grep -iE "dpu_capture" | tail -4 | sed 's/^/      /' >> "$LOG" 2>/dev/null
 
 killall -9 gamescope steam FEX 2>/dev/null
