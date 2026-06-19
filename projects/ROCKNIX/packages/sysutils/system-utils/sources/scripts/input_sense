@@ -492,5 +492,13 @@ set +e
          /usr/bin/game-guides-tool
        fi
      ;;
+     (${FUNCTION_HOTKEY_BTN_SOUTH_EVENT})
+       if [ "${HOTKEY_A_PRESSED}" = true ]; then
+         ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_SOUTH_EVENT}: Screen record toggle"
+         # System-wide screen recording via DPU CWB + Iris encoder (works in
+         # emulators AND gamescope/Steam); start/stop with one toggle.
+         /usr/bin/rocknix-screenrecord toggle
+       fi
+     ;;
   esac
 done

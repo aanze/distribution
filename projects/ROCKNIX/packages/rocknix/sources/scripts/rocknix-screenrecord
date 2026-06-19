@@ -1,0 +1,52 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# rocknix-screenrecord {start|stop|toggle|status} -- system-wide screen recording
+# via the DPU CWB capture ring (/dev/dpu_capture0) + Iris H.264 encoder, using
+# /usr/bin/rocknix-cwb-record. Works under any compositor (ES, emulators, Steam).
+
+. /etc/profile 2>/dev/null
+
+REC=/usr/bin/rocknix-cwb-record
+DIR=/storage/roms/screenshots/video
+PIDF=/tmp/.screenrecord.pid
+LOG=/tmp/.screenrecord.log
+FPS=30
+
+is_running() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; }
+
+case "$1" in
+  start)
+    if [ ! -e /dev/dpu_capture0 ]; then
+      /usr/bin/mako-notify "Recording unavailable" -no-ra 2>/dev/null
+      echo "no /dev/dpu_capture0"; exit 1
+    fi
+    is_running && { echo "already recording"; exit 0; }
+    mkdir -p "$DIR"
+    OUT="$DIR/$(date +'%Y-%m-%d-%H%M%S').h264"
+    setsid "$REC" "$OUT" 0 "$FPS" >"$LOG" 2>&1 &
+    echo $! > "$PIDF"
+    echo "$OUT" > "${PIDF}.out"
+    /usr/bin/mako-notify "Recording started" -no-ra 2>/dev/null
+    echo "recording -> $OUT"
+    ;;
+  stop)
+    is_running || { rm -f "$PIDF"; exit 0; }
+    kill -TERM "$(cat "$PIDF")" 2>/dev/null
+    # allow the encoder to drain/flush
+    for _ in $(seq 1 50); do is_running || break; sleep 0.2; done
+    is_running && kill -9 "$(cat "$PIDF")" 2>/dev/null
+    rm -f "$PIDF"
+    /usr/bin/mako-notify "Recording saved" -no-ra 2>/dev/null
+    [ -f "${PIDF}.out" ] && echo "saved $(cat "${PIDF}.out")"
+    rm -f "${PIDF}.out"
+    ;;
+  toggle)
+    if is_running; then "$0" stop; else "$0" start; fi
+    ;;
+  status)
+    is_running && echo recording || echo idle
+    ;;
+  *)
+    echo "usage: $0 {start|stop|toggle|status}"; exit 1
+    ;;
+esac
