@@ -3,18 +3,28 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 
-# screen-capture: "Return to Desktop" kills gamescope with SIGKILL below. Keeping
-# capture alive across that proved to wedge the display on re-init (lingering DPU
-# capture state collides with sway re-initialising). So fully RETIRE capture here
-# -- while gamescope is still live and the writeback can drain cleanly -- before
-# the kill: pause (drain the in-flight WB), then stop (finalise the clip and free
-# all capture resources). The single clip is ES navigation -> Steam launch ->
-# gameplay, ending at Return to Desktop. No-op unless a recording is active.
-echo "[$(date '+%H:%M:%S')] steamos-session-select: pause+stop+kill" >> /storage/screenrecord.log 2>/dev/null
+# "Return to Desktop". Two things matter for screen-capture continuity:
+#
+# 1) Quiesce capture FIRST (drain the in-flight writeback + un-tap the CWB) while
+#    gamescope is still live, so no writeback is orphaned. The recorder stays
+#    ALIVE (paused), so the single clip continues into ES once capture resumes.
+#
+# 2) Let gamescope/Steam exit CLEANLY so the DSI panel + MDP tear down properly.
+#    The old code SIGKILLed gamescope immediately, which -- after a capture
+#    session -- left the panel un-reinitialisable on the way back (DSI cmd DMA
+#    -110 -> black screen). Send SIGTERM, wait for a real shutdown, and only
+#    SIGKILL as a last resort.
+LOG=/storage/screenrecord.log
+echo "[$(date '+%H:%M:%S')] steamos-session-select: pause + clean-exit" >> "$LOG" 2>/dev/null
 /usr/bin/rocknix-screenrecord pause 2>/dev/null
-dmesg 2>/dev/null | grep -iE "dpu_capture" | tail -4 | sed 's/^/      /' >> /storage/screenrecord.log 2>/dev/null
-/usr/bin/rocknix-screenrecord stop 2>/dev/null
-dmesg 2>/dev/null | grep -iE "dpu_capture" | tail -3 | sed 's/^/      /' >> /storage/screenrecord.log 2>/dev/null
+dmesg 2>/dev/null | grep -iE "dpu_capture" | tail -4 | sed 's/^/      /' >> "$LOG" 2>/dev/null
 
-killall gamescope steam FEX
-killall -9 gamescope steam FEX
+killall gamescope steam FEX 2>/dev/null
+# wait up to ~5s for gamescope to shut down its DRM/DSI cleanly
+for _i in $(seq 1 50); do
+  pgrep -x gamescope >/dev/null 2>&1 || break
+  sleep 0.1
+done
+gs_gone=$(pgrep -x gamescope >/dev/null 2>&1 && echo "STILL-ALIVE(SIGKILL)" || echo "clean-exit")
+echo "[$(date '+%H:%M:%S')] gamescope: $gs_gone" >> "$LOG" 2>/dev/null
+killall -9 gamescope steam FEX 2>/dev/null
