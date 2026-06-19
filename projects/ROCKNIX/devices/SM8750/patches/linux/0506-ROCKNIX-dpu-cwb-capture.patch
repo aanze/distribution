@@ -39,10 +39,10 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_encoder.o \
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
 new file mode 100644
-index 0000000..934dba8
+index 0000000..7f3b768
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,1118 @@
+@@ -0,0 +1,1131 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -540,7 +540,14 @@ index 0000000..934dba8
 +	if (c->wb && c->wb->ops.bind_pingpong_blk)
 +		c->wb->ops.bind_pingpong_blk(c->wb, PINGPONG_NONE);
 +
-+	pr_info("teardown: cwb un-tapped\n");
++	/*
++	 * Disable the CDM too. Capture enables it every frame (RGB->NV12); left
++	 * enabled it keeps the MDP datapath busy, which can block the MDSS
++	 * power-collapse that resets the DSI PHY -> panel re-init -110 on return.
++	 */
++	cap_setup_cdm(c, PINGPONG_NONE, false);
++
++	pr_info("teardown: cwb un-tapped + cdm off\n");
 +}
 +
 +void dpu_capture_disarm(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl)
@@ -629,11 +636,17 @@ index 0000000..934dba8
 +	for (i = 0; i < CAP_MAX_LM; i++)
 +		if (c->cwb[i] && ctl->ops.update_pending_flush_cwb)
 +			ctl->ops.update_pending_flush_cwb(ctl, c->cwb[i]->idx);
++	if (c->last_merge && ctl->ops.update_pending_flush_merge_3d)
++		ctl->ops.update_pending_flush_merge_3d(ctl, c->last_merge);
++	if (c->last_cdm && ctl->ops.update_pending_flush_cdm)
++		ctl->ops.update_pending_flush_cdm(ctl, c->last_cdm);
++	if (ctl->ops.update_pending_flush_wb)
++		ctl->ops.update_pending_flush_wb(ctl, c->wb->idx);
 +	if (ctl->ops.trigger_flush)
 +		ctl->ops.trigger_flush(ctl);
 +	if (ctl->ops.trigger_start)
 +		ctl->ops.trigger_start(ctl);
-+	pr_info("untap latched (live ctl%d)\n", ctl->idx);
++	pr_info("untap+cdm-off latched (live ctl%d)\n", ctl->idx);
 +
 +	c->wb_outstanding = false;
 +	c->wb_stall = 0;
