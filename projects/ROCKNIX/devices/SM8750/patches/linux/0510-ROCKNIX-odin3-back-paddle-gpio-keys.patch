@@ -1,0 +1,68 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] arm64: dts: qcom: AYN Odin 3 - expose the two back paddles
+
+The AYN Odin 3 has two extra "macro" paddles (M1, M2) on the back, below the
+L1/L2 and R1/R2 shoulder buttons. They are NOT on the gamepad MCU serial
+(rsinput) and NOT analog/ADC despite AYN's Android driver naming ("adckey" /
+keydetect.ko) - they are two plain active-low SoC TLMM GPIOs that AYN's Android
+keydetect driver polls (gpio_request(515)/gpio_request(519) = TLMM base 512 +
+offsets 3 and 7; reverse-engineered from /vendor/lib/modules/keydetect.ko).
+
+Stock ROCKNIX has no driver for them, so the paddles do nothing. Expose them as
+a standard gpio-keys device:
+
+  M1 = TLMM GPIO 3  -> KEY_F13
+  M2 = TLMM GPIO 7  -> KEY_F14
+
+KEY_F13/F14 are unused on this device and are deliberately NOT gamepad button
+codes, so InputPlumber leaves the gpio-keys device alone and ROCKNIX's
+input_sense can read it directly; input_sense binds the paddles to the
+screen-capture (screenshot / record) hotkeys. Pins are configured input with a
+pull-up (released = high, pressed = low).
+
+---
+--- a/arch/arm64/boot/dts/qcom/cq8725s-ayn-odin3.dts
++++ b/arch/arm64/boot/dts/qcom/cq8725s-ayn-odin3.dts
+@@ -310,4 +310,42 @@
+ 		bias-pull-down;
+ 		drive-strength = <2>;
+ 	};
++
++	paddle_keys_default: paddle-keys-default-state {
++		pins = "gpio3", "gpio7";
++		function = "gpio";
++		bias-pull-up;
++		drive-strength = <2>;
++	};
++};
++
++/*
++ * AYN Odin 3 has two extra back paddles (M1, M2) below the shoulder
++ * triggers. They are plain active-low SoC TLMM GPIOs (M1 = GPIO_3,
++ * M2 = GPIO_7), not on the gamepad MCU UART and not ADC (despite AYN's
++ * Android "adckey"/keydetect.ko naming). Expose them as a gpio-keys
++ * device emitting KEY_F13 (M1) / KEY_F14 (M2); ROCKNIX input_sense binds
++ * these to screenshot/screen-record. RE'd from the AYN Android keydetect
++ * driver (gpio_request 515/519 = TLMM base 512 + offsets 3/7).
++ */
++/ {
++	gpio-keys-paddles {
++		compatible = "gpio-keys";
++		pinctrl-names = "default";
++		pinctrl-0 = <&paddle_keys_default>;
++
++		key-paddle-m1 {
++			label = "Back Paddle M1";
++			linux,code = <KEY_F13>;
++			gpios = <&tlmm 3 GPIO_ACTIVE_LOW>;
++			debounce-interval = <15>;
++		};
++
++		key-paddle-m2 {
++			label = "Back Paddle M2";
++			linux,code = <KEY_F14>;
++			gpios = <&tlmm 7 GPIO_ACTIVE_LOW>;
++			debounce-interval = <15>;
++		};
++	};
+ };
