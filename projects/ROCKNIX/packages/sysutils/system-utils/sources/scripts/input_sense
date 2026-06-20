@@ -81,6 +81,13 @@ HOME_LEFT_PRESSED=false
 FUNCTION_HOTKEY_BTN_BACK_EVENT="*(BTN_BACK), value 1*"
 FUNCTION_HOTKEY_KEY_F1_EVENT="*(KEY_F1), value 1*"
 
+# AYN Odin 3 back paddles (M1/M2), exposed as a gpio-keys device by SM8750
+# kernel patch 0510: M1 (TLMM gpio3) = KEY_F13, M2 (TLMM gpio7) = KEY_F14.
+# Combined with left-home they fire screen record / screenshot (handlers below),
+# giving a capture combo that doesn't move the UI (the L1+B screenshot does).
+FUNCTION_HOTKEY_KEY_F13_EVENT="*(KEY_F13), value 1*"
+FUNCTION_HOTKEY_KEY_F14_EVENT="*(KEY_F14), value 1*"
+
 FUNCTION_HOTKEY_TOUCH_EVENT="*(BTN_TOUCH), value 1*"
 
 TOUCHSCREEN_EVENTS=$(get_setting key.touchscreen.events)
@@ -514,6 +521,27 @@ set +e
          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_NORTH_EVENT}: Opening Game Guide"
          /usr/bin/game-guides-tool
        fi
+     ;;
+     (${FUNCTION_HOTKEY_KEY_F13_EVENT})
+        # AYN Odin 3 back paddle M1 (gpio-keys KEY_F13) + left home -> screen
+        # record toggle. Same engine as left-home + Y; an alternate, more
+        # ergonomic trigger that never moves the UI. Modifier-gated so the
+        # paddle can't fire a recording by accident during gameplay.
+        if [ "${HOME_LEFT_PRESSED}" = true ]; then
+          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_KEY_F13_EVENT}: Screen record toggle (left home + back paddle M1)"
+          /usr/bin/rocknix-screenrecord toggle
+        fi
+     ;;
+     (${FUNCTION_HOTKEY_KEY_F14_EVENT})
+        # AYN Odin 3 back paddle M2 (gpio-keys KEY_F14) + left home -> screenshot.
+        # System-wide DPU CWB capture (works in emulators AND gamescope/Steam),
+        # replacing the awkward L1+B combo that moved the screen / opened menus.
+        if [ "${HOME_LEFT_PRESSED}" = true ]; then
+          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_KEY_F14_EVENT}: Screenshot (left home + back paddle M2)"
+          /usr/bin/rocknix-cwb-screenshot
+          SCREENSHOT_SUCCESS=$?
+          [ "$SCREENSHOT_SUCCESS" -eq 0 ] && /usr/bin/mako-notify "Screenshot Saved" -no-ra
+        fi
      ;;
   esac
 done
