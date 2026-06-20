@@ -25,6 +25,7 @@ On top of stock ROCKNIX:
 * **Bypass charging**: run plugged in without charging or draining the battery. *(Odin 3)*
 * **Right home button → Steam Quick Access**: open the Steam QAM with a single press. *(Odin 3)*
 * **OLED anti-image-retention screensaver**: a sweeping pixel-shift overlay that keeps the screen from burning in. *(Odin 3)*
+* **Screenshots & screen recording (video)**: capture a still, or one continuous clip — across EmulationStation, emulators, *and* Steam — saved to `roms/screenshots`. The two **back paddles** drive capture: *left home + left paddle* = record (toggle), *left home + right paddle* = screenshot (also *L1 + B* for a screenshot, *left home + Y* to record). *(Odin 3)*
 * On-device **"update to my nightly"** from the Updates menu.
 
 ## Features
