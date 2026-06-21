@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Anze <aanzdev@gmail.com>
+Date: Sun, 21 Jun 2026 14:30:00 +0200
+Subject: [PATCH] emulationstation: unified Charging Mode selector
+
+Replace the "Bypass charging" switch (added by patches 004 and 009) under
+Main Menu > System Settings > PERFORMANCE and in the Quick Access modal with a
+single "CHARGING MODE" selector:
+
+  FULL CHARGE (100%) / BATTERY CARE (80%) / BYPASS (RUN ON AC)
+
+The three modes are mutually exclusive, so the selector always reflects the
+real state (no hidden transient state). Gated on the charge_behaviour node
+(SM8750), it persists system.chargemode and drives /usr/bin/charge-mode (which
+writes the mainline charge_control_* firmware charge limit for full/battery
+care and the charge_behaviour node for bypass).
+
+Stacks on patches 004 (charge-bypass) and 009 (perfcontrol-menu): it edits the
+bypass blocks those add, so it must apply after them (numeric filename order).
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+ es-app/src/guis/GuiMenu.cpp | 45 +++++++++++++++++++++++++---------
+ 1 file changed, 29 insertions(+), 16 deletions(-)
+
+diff --git a/es-app/src/guis/GuiMenu.cpp b/es-app/src/guis/GuiMenu.cpp
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -1981,17 +1981,23 @@
+ 		});
+ 	}
+ 
+-	// Bypass charging: power the system directly from the charger and leave
+-	// the battery untouched (neither charging nor discharging). Only shown
++	// Charging mode: full charge (100%), battery care (hold ~80% via the
++	// firmware charge limit), or bypass (run on AC, battery frozen). Only shown
+ 	// when the kernel exposes the charge_behaviour control (e.g. SM8750).
++	// Driven by /usr/bin/charge-mode.
+ 	if (Utils::FileSystem::exists("/sys/class/power_supply/battery/charge_behaviour")) {
+-		auto bypass_charge = std::make_shared<SwitchComponent>(mWindow);
+-		bypass_charge->setState(SystemConf::getInstance()->getBool("system.bypasscharge"));
+-		s->addWithLabel(_("BYPASS CHARGING (RUN ON AC)"), bypass_charge);
+-		bypass_charge->setOnChangedCallback([bypass_charge] {
+-			bool en = bypass_charge->getState();
+-			SystemConf::getInstance()->setBool("system.bypasscharge", en);
+-			Utils::Platform::runSystemCommand(std::string("/usr/bin/charge-bypass ") + (en ? "on" : "off"), "", nullptr);
++		auto charge_mode = std::make_shared<OptionListComponent<std::string> >(mWindow, _("CHARGING MODE"), false);
++		std::string curChargeMode = SystemConf::getInstance()->get("system.chargemode");
++		if (curChargeMode.empty())
++			curChargeMode = "preserve";
++		charge_mode->add(_("FULL CHARGE (100%)"), "full", curChargeMode == "full");
++		charge_mode->add(_("BATTERY CARE (80%)"), "preserve", curChargeMode == "preserve");
++		charge_mode->add(_("BYPASS (RUN ON AC)"), "bypass", curChargeMode == "bypass");
++		s->addWithLabel(_("CHARGING MODE"), charge_mode);
++		charge_mode->setSelectedChangedCallback([](const std::string& mode) {
++			SystemConf::getInstance()->set("system.chargemode", mode);
++			SystemConf::getInstance()->saveSystemConf();
++			Utils::Platform::runSystemCommand("/usr/bin/charge-mode " + mode, "", nullptr);
+ 		});
+ 	}
+ 
+@@ -5707,14 +5713,21 @@
+ 				Utils::Platform::runSystemCommand("\"/usr/share/perfcontrol/perfcontrol-gui\"", "", nullptr);
+ 			});
+ 		}
++		// Charging mode: full charge / battery care (~80%) / bypass (run on AC).
++		// Same gating as the System Settings counterpart; driven by charge-mode.
+ 		if (Utils::FileSystem::exists("/sys/class/power_supply/battery/charge_behaviour")) {
+-			auto bypass_charge = std::make_shared<SwitchComponent>(window);
+-			bypass_charge->setState(SystemConf::getInstance()->getBool("system.bypasscharge"));
+-			s->addWithLabel(_("BYPASS CHARGING (RUN ON AC)"), bypass_charge);
+-			bypass_charge->setOnChangedCallback([bypass_charge] {
+-				bool en = bypass_charge->getState();
+-				SystemConf::getInstance()->setBool("system.bypasscharge", en);
+-				Utils::Platform::runSystemCommand(std::string("/usr/bin/charge-bypass ") + (en ? "on" : "off"), "", nullptr);
++			auto charge_mode = std::make_shared<OptionListComponent<std::string> >(window, _("CHARGING MODE"), false);
++			std::string curChargeMode = SystemConf::getInstance()->get("system.chargemode");
++			if (curChargeMode.empty())
++				curChargeMode = "preserve";
++			charge_mode->add(_("FULL CHARGE (100%)"), "full", curChargeMode == "full");
++			charge_mode->add(_("BATTERY CARE (80%)"), "preserve", curChargeMode == "preserve");
++			charge_mode->add(_("BYPASS (RUN ON AC)"), "bypass", curChargeMode == "bypass");
++			s->addWithLabel(_("CHARGING MODE"), charge_mode);
++			charge_mode->setSelectedChangedCallback([](const std::string& mode) {
++				SystemConf::getInstance()->set("system.chargemode", mode);
++				SystemConf::getInstance()->saveSystemConf();
++				Utils::Platform::runSystemCommand("/usr/bin/charge-mode " + mode, "", nullptr);
+ 			});
+ 		}
+ 
