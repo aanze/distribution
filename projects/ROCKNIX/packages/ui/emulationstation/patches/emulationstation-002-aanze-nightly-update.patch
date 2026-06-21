@@ -1,10 +1,18 @@
 From: Anze <aanzdev@gmail.com>
-Subject: [PATCH] Updates menu: add DUCKTALE NIGHTLIES updater entry
+Subject: [PATCH] Updates menu: DUCKTALE NIGHTLIES updater + demote stock ROCKNIX
 
-Add a second software-update action directly under the stock START UPDATE
-entry in the "UPDATES & DOWNLOADS" > "SOFTWARE UPDATES" menu, targeting the
-personal DUCKTALE nightly releases published at github.com/aanze/distribution
-instead of the official update.rocknix.org endpoint.
+In the "UPDATES & DOWNLOADS" > "SOFTWARE UPDATES" menu, add a software-update
+action targeting the personal DUCKTALE nightly releases published at
+github.com/aanze/distribution (instead of the official update.rocknix.org
+endpoint), and make the menu safe to navigate on this fork:
+
+  - The DUCKTALE NIGHTLIES entry is the PRIMARY updater and is listed FIRST. It
+    keeps every Ducktale feature.
+  - The stock ROCKNIX updater is DEMOTED to the bottom and relabelled
+    "UPDATE TO STOCK ROCKNIX (WIPES DUCKTALE)", because selecting it REPLACES
+    this Ducktale build with official ROCKNIX and removes all Ducktale features
+    -- it is NOT how you keep getting Ducktale nightlies. (APPLY UPDATE is kept
+    for the already-staged state.)
 
 Rather than duplicate the whole download/verify/progress/reboot UX, the patch
 parameterises the single hardcoded "rocknix-update" command string through the
@@ -19,12 +27,14 @@ existing flow:
     labelled "DUCKTALE NIGHTLIES" (a product name, shown identically in every
     locale so nothing falls back to an untranslated English string).
 
-For the "aanze-update" path, GuiUpdate also replaces the stock "UNOFFICIAL
-SYSTEM MODIFICATIONS DETECTED / UPGRADING COULD BREAK YOUR SYSTEM" confirmation
-with a friendly "DUCKTALE NIGHTLY" reminder: every personal build carries
-custom modifications by design, so that warning is just noise. It reuses the
-already-translated "YOU ARE CURRENTLY USING VERSION ..." prompt, so the dialog
-stays fully localized (incl. French) with only the brand line in English.
+GuiUpdate also swaps the confirmation text per path:
+  - "aanze-update": a friendly "DUCKTALE NIGHTLY" reminder (every personal build
+    carries custom modifications by design, so the stock scare is just noise).
+  - "rocknix-update" (stock): an explicit warning that updating to stock ROCKNIX
+    REMOVES all Ducktale features, pointing the user back at DUCKTALE NIGHTLIES.
+Both reuse the already-translated "YOU ARE CURRENTLY USING VERSION ..." prompt,
+so the dialogs stay localized (incl. French) with only the brand/feature lines
+in English.
 
 The aanze-update backend script mirrors rocknix-update's contract (`check`
 prints the available version and exits 0 when an update is available; the
@@ -34,7 +44,7 @@ official path.
 
 ---
 diff --git a/es-app/src/ApiSystem.cpp b/es-app/src/ApiSystem.cpp
-index 19acd7d..909dfb3 100644
+index fe30526..7ab8b77 100644
 --- a/es-app/src/ApiSystem.cpp
 +++ b/es-app/src/ApiSystem.cpp
 @@ -188,11 +188,10 @@ bool ApiSystem::setOverclock(std::string mode)
@@ -86,18 +96,20 @@ index cf63822..b073539 100644
  	virtual bool isReadyFlagSet();
  
 diff --git a/es-app/src/guis/GuiMenu.cpp b/es-app/src/guis/GuiMenu.cpp
-index 13c8747..d8d7bc5 100644
+index 13c8747..0653efc 100644
 --- a/es-app/src/guis/GuiMenu.cpp
 +++ b/es-app/src/guis/GuiMenu.cpp
-@@ -1308,6 +1308,24 @@ void GuiMenu::openUpdatesSettings()
- 				mWindow->pushGui(new GuiUpdate(mWindow));
- 			}
+@@ -1293,8 +1293,32 @@ void GuiMenu::openUpdatesSettings()
+ 				SystemConf::getInstance()->saveSystemConf();
  		});
-+
+ 
+-		// Start update
+-		updateGui->addEntry(GuiUpdate::state == GuiUpdateState::State::UPDATE_READY ? _("APPLY UPDATE") : _("START UPDATE"), true, [this]
 +		// Start update from the personal DUCKTALE nightly releases
-+		// (github.com/aanze/distribution). Reuses the stock GuiUpdate/ApiSystem
-+		// flow but points it at the "aanze-update" backend instead of
-+		// "rocknix-update"; staging + apply-on-reboot are identical.
++		// (github.com/aanze/distribution). This is the PRIMARY updater for this
++		// fork and keeps every Ducktale feature, so it sits first. Reuses the stock
++		// GuiUpdate/ApiSystem flow but points it at the "aanze-update" backend
++		// instead of "rocknix-update"; staging + apply-on-reboot are identical.
 +		// "DUCKTALE NIGHTLIES" is a product name, shown identically in every locale.
 +		updateGui->addEntry(_("DUCKTALE NIGHTLIES"), true, [this]
 +		{
@@ -111,11 +123,19 @@ index 13c8747..d8d7bc5 100644
 +				mWindow->pushGui(new GuiUpdate(mWindow, "aanze-update"));
 +			}
 +		});
- 	}
- 
- 	mWindow->pushGui(updateGui);
++
++		// Update to STOCK ROCKNIX (official update.rocknix.org). Demoted to the
++		// bottom and labelled explicitly because it REPLACES this Ducktale build
++		// with stock ROCKNIX and wipes every Ducktale feature -- it is NOT how you
++		// keep getting Ducktale nightlies (use DUCKTALE NIGHTLIES above for that).
++		// The confirmation dialog (GuiUpdate, "rocknix-update" path) spells out the
++		// wipe. APPLY UPDATE is kept for the already-staged state.
++		updateGui->addEntry(GuiUpdate::state == GuiUpdateState::State::UPDATE_READY ? _("APPLY UPDATE") : _("UPDATE TO STOCK ROCKNIX (WIPES DUCKTALE)"), true, [this]
+ 		{
+ 			if (GuiUpdate::state == GuiUpdateState::State::UPDATE_READY)
+ 				Utils::Platform::quitES(Utils::Platform::QuitMode::RESTART);
 diff --git a/es-app/src/guis/GuiUpdate.cpp b/es-app/src/guis/GuiUpdate.cpp
-index ace4792..7c4df78 100644
+index ace4792..30952b2 100644
 --- a/es-app/src/guis/GuiUpdate.cpp
 +++ b/es-app/src/guis/GuiUpdate.cpp
 @@ -14,7 +14,7 @@ GuiUpdateState::State GuiUpdate::state = GuiUpdateState::State::NO_UPDATE;
@@ -158,7 +178,7 @@ index ace4792..7c4df78 100644
  		{
  			if (msgtbl.size() == 1)
  				mUpdateVersion = msgtbl[0];
-@@ -163,13 +164,26 @@ void GuiUpdate::update(int deltaTime)
+@@ -163,13 +164,36 @@ void GuiUpdate::update(int deltaTime)
  
  			std::string message = _("REALLY UPDATE?");
  
@@ -181,16 +201,26 @@ index ace4792..7c4df78 100644
  				else
 -					message = Utils::String::format(_("UNOFFICIAL SYSTEM MODIFICATIONS DETECTED.\nUPGRADING COULD BREAK YOUR SYSTEM.\nDO YOU WANT TO UPDATE TO VERSION %s?").c_str(), mUpdateVersion.c_str());
 +				{
-+					std::string versionExtra = ApiSystem::getInstance()->getVersion(true);
-+					if (versionExtra == "official" || versionExtra == "nightly")
-+						message = Utils::String::format(_("YOU ARE CURRENTLY USING VERSION %s\nDO YOU WANT TO UPDATE TO VERSION %s?").c_str(), ApiSystem::getInstance()->getVersion().c_str(), mUpdateVersion.c_str());
-+					else
-+						message = Utils::String::format(_("UNOFFICIAL SYSTEM MODIFICATIONS DETECTED.\nUPGRADING COULD BREAK YOUR SYSTEM.\nDO YOU WANT TO UPDATE TO VERSION %s?").c_str(), mUpdateVersion.c_str());
++					// Stock "rocknix-update" path. On this fork it ALWAYS means
++					// leaving Ducktale, so replace the generic "unofficial
++					// modifications" scare with an explicit warning that it wipes
++					// every Ducktale feature, and point the user back at the
++					// DUCKTALE NIGHTLIES entry. The brand/feature lines are
++					// English-only (a product description); the closing version
++					// question reuses the already-translated string so it stays
++					// localized in every language.
++					message = std::string(
++							"UPDATE TO STOCK ROCKNIX?\n\n"
++							"This REPLACES Ducktale with official ROCKNIX and REMOVES\n"
++							"all Ducktale features (back paddles, charge limit, screen\n"
++							"capture, Steamlike theme, Decky / perf tools, ...).\n\n"
++							"To keep Ducktale nightlies, use DUCKTALE NIGHTLIES instead.\n\n")
++						+ Utils::String::format(_("YOU ARE CURRENTLY USING VERSION %s\nDO YOU WANT TO UPDATE TO VERSION %s?").c_str(), ApiSystem::getInstance()->getVersion().c_str(), mUpdateVersion.c_str());
 +				}
  
  				window->pushGui(new GuiMsgBox(window, message, _("YES"), [this]
  				{
-@@ -177,7 +191,7 @@ void GuiUpdate::update(int deltaTime)
+@@ -177,7 +201,7 @@ void GuiUpdate::update(int deltaTime)
  					mLoading = true;
  
  					mState = -1;
