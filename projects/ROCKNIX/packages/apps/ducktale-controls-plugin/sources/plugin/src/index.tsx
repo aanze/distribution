@@ -1,7 +1,7 @@
 import { callable, definePlugin } from "@decky/api";
 import {
   PanelSection, PanelSectionRow, SliderField,
-  DropdownItem, ButtonItem, TextField, ToggleField
+  DropdownItem, ButtonItem, TextField
 } from "@decky/ui";
 import { useState, useEffect, useRef, FC, ReactNode } from "react";
 import { FaCog, FaPlus, FaPen, FaTrash, FaChevronDown, FaChevronRight } from "react-icons/fa";
@@ -61,8 +61,8 @@ const saveFanCurve = callable<[speeds: string, temps: string], boolean>("set_fan
 const setFanProfile = callable<[profile: string], boolean>("set_fan_profile");
 const getGameProfile = callable<[gameId: string], string | null>("get_game_profile");
 const setGameProfile = callable<[gameId: string, presetName: string], boolean>("set_game_profile");
-const getChargeBypass = callable<[], { available: boolean; enabled: boolean }>("get_charge_bypass");
-const setChargeBypass = callable<[enabled: boolean], { available: boolean; enabled: boolean }>("set_charge_bypass");
+const getChargeMode = callable<[], { available: boolean; mode: string }>("get_charge_mode");
+const applyChargeMode = callable<[mode: string], { available: boolean; mode: string }>("set_charge_mode");
 
 
 const state = {
@@ -265,8 +265,8 @@ function Content() {
   const [runningAppId, setRunningAppId] = useState<number>(state.runningAppId);
   const [gameName, setGameName] = useState<string>(state.runningGameName);
 
-  const [bypassAvail, setBypassAvail] = useState<boolean>(false);
-  const [bypassOn, setBypassOn] = useState<boolean>(false);
+  const [chargeAvail, setChargeAvail] = useState<boolean>(false);
+  const [chargeMode, setChargeMode] = useState<string>("preserve");
 
   // Underclocking + Fan Curve are folded away by default; the user opens them
   // on demand. Keeps the panel short — Presets and Power are the common knobs.
@@ -274,12 +274,12 @@ function Content() {
   const [showFanCurve, setShowFanCurve] = useState<boolean>(false);
 
   useEffect(() => {
-    getChargeBypass().then((s) => { setBypassAvail(s.available); setBypassOn(s.enabled); }).catch(() => {});
+    getChargeMode().then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => {});
   }, []);
 
-  const handleToggleBypass = (v: boolean) => {
-    setBypassOn(v);  // optimistic
-    setChargeBypass(v).then((s) => { setBypassAvail(s.available); setBypassOn(s.enabled); }).catch(() => {});
+  const handleChargeMode = (mode: string) => {
+    setChargeMode(mode);  // optimistic
+    applyChargeMode(mode).then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => {});
   };
 
 
@@ -527,14 +527,18 @@ function Content() {
         )}
       </PanelSection>
 
-      {bypassAvail && (
+      {chargeAvail && (
         <PanelSection title="Power">
           <PanelSectionRow>
-            <ToggleField
-              label="Bypass charging"
-              description="Run on AC without charging or draining the battery"
-              checked={bypassOn}
-              onChange={handleToggleBypass}
+            <DropdownItem
+              label="Charging mode"
+              rgOptions={[
+                { data: "full", label: "Full charge (100%)" },
+                { data: "preserve", label: "Battery care (80%)" },
+                { data: "bypass", label: "Bypass (run on AC)" },
+              ]}
+              selectedOption={chargeMode}
+              onChange={(o) => handleChargeMode(o.data as string)}
             />
           </PanelSectionRow>
         </PanelSection>
