@@ -335,27 +335,36 @@ class Plugin:
             await _awrite(os.path.join(self.fan_hwmon, "pwm1_enable"), 2)
 
 
-    # --- Bypass charging (run on AC without charging the battery) ----------- #
-    # Mirrors the EmulationStation "Bypass charging" toggle so it can be flipped
+    # --- Charging mode (full / battery care / bypass) ---------------------- #
+    # Mirrors the EmulationStation "Charging mode" selector so it can be changed
     # from inside Steam without returning to the desktop. Backed by the same
-    # /usr/bin/charge-bypass script + kernel charge_behaviour node.
-    async def get_charge_bypass(self):
+    # /usr/bin/charge-mode script (mainline charge_control_* firmware charge
+    # limit for "battery care", charge_behaviour node for "bypass").
+    async def get_charge_mode(self):
         node = "/sys/class/power_supply/battery/charge_behaviour"
         available = os.path.exists(node)
-        enabled = False
+        mode = "preserve"
         if available:
-            # the node lists the modes with the active one in [brackets]
-            content = _read(node) or ""
-            enabled = "[inhibit-charge]" in content
-        return {"available": available, "enabled": enabled}
+            try:
+                out = subprocess.run(["/usr/bin/charge-mode", "status"],
+                                     capture_output=True, text=True, timeout=10).stdout
+                for line in out.splitlines():
+                    if line.startswith("mode:"):
+                        m = line.split(":", 1)[1].strip()
+                        if m:
+                            mode = m
+            except Exception as e:
+                decky.logger.error(f"charge-mode status failed: {e}")
+        return {"available": available, "mode": mode}
 
-    async def set_charge_bypass(self, enabled):
+    async def set_charge_mode(self, mode):
+        if mode not in ("full", "preserve", "bypass"):
+            mode = "preserve"
         try:
-            subprocess.run(["/usr/bin/charge-bypass", "on" if enabled else "off"],
-                           check=False, timeout=10)
+            subprocess.run(["/usr/bin/charge-mode", mode], check=False, timeout=10)
         except Exception as e:
-            decky.logger.error(f"charge-bypass set failed: {e}")
-        return await self.get_charge_bypass()
+            decky.logger.error(f"charge-mode set failed: {e}")
+        return await self.get_charge_mode()
 
     async def get_cpu_info(self):
         result = {}
