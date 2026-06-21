@@ -45,8 +45,10 @@ if [ ! -s "${RAW}" ]; then
   exit 1
 fi
 
-# raw BGRX -> PNG, cropping the stride padding away.
-convert -size ${SW}x${H} -depth 8 bgra:"${RAW}" -crop ${W}x${H}+0+0 +repage "${OUT}" 2>/dev/null
+# raw BGRX -> PNG: crop the stride padding away, then rotate the panel-native
+# portrait frame (the CWB grabs the 1080x1920 panel buffer) to the landscape
+# orientation the user actually sees (270 CW = 90 CCW).
+convert -size ${SW}x${H} -depth 8 bgra:"${RAW}" -crop ${W}x${H}+0+0 +repage -rotate 270 "${OUT}" 2>/dev/null
 RC=$?
 rm -f "${RAW}"
 
