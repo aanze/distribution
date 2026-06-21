@@ -34,7 +34,6 @@ SETTINGS = [
     {"key": "showTabPill", "label": "Tab pill highlight", "kind": "toggle"},
     {"key": "showTabRule", "label": "Tab separator line", "kind": "toggle"},
     {"key": "showLogos", "label": "Platform logos", "kind": "toggle"},
-    {"key": "showVideo", "label": "Video previews", "kind": "toggle"},
     {"key": "showClock", "label": "Show clock", "kind": "toggle"},
     {"key": "showTags", "label": "Game tags (year/genre)", "kind": "toggle"},
 ]
@@ -43,7 +42,7 @@ DEFAULTS = {
     "colAccent": "66c0f4ff", "colScrim": "0a0f1499", "shelfCols": "8",
     "shelfZoom": "1.08", "selFrame": "ffffffff",
     "showBackgrounds": "1", "showTabPill": "1", "showTabRule": "1",
-    "showLogos": "1", "showVideo": "1", "showClock": "1", "showTags": "1",
+    "showLogos": "1", "showClock": "1", "showTags": "1",
 }
 
 
