@@ -1,0 +1,91 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# Unified battery charging-mode control for SM8750 (AYN Odin 3).
+#
+# Drives two mainline qcom_battmgr controls:
+#   * charge_control_{start,end}_threshold - firmware-maintained charge limit
+#     with hysteresis. The battery is held in the [start,end] band, exactly
+#     like the Steam Deck / Switch "80%" feature, and it is the PMIC firmware
+#     that maintains it -> it keeps working in suspend / screen-off / even
+#     powered-down-but-plugged. At the cap the system runs from the charger and
+#     the battery floats (~0 current) - i.e. you get the bypass benefit for
+#     free, PLUS automatic recharge once it drifts down to "start".
+#   * charge_behaviour (auto / inhibit-charge) - power-path bypass: run the
+#     system from the charger, leave the battery untouched. Note bypass never
+#     recharges (that is its whole point); use "preserve" for set-and-forget.
+#
+# Modes:
+#   full      charge to 100% and keep it full   (end=100, start=95, auto)
+#   preserve  battery care, hold ~80%           (end=80,  start=75, auto)  [default]
+#   bypass    freeze: run on AC, no charge       (inhibit-charge)
+#
+# Usage: charge-mode {full|preserve|bypass|apply|status}
+#   apply   re-apply the saved mode (system.chargemode); run at boot since the
+#           firmware does not reliably restore it across a reboot.
+
+BAT="/sys/class/power_supply/battery"
+BEHAVIOUR="${BAT}/charge_behaviour"
+END="${BAT}/charge_control_end_threshold"
+START="${BAT}/charge_control_start_threshold"
+
+PRESERVE_END=80
+PRESERVE_START=75
+FULL_END=100
+FULL_START=95
+
+# Apply a charging mode by writing the kernel nodes directly.
+apply_mode() {
+  [ -e "${BEHAVIOUR}" ] || return 0
+  case "${1}" in
+    bypass)
+      echo "inhibit-charge" >"${BEHAVIOUR}" 2>/dev/null
+      ;;
+    full)
+      echo "auto" >"${BEHAVIOUR}" 2>/dev/null
+      if [ -e "${END}" ]; then
+        echo "${FULL_END}" >"${END}" 2>/dev/null
+        [ -e "${START}" ] && echo "${FULL_START}" >"${START}" 2>/dev/null
+      fi
+      ;;
+    preserve|*)
+      echo "auto" >"${BEHAVIOUR}" 2>/dev/null
+      if [ -e "${END}" ]; then
+        echo "${PRESERVE_END}" >"${END}" 2>/dev/null
+        [ -e "${START}" ] && echo "${PRESERVE_START}" >"${START}" 2>/dev/null
+      fi
+      ;;
+  esac
+}
+
+case "${1}" in
+  full|preserve|bypass)
+    . /etc/profile
+    set_setting system.chargemode "${1}"
+    apply_mode "${1}"
+    ;;
+  apply|"")
+    . /etc/profile
+    # Wait briefly for the battmgr node to appear at boot.
+    i=0
+    while [ ! -e "${BEHAVIOUR}" ] && [ "${i}" -lt 10 ]; do
+      sleep 1
+      i=$((i + 1))
+    done
+    mode="$(get_setting system.chargemode)"
+    [ -z "${mode}" ] && mode="preserve"
+    apply_mode "${mode}"
+    ;;
+  status)
+    [ -e "${BEHAVIOUR}" ] && echo "behaviour: $(cat "${BEHAVIOUR}" 2>/dev/null)"
+    [ -e "${END}" ]       && echo "end:       $(cat "${END}" 2>/dev/null)"
+    [ -e "${START}" ]     && echo "start:     $(cat "${START}" 2>/dev/null)"
+    . /etc/profile 2>/dev/null
+    echo "mode:      $(get_setting system.chargemode 2>/dev/null)"
+    ;;
+  *)
+    echo "usage: charge-mode {full|preserve|bypass|apply|status}" >&2
+    exit 1
+    ;;
+esac
