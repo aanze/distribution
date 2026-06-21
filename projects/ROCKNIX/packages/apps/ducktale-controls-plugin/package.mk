@@ -2,12 +2,12 @@
 # Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
 
 PKG_NAME="ducktale-controls-plugin"
-PKG_VERSION="0.3.0-aanze"
+PKG_VERSION="0.4.0-aanze"
 PKG_LICENSE="custom"
 PKG_SITE="https://github.com/thefiqs/rocknix-control"
 PKG_URL=""
 PKG_DEPENDS_TARGET="toolchain"
-PKG_LONGDESC="DUCKTALE-CONTROLS (aanze fork of thefiqs/rocknix-control): vendored Decky plugin for CPU/GPU/fan control. Prebuilt bundle shipped in the image and auto-deployed into Decky on boot. Changes vs upstream: detect the live preset on load + restore the pre-game preset on game exit (no hardcoded Default), bypass-charging toggle, collapsible sections, DUCKTALE rebrand."
+PKG_LONGDESC="DUCKTALE-CONTROLS (aanze fork of thefiqs/rocknix-control): vendored Decky plugin for CPU/GPU/fan control. Prebuilt bundle shipped in the image and auto-deployed into Decky on boot. Changes vs upstream: detect the live preset on load + restore the pre-game preset on game exit (no hardcoded Default), charging-mode selector (full / battery care / bypass), collapsible sections, DUCKTALE rebrand."
 PKG_TOOLCHAIN="manual"
 
 # Build the bundle at DEV time (see sources/plugin/README.aanze.md). The image
