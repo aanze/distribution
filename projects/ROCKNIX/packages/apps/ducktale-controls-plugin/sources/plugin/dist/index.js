@@ -111,8 +111,8 @@ const saveFanCurve = callable("set_fan_curve");
 callable("set_fan_profile");
 const getGameProfile = callable("get_game_profile");
 const setGameProfile = callable("set_game_profile");
-const getChargeBypass = callable("get_charge_bypass");
-const setChargeBypass = callable("set_charge_bypass");
+const getChargeMode = callable("get_charge_mode");
+const applyChargeMode = callable("set_charge_mode");
 const state = {
     runningAppId: 0,
     runningGameName: "",
@@ -249,18 +249,18 @@ function Content() {
     const [curvePoints, setCurvePoints] = SP_REACT.useState(DEFAULT_FAN_CURVE);
     const [runningAppId, setRunningAppId] = SP_REACT.useState(state.runningAppId);
     const [gameName, setGameName] = SP_REACT.useState(state.runningGameName);
-    const [bypassAvail, setBypassAvail] = SP_REACT.useState(false);
-    const [bypassOn, setBypassOn] = SP_REACT.useState(false);
+    const [chargeAvail, setChargeAvail] = SP_REACT.useState(false);
+    const [chargeMode, setChargeMode] = SP_REACT.useState("preserve");
     // Underclocking + Fan Curve are folded away by default; the user opens them
     // on demand. Keeps the panel short — Presets and Power are the common knobs.
     const [showUnderclock, setShowUnderclock] = SP_REACT.useState(false);
     const [showFanCurve, setShowFanCurve] = SP_REACT.useState(false);
     SP_REACT.useEffect(() => {
-        getChargeBypass().then((s) => { setBypassAvail(s.available); setBypassOn(s.enabled); }).catch(() => { });
+        getChargeMode().then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => { });
     }, []);
-    const handleToggleBypass = (v) => {
-        setBypassOn(v); // optimistic
-        setChargeBypass(v).then((s) => { setBypassAvail(s.available); setBypassOn(s.enabled); }).catch(() => { });
+    const handleChargeMode = (mode) => {
+        setChargeMode(mode); // optimistic
+        applyChargeMode(mode).then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => { });
     };
     const refreshHardware = async () => {
         const [cpu, gpu, preset] = await Promise.all([getCpuInfo(), getGpuInfo(), getPreset(state.activePreset)]);
@@ -445,7 +445,11 @@ function Content() {
     if (!cpuInfo || !gpuInfo) {
         return (SP_JSX.jsx(DFL.PanelSection, { title: "DUCKTALE-CONTROLS", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { children: "Loading..." }) }) }));
     }
-    return (SP_JSX.jsxs("div", { children: [runningAppId > 0 && (SP_JSX.jsx(DFL.PanelSection, { title: `Playing: ${gameName}` })), SP_JSX.jsxs(DFL.PanelSection, { title: "Presets", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { rgOptions: presets.map((p) => ({ data: p, label: p })), selectedOption: selectedPreset, onChange: (opt) => handleSelectPreset(opt.data) }) }), !editMode ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: () => { setEditName(selectedPreset); setEditMode(true); }, children: [SP_JSX.jsx(FaPen, {}), " Edit"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: handleCreatePreset, children: [SP_JSX.jsx(FaPlus, {}), " New Preset"] }) })] })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Rename Preset", value: editName, onChange: (e) => setEditName(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: handleExitEditMode, children: "Save" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: handleCancel, children: "Cancel" }) }), selectedPreset !== "Default" && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: handleDeletePreset, children: "Delete" }) }))] }))] }), bypassAvail && (SP_JSX.jsx(DFL.PanelSection, { title: "Power", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Bypass charging", description: "Run on AC without charging or draining the battery", checked: bypassOn, onChange: handleToggleBypass }) }) })), SP_JSX.jsxs(Collapsible, { title: `Underclocking${temps.cpu || temps.gpu
+    return (SP_JSX.jsxs("div", { children: [runningAppId > 0 && (SP_JSX.jsx(DFL.PanelSection, { title: `Playing: ${gameName}` })), SP_JSX.jsxs(DFL.PanelSection, { title: "Presets", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { rgOptions: presets.map((p) => ({ data: p, label: p })), selectedOption: selectedPreset, onChange: (opt) => handleSelectPreset(opt.data) }) }), !editMode ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: () => { setEditName(selectedPreset); setEditMode(true); }, children: [SP_JSX.jsx(FaPen, {}), " Edit"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: handleCreatePreset, children: [SP_JSX.jsx(FaPlus, {}), " New Preset"] }) })] })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Rename Preset", value: editName, onChange: (e) => setEditName(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: handleExitEditMode, children: "Save" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: handleCancel, children: "Cancel" }) }), selectedPreset !== "Default" && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: handleDeletePreset, children: "Delete" }) }))] }))] }), chargeAvail && (SP_JSX.jsx(DFL.PanelSection, { title: "Power", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Charging mode", rgOptions: [
+                            { data: "full", label: "Full charge (100%)" },
+                            { data: "preserve", label: "Battery care (80%)" },
+                            { data: "bypass", label: "Bypass (run on AC)" },
+                        ], selectedOption: chargeMode, onChange: (o) => handleChargeMode(o.data) }) }) })), SP_JSX.jsxs(Collapsible, { title: `Underclocking${temps.cpu || temps.gpu
                     ? ` · ${[
                         temps.cpu ? `CPU ${(temps.cpu / 1000).toFixed(0)}°C` : "",
                         temps.gpu ? `GPU ${(temps.gpu / 1000).toFixed(0)}°C` : "",
