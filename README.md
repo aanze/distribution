@@ -20,7 +20,7 @@ On top of stock ROCKNIX:
 * **Perf Control**: CPU/GPU underclock and custom fan curves, two-way synced with the Steam plugin.
 * Built-in fork of the **Decky CPU/GPU/fan plugin** (installs with Decky, keeps your profile when you quit a game).
 * One-tap **Decky Loader** install and **Proton-CachyOS** update/rollback. *(Steam-capable)*
-* **GeForce NOW (OpenNOW)** as its own main-menu section.
+* **GeForce NOW** as its own preinstalled main-menu section — a native-arm64 cloud-gaming client (log in with your NVIDIA account or Discord; no extra install step).
 * On-demand **Nintendo Switch (Citron)** and **PS3 (RPCS3)** install/update tools.
 * **Bypass charging**: run plugged in without charging or draining the battery. *(Odin 3)*
 * **Right home button → Steam Quick Access**: open the Steam QAM with a single press. *(Odin 3)*
@@ -43,30 +43,68 @@ On top of stock ROCKNIX:
 
 ## Screenshots
 
-The "steamlike" theme and the Perf Control tool on an AYN Odin 3:
+Captured on an AYN Odin 3.
+
+### The "steamlike" theme
+
+Console tabs, cover-art shelves and hero backdrops in EmulationStation:
 
 <table>
   <tr>
-    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/steam-tab.png?raw=yes"/></td>
-    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/steam-gamelist.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-tab-steam.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-tab-switch.png?raw=yes"/></td>
   </tr>
   <tr>
-    <td align="center"><sub>Steam tab</sub></td>
-    <td align="center"><sub>Steam library (cover shelf)</sub></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-tab-moonlight.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-gamelist.png?raw=yes"/></td>
   </tr>
   <tr>
-    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/opennow-tab.png?raw=yes"/></td>
-    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/perfcontrol-1.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-tools.png?raw=yes"/></td>
+  </tr>
+</table>
+
+### Steam
+
+Steam Big-Picture library and the built-in **DUCKTALE-CONTROLS** Decky plugin (CPU/GPU/fan + bypass charging, synced with Perf Control):
+
+<table>
+  <tr>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/steam-library.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/decky-controls.png?raw=yes"/></td>
+  </tr>
+</table>
+
+### Perf Control
+
+On-device CPU/GPU underclock and fan-curve tool (Tools section), two-way synced with the Steam plugin:
+
+<table>
+  <tr>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/perfcontrol-profiles.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/perfcontrol-cpu.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/perfcontrol-gpu.png?raw=yes"/></td>
   </tr>
   <tr>
-    <td align="center"><sub>GeForce NOW (OpenNOW) tab</sub></td>
-    <td align="center"><sub>Perf Control — profiles</sub></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/perfcontrol-fan.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/perfcontrol-monitor.png?raw=yes"/></td>
+    <td></td>
+  </tr>
+</table>
+
+### Theme Manager
+
+Separate Tools app to customise the steamlike theme — look, per-section backgrounds, and SteamGridDB cover/hero/logo art:
+
+<table>
+  <tr>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/thememanager-look.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/thememanager-art.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/thememanager-backgrounds.png?raw=yes"/></td>
   </tr>
   <tr>
-    <td colspan="2" align="center"><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/perfcontrol-2.png?raw=yes" width="49%"/></td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center"><sub>Perf Control — live monitor</sub></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/thememanager-steamgriddb.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/thememanager-about.png?raw=yes"/></td>
+    <td></td>
   </tr>
 </table>
 
