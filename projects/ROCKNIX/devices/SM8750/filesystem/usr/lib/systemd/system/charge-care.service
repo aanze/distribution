@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# Software battery-care charge limit for SM8750 (AYN Odin 3). The firmware
+# charge_control_*_threshold is unreliable on this charger (ignored once "Full"),
+# so "Battery care (80%)" is enforced in software: this service runs the
+# hysteresis loop that holds the pack in the [75%, 80%] band via charge_behaviour.
+#
+# Not enabled at boot: /usr/bin/charge-mode starts it when the saved
+# system.chargemode is "preserve" (and stops it for full / bypass). The boot
+# quirk 100-charge_mode -> 'charge-mode apply' restarts it after a reboot.
+
+[Unit]
+Description=ROCKNIX battery-care charge limit (software hysteresis, SM8750)
+ConditionPathExists=/sys/class/power_supply/battery/charge_behaviour
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/charge-mode _daemon
+Restart=on-failure
+RestartSec=15
+Nice=10
