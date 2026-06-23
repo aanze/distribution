@@ -4,57 +4,88 @@
 #
 # Unified battery charging-mode control for SM8750 (AYN Odin 3).
 #
-# Drives two mainline qcom_battmgr controls:
-#   * charge_control_{start,end}_threshold - firmware-maintained charge limit
-#     with hysteresis. The battery is held in the [start,end] band, exactly
-#     like the Steam Deck / Switch "80%" feature, and it is the PMIC firmware
-#     that maintains it -> it keeps working in suspend / screen-off / even
-#     powered-down-but-plugged. At the cap the system runs from the charger and
-#     the battery floats (~0 current) - i.e. you get the bypass benefit for
-#     free, PLUS automatic recharge once it drifts down to "start".
-#   * charge_behaviour (auto / inhibit-charge) - power-path bypass: run the
-#     system from the charger, leave the battery untouched. Note bypass never
-#     recharges (that is its whole point); use "preserve" for set-and-forget.
+# Two layers, because the firmware charge LIMIT is unreliable on this charger:
+#
+#   1. charge_behaviour (auto / inhibit-charge) - power-path control that the
+#      PMIC firmware ALWAYS honours: "inhibit-charge" runs the system from the
+#      charger and leaves the battery untouched (true bypass), "auto" charges
+#      normally. This is the control we trust.
+#
+#   2. charge_control_{start,end}_threshold - the mainline "hold in a band"
+#      firmware limit. On the Odin 3 it is INTERMITTENT: honoured at mid-SoC but
+#      IGNORED once the charger has declared the pack "Full", so it sails right
+#      past 80% to 100% and cannot be relied on alone. We still program it
+#      best-effort (belt-and-suspenders: it helps at mid-SoC, and possibly while
+#      off/suspended), but it is NOT the enforcement.
+#
+# Battery care ("preserve") is therefore enforced in software by a tiny
+# hysteresis daemon (charge-care.service -> 'charge-mode _daemon'): it flips
+# charge_behaviour to inhibit-charge at >=PRESERVE_END and back to auto at
+# <=PRESERVE_START, exactly like the Steam Deck 80% feature. It only acts while
+# the device is awake; off-while-plugged is the one residual gap versus a real
+# firmware limit (the charger tops off then - that is what the best-effort
+# threshold above is there to soften).
 #
 # Modes:
-#   full      charge to 100% and keep it full   (end=100, start=95, auto)
-#   preserve  battery care, hold ~80%           (end=80,  start=75, auto)  [default]
-#   bypass    freeze: run on AC, no charge       (inhibit-charge)
+#   full      charge to 100% and keep it full   (auto, end=100/start=95, no daemon)
+#   preserve  battery care, hold ~80%           (daemon: inhibit>=80 / auto<=75)  [default]
+#   bypass    freeze: run on AC, no charge       (inhibit-charge, no daemon)
 #
 # Usage: charge-mode {full|preserve|bypass|apply|status}
-#   apply   re-apply the saved mode (system.chargemode); run at boot since the
-#           firmware does not reliably restore it across a reboot.
+#   apply    re-apply the saved mode (system.chargemode); run at boot since the
+#            firmware does not reliably restore it across a reboot.
+#   _daemon  internal: the preserve-mode hysteresis loop (run by charge-care.service).
 
 BAT="/sys/class/power_supply/battery"
 BEHAVIOUR="${BAT}/charge_behaviour"
 END="${BAT}/charge_control_end_threshold"
 START="${BAT}/charge_control_start_threshold"
+CARE_SERVICE="charge-care"
 
 PRESERVE_END=80
 PRESERVE_START=75
 FULL_END=100
 FULL_START=95
+DAEMON_INTERVAL=60   # seconds between capacity checks in preserve mode
 
-# Apply a charging mode by writing the kernel nodes directly.
-apply_mode() {
+# --- low-level best-effort writers -----------------------------------------
+set_behaviour() {  # $1 = auto | inhibit-charge
+  [ -e "${BEHAVIOUR}" ] && echo "${1}" >"${BEHAVIOUR}" 2>/dev/null
+}
+
+write_threshold() {  # $1 = end  $2 = start  (best-effort firmware limit)
+  [ -e "${END}" ]   && echo "${1}" >"${END}"   2>/dev/null
+  [ -e "${START}" ] && echo "${2}" >"${START}" 2>/dev/null
+}
+
+start_daemon() { systemctl start "${CARE_SERVICE}" 2>/dev/null; }
+stop_daemon()  { systemctl stop  "${CARE_SERVICE}" 2>/dev/null; }
+
+# behaviour readback marks the active value in [brackets]: "auto [inhibit-charge]"
+behaviour_is() {  # $1 = auto | inhibit-charge  -> 0 if that value is active
+  case "$(cat "${BEHAVIOUR}" 2>/dev/null)" in
+    *"[${1}]"*) return 0 ;;
+    *)          return 1 ;;
+  esac
+}
+
+# Apply the on-device state for a mode (does NOT persist the setting).
+apply_state() {
   [ -e "${BEHAVIOUR}" ] || return 0
   case "${1}" in
-    bypass)
-      echo "inhibit-charge" >"${BEHAVIOUR}" 2>/dev/null
-      ;;
     full)
-      echo "auto" >"${BEHAVIOUR}" 2>/dev/null
-      if [ -e "${END}" ]; then
-        echo "${FULL_END}" >"${END}" 2>/dev/null
-        [ -e "${START}" ] && echo "${FULL_START}" >"${START}" 2>/dev/null
-      fi
+      stop_daemon
+      set_behaviour auto
+      write_threshold "${FULL_END}" "${FULL_START}"
+      ;;
+    bypass)
+      stop_daemon
+      set_behaviour inhibit-charge
       ;;
     preserve|*)
-      echo "auto" >"${BEHAVIOUR}" 2>/dev/null
-      if [ -e "${END}" ]; then
-        echo "${PRESERVE_END}" >"${END}" 2>/dev/null
-        [ -e "${START}" ] && echo "${PRESERVE_START}" >"${START}" 2>/dev/null
-      fi
+      # Belt-and-suspenders firmware limit, then let the daemon enforce in sw.
+      write_threshold "${PRESERVE_END}" "${PRESERVE_START}"
+      start_daemon
       ;;
   esac
 }
@@ -63,8 +94,9 @@ case "${1}" in
   full|preserve|bypass)
     . /etc/profile
     set_setting system.chargemode "${1}"
-    apply_mode "${1}"
+    apply_state "${1}"
     ;;
+
   apply|"")
     . /etc/profile
     # Wait briefly for the battmgr node to appear at boot.
@@ -75,15 +107,51 @@ case "${1}" in
     done
     mode="$(get_setting system.chargemode)"
     [ -z "${mode}" ] && mode="preserve"
-    apply_mode "${mode}"
+    apply_state "${mode}"
     ;;
+
+  _daemon)
+    # Preserve-mode software charge limit. Runs as charge-care.service while the
+    # saved mode is "preserve"; exits as soon as the mode changes (full/bypass
+    # also stop the service explicitly). inhibit-charge at >=END, auto at
+    # <=START, leave the band (START, END) untouched -> hysteresis.
+    . /etc/profile
+    i=0
+    while [ ! -e "${BEHAVIOUR}" ] && [ "${i}" -lt 30 ]; do
+      sleep 2
+      i=$((i + 1))
+    done
+    [ -e "${BEHAVIOUR}" ] || exit 0
+    while :; do
+      mode="$(get_setting system.chargemode)"
+      [ "${mode}" = "preserve" ] || exit 0
+      cap="$(cat "${BAT}/capacity" 2>/dev/null)"
+      case "${cap}" in
+        ''|*[!0-9]*) cap=-1 ;;
+      esac
+      if [ "${cap}" -ge "${PRESERVE_END}" ]; then
+        behaviour_is inhibit-charge || set_behaviour inhibit-charge
+      elif [ "${cap}" -ge 0 ] && [ "${cap}" -le "${PRESERVE_START}" ]; then
+        behaviour_is auto || set_behaviour auto
+      fi
+      sleep "${DAEMON_INTERVAL}"
+    done
+    ;;
+
   status)
-    [ -e "${BEHAVIOUR}" ] && echo "behaviour: $(cat "${BEHAVIOUR}" 2>/dev/null)"
-    [ -e "${END}" ]       && echo "end:       $(cat "${END}" 2>/dev/null)"
-    [ -e "${START}" ]     && echo "start:     $(cat "${START}" 2>/dev/null)"
+    [ -e "${BEHAVIOUR}" ]    && echo "behaviour: $(cat "${BEHAVIOUR}" 2>/dev/null)"
+    [ -e "${END}" ]          && echo "end:       $(cat "${END}" 2>/dev/null)"
+    [ -e "${START}" ]        && echo "start:     $(cat "${START}" 2>/dev/null)"
+    [ -e "${BAT}/capacity" ] && echo "capacity:  $(cat "${BAT}/capacity" 2>/dev/null)%"
     . /etc/profile 2>/dev/null
     echo "mode:      $(get_setting system.chargemode 2>/dev/null)"
+    if systemctl is-active --quiet "${CARE_SERVICE}" 2>/dev/null; then
+      echo "care-daemon: active"
+    else
+      echo "care-daemon: inactive"
+    fi
     ;;
+
   *)
     echo "usage: charge-mode {full|preserve|bypass|apply|status}" >&2
     exit 1
