@@ -1,9 +1,33 @@
     <game>
         <path>./Install Decky Loader.sh</path>
         <name>Install Decky Loader</name>
-        <desc>Installs Steam Deck's Decky Loader plugin system for Steam (Big Picture), plus a small watcher that re-injects the Decky menu when Steam launches so it keeps working across nightly updates. Re-run any time to repair or reinstall. Requires Steam.</desc>
+        <desc>Installs the official Decky Loader plugin system for Steam (Big Picture) — the latest stable release fetched straight from SteamDeckHomebrew — plus a watcher that re-injects the Decky menu when Steam launches so it keeps working across nightly updates. Re-run any time to repair or reinstall. Requires Steam.</desc>
         <developer>SteamDeckHomebrew</developer>
-        <publisher>seilent</publisher>
+        <publisher>aanze</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/decky.svg</image>
+    </game>
+    <game>
+        <path>./Update Decky Loader.sh</path>
+        <name>Update Decky Loader</name>
+        <desc>Updates Decky Loader to the latest official stable release. Reliable on this device (unlike Decky's in-app updater) and a no-op if you are already current. Keeps the previous build for rollback; your plugins and settings are preserved.</desc>
+        <developer>SteamDeckHomebrew</developer>
+        <publisher>aanze</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/decky.svg</image>
+    </game>
+    <game>
+        <path>./Rollback Decky Loader.sh</path>
+        <name>Rollback Decky Loader</name>
+        <desc>Reverts Decky Loader to the previously installed version (kept by the last update) and restarts the plugin service.</desc>
+        <developer>SteamDeckHomebrew</developer>
+        <publisher>aanze</publisher>
         <rating>5.0</rating>
         <releasedate>2026</releasedate>
         <genre>Tool</genre>
@@ -15,7 +39,7 @@
         <name>Uninstall Decky Loader</name>
         <desc>Removes Decky Loader: stops and disables the plugin service, removes the boot watcher and the homebrew tree (loader, plugins and settings).</desc>
         <developer>SteamDeckHomebrew</developer>
-        <publisher>seilent</publisher>
+        <publisher>aanze</publisher>
         <rating>5.0</rating>
         <releasedate>2026</releasedate>
         <genre>Tool</genre>
