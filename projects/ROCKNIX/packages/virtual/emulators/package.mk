@@ -1682,9 +1682,18 @@ makeinstall_target() {
   ### Decky Loader (Steam plugin loader) — Tools entries, Steam-capable devices only.
   ### Kept as its own standalone case block (disjoint from the Steam/OpenNOW block
   ### above) so this personal feature cherry-picks cleanly alongside the others.
+  ### The lifecycle (install/update/rollback/uninstall) lives in /usr/bin/decky-update;
+  ### the four Tools scripts are thin wrappers. We fetch the OFFICIAL Decky *stable*
+  ### release ourselves — no decky.seilent.net dependency and no reliance on Decky's
+  ### in-app self-updater (unreliable under box64 + stuck on prereleases).
   case ${DEVICE} in
     SM8250|SM8550|SM8650|SM8750)
+      mkdir -p ${INSTALL}/usr/bin
+      cp -f ${PKG_DIR}/sources/decky-update ${INSTALL}/usr/bin/decky-update
+      chmod 0755 ${INSTALL}/usr/bin/decky-update
       install_script "Install Decky Loader.sh"
+      install_script "Update Decky Loader.sh"
+      install_script "Rollback Decky Loader.sh"
       install_script "Uninstall Decky Loader.sh"
       ;;
   esac
