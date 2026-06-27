@@ -1,0 +1,285 @@
+#!/bin/bash
+
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# decky-update — own the Decky Loader lifecycle on ROCKNIX, with NO dependency on
+# a third-party install URL (decky.seilent.net) and WITHOUT relying on Decky's
+# in-app self-updater (which is unreliable under box64 on ARM handhelds and, on a
+# stable channel, gets stuck re-offering the prerelease that decky.seilent.net
+# installs).
+#
+# We fetch the OFFICIAL upstream PluginLoader straight from
+#   https://github.com/SteamDeckHomebrew/decky-loader/releases
+# and default to the latest STABLE release (the in-app/seilent path defaults to
+# the latest *prerelease*). The x86-64 PluginLoader runs under box64, exactly the
+# same way Steam itself does on these devices — so the official asset is correct.
+#
+# This codifies the whole install (binary + systemd unit + Steam CEF-debug flag +
+# the Steam-launch re-inject watcher), all under /storage, so it survives reboots
+# and nightly OS updates.
+#
+# Modes:  install | update | rollback | uninstall      (install == update)
+#         install/update accept --force to redownload even if already current.
+#
+# Pin:   DECKY_PIN=<tag> freezes the version (e.g. DECKY_PIN=v3.2.6). Empty (the
+#        default) tracks the latest stable release. Mirrors build.sh's base pin.
+#
+# Safety: atomic swap (download to .part, rename only after ELF+size checks), the
+#         previous binary is kept for rollback, a lock dir prevents concurrent
+#         runs, and plugins/settings under /storage/homebrew are never touched.
+
+source /etc/profile
+
+MODE="${1:-update}"
+FORCE=0
+[ "${2:-}" = "--force" ] && FORCE=1
+
+# Empty = latest stable; set a tag to freeze the version.
+DECKY_PIN="${DECKY_PIN:-}"
+
+REPO="SteamDeckHomebrew/decky-loader"
+USER_DIR="/storage"
+HOMEBREW="${USER_DIR}/homebrew"
+SERVICES="${HOMEBREW}/services"
+LOADER="${SERVICES}/PluginLoader"
+PREVIOUS="${SERVICES}/PluginLoader.previous"
+PART="${SERVICES}/PluginLoader.part"
+VERSION_FILE="${SERVICES}/.loader.version"
+SERVICE_DIR="${USER_DIR}/.config/system.d"
+SERVICE_UNIT="${SERVICE_DIR}/plugin_loader.service"
+AUTOSTART_DIR="${USER_DIR}/.config/autostart"
+WATCHER="${AUTOSTART_DIR}/decky-steam-fix.sh"
+CEF_FLAG="${USER_DIR}/.steam/steam/.cef-enable-remote-debugging"
+LOCK_DIR="/tmp/decky-update.lock"
+API="https://api.github.com/repos/${REPO}/releases"
+
+log() { echo -e "[\033[1;34mINFO\033[0m] $1"; }
+ok()  { echo -e "[\033[1;32mOK\033[0m] $1"; }
+
+cleanup() { rm -f "${PART}"; rmdir "${LOCK_DIR}" 2>/dev/null || true; }
+
+fail() {
+  echo ""
+  echo -e "[\033[1;31mERROR\033[0m] $*"
+  echo "Decky Loader was left unchanged."
+  cleanup
+  sleep 12
+  exit 1
+}
+
+# Canonical ROCKNIX service unit (the upstream "release" unit, baked in so we
+# don't have to curl it from GitHub at install time like seilent does).
+write_service() {
+  mkdir -p "${SERVICE_DIR}"
+  cat > "${SERVICE_UNIT}" <<EOF
+[Unit]
+Description=SteamDeck Plugin Loader
+After=network.target
+[Service]
+Type=simple
+User=root
+Restart=always
+KillMode=process
+TimeoutStopSec=15
+ExecStart=${LOADER}
+WorkingDirectory=${SERVICES}
+Environment=UNPRIVILEGED_PATH=${HOMEBREW}
+Environment=PRIVILEGED_PATH=${HOMEBREW}
+Environment=LOG_LEVEL=INFO
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# Steam-launch re-inject watcher (Decky starts at boot, before Steam; its first
+# frontend injection into Steam's CEF UI often silently fails until plugin_loader
+# is restarted with Steam up). Lives in /storage so it persists across updates.
+write_watcher() {
+  mkdir -p "${AUTOSTART_DIR}"
+  cat > "${WATCHER}" <<'WATCHER_EOF'
+#!/bin/bash
+# Decky frontend re-inject on Steam launch — minimal-intrusion edition.
+# Waits for Steam's CEF debug port, gives Decky time to inject on its own, and
+# ONLY restarts plugin_loader if that injection failed. Never touches Steam or
+# gamescope. Installed by decky-update; runs at every boot.
+
+SERVICE="plugin_loader.service"
+CEF_PORT="8080"
+CEF_URL="http://127.0.0.1:${CEF_PORT}/json/version"
+SETTLE=10
+POLL=3
+
+cef_up() { curl -sf --max-time 2 "${CEF_URL}" >/dev/null 2>&1; }
+
+inject_failed_since() {
+  local log
+  log="$(journalctl -u "${SERVICE}" --since "${1}" --no-pager 2>/dev/null)"
+  echo "${log}" | grep -q "Loading Decky frontend"               || return 1
+  echo "${log}" | grep -q "Failed to execute get_loader_version" && return 0
+  return 1
+}
+
+watch_loop() {
+  local seen=0 mark edge
+  while true; do
+    mark="$(date '+%Y-%m-%d %H:%M:%S')"
+    if cef_up; then
+      if [ "${seen}" = "0" ]; then
+        seen=1
+        if systemctl is-active --quiet "${SERVICE}"; then
+          edge="${mark}"
+          sleep "${SETTLE}"
+          if cef_up && inject_failed_since "${edge}"; then
+            logger -t decky-steam-fix "injection failed -> restarting ${SERVICE}"
+            systemctl restart "${SERVICE}"
+          fi
+        fi
+      fi
+    else
+      seen=0
+    fi
+    sleep "${POLL}"
+  done
+}
+
+if [ "${1}" != "--daemon" ]; then
+  setsid "${0}" --daemon >/dev/null 2>&1 &
+  exit 0
+fi
+watch_loop
+WATCHER_EOF
+  chmod 0755 "${WATCHER}"
+  pkill -f "decky-steam-fix.sh --daemon" 2>/dev/null || true
+  setsid "${WATCHER}" </dev/null >/dev/null 2>&1 || true
+}
+
+# Resolve "<tag>\t<PluginLoader url>" for the pinned tag, else the latest stable
+# release. /releases/latest excludes prereleases — that is the whole point vs the
+# seilent installer, which grabs the newest prerelease.
+resolve_release() {
+  local meta tag url
+  if [ -n "${DECKY_PIN}" ]; then
+    meta="$(curl -fsSL "${API}/tags/${DECKY_PIN}" 2>/dev/null)" || return 1
+  else
+    meta="$(curl -fsSL "${API}/latest" 2>/dev/null)" || return 1
+  fi
+  tag="$(printf '%s' "${meta}" | grep -oE '"tag_name": *"[^"]+"' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')"
+  url="$(printf '%s' "${meta}" | grep -oE '"browser_download_url": *"[^"]*PluginLoader"' | head -n1 | sed -E 's/.*"(https[^"]+)".*/\1/')"
+  [ -n "${tag}" ] && [ -n "${url}" ] || return 1
+  printf '%s\t%s\n' "${tag}" "${url}"
+}
+
+### ----------------------------------------------------------------- rollback
+if [ "${MODE}" = "rollback" ]; then
+  echo "=== Decky Loader rollback ==="
+  if [ -f "${PREVIOUS}" ]; then
+    TMP="${SERVICES}/.swap.PluginLoader"
+    mv -f "${LOADER}" "${TMP}" 2>/dev/null
+    mv -f "${PREVIOUS}" "${LOADER}"
+    if [ -f "${TMP}" ]; then mv -f "${TMP}" "${PREVIOUS}"; else rm -f "${PREVIOUS}"; fi
+    chmod +x "${LOADER}"
+    # The restored binary is from an unknown tag; clear the marker so the next
+    # update re-evaluates against the latest stable release.
+    rm -f "${VERSION_FILE}"
+    systemctl restart plugin_loader.service 2>/dev/null
+    ok "Swapped back to the previous Decky PluginLoader and restarted the service."
+  else
+    echo "No previous version kept; nothing to roll back. The current install is unchanged."
+  fi
+  sleep 8
+  exit 0
+fi
+
+### ---------------------------------------------------------------- uninstall
+if [ "${MODE}" = "uninstall" ]; then
+  echo "=== Uninstall Decky Loader ==="
+  log "Stopping the Steam-launch watcher..."
+  pkill -f "decky-steam-fix.sh --daemon" 2>/dev/null || true
+  rm -f "${WATCHER}"
+  log "Stopping and disabling the Decky service..."
+  systemctl stop plugin_loader.service 2>/dev/null || true
+  systemctl disable plugin_loader.service 2>/dev/null || true
+  rm -f "${SERVICE_UNIT}" "${SERVICE_DIR}/multi-user.target.wants/plugin_loader.service"
+  systemctl daemon-reload 2>/dev/null || true
+  log "Removing the Decky homebrew tree (loader, plugins and settings)..."
+  rm -rf "${HOMEBREW}"
+  echo ""
+  echo "Decky Loader removed. Run 'Install Decky Loader' to reinstall."
+  sleep 6
+  exit 0
+fi
+
+### ------------------------------------------------------------ install/update
+if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
+  echo "A Decky install/update is already running. Retry in a few seconds."
+  sleep 5
+  exit 1
+fi
+trap cleanup EXIT
+
+echo "=== Decky Loader installer / updater ==="
+echo "Source: github.com/${REPO} (${DECKY_PIN:-latest stable})"
+echo ""
+
+command -v curl >/dev/null 2>&1 || fail "curl is required but was not found."
+curl -Is --max-time 8 https://github.com | head -1 | grep -q 200 \
+  || fail "GitHub appears unreachable — check your network and try again."
+
+[ -f "${VERSION_FILE}" ] && echo "Currently installed: $(cat "${VERSION_FILE}")"
+
+log "Resolving the target release..."
+RES="$(resolve_release)" || fail "could not resolve a release from the GitHub API."
+TAG="${RES%%$'\t'*}"
+URL="${RES#*$'\t'}"
+echo "Target version: ${TAG}"
+echo ""
+
+CUR="$(cat "${VERSION_FILE}" 2>/dev/null)"
+if [ "${FORCE}" != "1" ] && [ -x "${LOADER}" ] && [ -n "${CUR}" ] && [ "${CUR}" = "${TAG}" ]; then
+  ok "Decky is already on ${TAG}. Re-applying service + watcher + CEF flag (idempotent)."
+  mkdir -p "${HOMEBREW}/plugins" "${HOMEBREW}/settings"
+  mkdir -p "$(dirname "${CEF_FLAG}")" 2>/dev/null && touch "${CEF_FLAG}" 2>/dev/null
+  write_service
+  systemctl daemon-reload 2>/dev/null
+  systemctl enable plugin_loader.service 2>/dev/null
+  write_watcher
+  systemctl restart plugin_loader.service 2>/dev/null
+  echo "Re-run from SSH with --force to redownload the binary."
+  sleep 6
+  exit 0
+fi
+
+log "Downloading PluginLoader ${TAG}..."
+mkdir -p "${SERVICES}"
+rm -f "${PART}"
+curl -L --fail --max-time 300 "${URL}" -o "${PART}" || fail "download failed."
+
+# Integrity: the PluginLoader is a ~27 MB x86-64 ELF (runs under box64).
+file "${PART}" 2>/dev/null | grep -q "ELF 64-bit" || fail "downloaded file is not an ELF binary."
+SIZE="$(stat -c%s "${PART}" 2>/dev/null || echo 0)"
+[ "${SIZE}" -gt 10000000 ] || fail "downloaded file is suspiciously small (${SIZE} bytes)."
+chmod +x "${PART}"
+
+# Rotate current -> previous, then swap the new binary in.
+[ -f "${LOADER}" ] && cp -f "${LOADER}" "${PREVIOUS}"
+mv -f "${PART}" "${LOADER}"
+chmod +x "${LOADER}"
+printf '%s\n' "${TAG}" > "${VERSION_FILE}"
+
+# Make sure the rest of the install exists (fresh install path) without ever
+# wiping the user's plugins/settings.
+mkdir -p "${HOMEBREW}/plugins" "${HOMEBREW}/settings"
+mkdir -p "$(dirname "${CEF_FLAG}")" 2>/dev/null && touch "${CEF_FLAG}" 2>/dev/null
+write_service
+systemctl daemon-reload 2>/dev/null
+systemctl enable plugin_loader.service 2>/dev/null
+write_watcher
+systemctl restart plugin_loader.service 2>/dev/null
+
+echo ""
+ok "Decky Loader ${TAG} installed."
+[ -f "${PREVIOUS}" ] && echo "Previous binary kept for 'Rollback Decky Loader'."
+echo "Launch Steam (Big Picture) and open Quick Access to find Decky."
+echo "Your plugins and settings under /storage/homebrew were preserved."
+sleep 10
