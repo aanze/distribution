@@ -63,6 +63,12 @@ const getGameProfile = callable<[gameId: string], string | null>("get_game_profi
 const setGameProfile = callable<[gameId: string, presetName: string], boolean>("set_game_profile");
 const getChargeMode = callable<[], { available: boolean; mode: string }>("get_charge_mode");
 const applyChargeMode = callable<[mode: string], { available: boolean; mode: string }>("set_charge_mode");
+// The canonical "global" profile is owned by the ROCKNIX Perf Control tool
+// (its profiles.json "active"). We read it as the source of truth and write it
+// back when the user picks a profile here, so the two tools never disagree and a
+// selection survives a game launch/exit.
+const getActiveProfile = callable<[], string | null>("get_active_profile");
+const setActiveProfile = callable<[name: string], boolean>("set_active_profile");
 
 
 const state = {
@@ -103,6 +109,23 @@ async function detectActivePreset(): Promise<string | null> {
     // best-effort: fall back to the remembered preset on any error
   }
   return null;
+}
+
+
+// Resolve the user's current "global" profile. Perf Control's saved "active"
+// name is the single source of truth (it persists across reboots and is what the
+// boot quirk re-applies); only when that is unavailable do we fall back to
+// matching the live hardware clocks. Using the saved NAME — instead of always
+// reverse-matching clocks — is what stops a game exit from reverting an
+// underclock to "Default" when the live clocks momentarily differ.
+async function resolveActivePreset(): Promise<string | null> {
+  try {
+    const a = await getActiveProfile();
+    if (a) return a;
+  } catch (e) {
+    // Perf Control not present / unreadable -> fall back to clock matching
+  }
+  return await detectActivePreset();
 }
 
 
@@ -320,9 +343,9 @@ function Content() {
 
   useEffect(() => {
     (async () => {
-      // Reflect what's actually applied (possibly set by Perf Control outside
-      // Steam) before drawing, so the dropdown isn't stale on "Default".
-      const detected = await detectActivePreset();
+      // Reflect the canonical active profile (Perf Control's "active", or the
+      // live clocks as a fallback) before drawing, so the dropdown isn't stale.
+      const detected = await resolveActivePreset();
       if (detected) {
         state.activePreset = detected;
         setSelectedPreset(detected);
@@ -390,9 +413,14 @@ function Content() {
     try {
       setSelectedPreset(name);
       state.activePreset = name;
+      // Make this selection the profile restored on game exit (otherwise a
+      // change made mid-game is lost when the game quits) AND persist it as the
+      // canonical global so Perf Control agrees and it survives reboots.
+      state.preGamePreset = name;
       await applyPreset(name);
       await Promise.all([
         state.runningAppId > 0 ? setGameProfile(String(state.runningAppId), name) : Promise.resolve(),
+        setActiveProfile(name),
         refreshHardware(),
         refreshFanCurve(),
       ]);
@@ -613,22 +641,23 @@ function Content() {
 }
 
 export default definePlugin(() => {
-  // Seed the baseline from live hardware at plugin load. detectActivePreset()
-  // otherwise only runs when the QAM panel mounts, so launching a game without
-  // ever opening the panel would leave state.activePreset at the init "Default".
-  detectActivePreset().then((p) => {
+  // Seed the baseline from the canonical active profile at plugin load. It
+  // otherwise only resolves when the QAM panel mounts, so launching a game
+  // without ever opening the panel would leave state.activePreset at the init
+  // "Default".
+  resolveActivePreset().then((p) => {
     if (p) { state.activePreset = p; state.preGamePreset = p; }
   });
 
   const reg = SteamClient.GameSessions.RegisterForAppLifetimeNotifications(async (e: {unAppID: number, bRunning: boolean}) => {
     if (e.bRunning) {
-      // Re-derive the real baseline from live hardware BEFORE applying any
-      // per-game profile. Launching a Steam game from the EmulationStation
-      // "steam" category never opens the QAM (where detectActivePreset runs),
-      // so without this state.activePreset would still be the init "Default" and
-      // get restored on exit — clobbering the system / Perf-Control profile that
-      // the 095-perfcontrol boot quirk applied.
-      const live = await detectActivePreset();
+      // Re-derive the real baseline from the canonical active profile BEFORE
+      // applying any per-game profile. Launching a Steam game from the
+      // EmulationStation "steam" category never opens the QAM (where this
+      // resolves), so without it state.activePreset would still be the init
+      // "Default" and get restored on exit — clobbering the system / Perf-Control
+      // profile that the 095-perfcontrol boot quirk applied.
+      const live = await resolveActivePreset();
       if (live) state.activePreset = live;
       state.preGamePreset = state.activePreset;  // remember the baseline before this game
       state.runningAppId = e.unAppID;
@@ -642,9 +671,13 @@ export default definePlugin(() => {
     } else {
       state.runningAppId = 0;
       state.runningGameName = "";
-      // Restore the profile that was active BEFORE the game, not a hardcoded
-      // "Default" (which would clobber a user / Perf-Control selection).
-      const restore = state.preGamePreset || "Default";
+      // Restore the canonical global profile (Perf Control's "active"), falling
+      // back to the pre-game snapshot, then "Default". Reading the saved NAME —
+      // rather than relying on the pre-game snapshot alone — is what keeps an
+      // underclock set mid-game (or set globally) from being dropped to
+      // "Default" when the game exits.
+      const canonical = await getActiveProfile();
+      const restore = canonical || state.preGamePreset || "Default";
       state.activePreset = restore;
       applyPreset(restore);
     }
