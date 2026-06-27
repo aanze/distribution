@@ -9,6 +9,12 @@ CPU_BASE = "/sys/devices/system/cpu/cpufreq/policy{}"
 FAN_PLATFORM = "/sys/devices/platform/pwm-fan"
 FAN_CONF = "/storage/.config/fancontrol.conf"
 
+# Perf Control (the ROCKNIX Tools app) owns the canonical "active" profile name
+# in this file. We read it as the source of truth and write it back when the user
+# picks a profile in Steam, so the two tools stay in sync and a selection
+# survives a game launch/exit. Absent => Perf Control not installed (best-effort).
+PERFCONTROL_STORE = "/storage/.config/perfcontrol/profiles.json"
+
 DEFAULT_FAN_CURVE = {"speeds": [51, 51, 153], "temps": [40000, 60000, 80000]}
 
 
@@ -629,6 +635,47 @@ class Plugin:
 
     async def get_all_game_profiles(self):
         return await _aload_game_profiles()
+
+
+    # --- Canonical active profile (shared with the ROCKNIX Perf Control tool) - #
+    # Perf Control persists the user's global profile NAME in PERFCONTROL_STORE
+    # ("active"). We use it as the single source of truth so a profile set here or
+    # there is the one profile everywhere, and is restored on game exit instead of
+    # silently reverting to "Default". Both are best-effort and never raise.
+    async def get_active_profile(self):
+        def _do():
+            try:
+                with open(PERFCONTROL_STORE) as f:
+                    return json.load(f).get("active")
+            except Exception:
+                return None
+        return await asyncio.to_thread(_do)
+
+    async def set_active_profile(self, name: str):
+        def _do():
+            try:
+                if not os.path.exists(PERFCONTROL_STORE):
+                    return False  # Perf Control not installed -> nothing to sync
+                with open(PERFCONTROL_STORE) as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    return False
+                if data.get("active") == name:
+                    return True
+                data["active"] = name
+                # Atomic, preserving every other key; match Perf Control's own
+                # write format (indent=2, sort_keys) to minimise diff churn.
+                tmp = PERFCONTROL_STORE + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(data, f, indent=2, sort_keys=True)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, PERFCONTROL_STORE)
+                return True
+            except Exception as e:
+                decky.logger.error(f"set_active_profile failed: {e}")
+                return False
+        return await asyncio.to_thread(_do)
 
 
     async def _main(self):
