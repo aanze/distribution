@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# EmulationStation reads the steamlike theme from the WRITABLE copy
+# /storage/.config/emulationstation/themes/steamlike (the Theme Manager needs it
+# writable), NOT from the read-only image theme /usr/share/themes/es-theme-steamlike.
+# Mirror the image theme into that copy on boot so theme fixes and new per-system
+# logos/backgrounds (e.g. GeForce NOW) from a build land without a manual deploy.
+#
+# Safe to --delete-mirror: the theme dir holds only shipped assets; all USER theme
+# state (look, per-section backgrounds, SteamGridDB art) lives outside it under
+# /storage/.config/themecfg and /storage/roms/_userdata.
+SRC=/usr/share/themes/es-theme-steamlike/
+DST=/storage/.config/emulationstation/themes/steamlike/
+[ -d "$SRC" ] || exit 0
+mkdir -p "$DST"
+rsync -a --delete "$SRC" "$DST" >/dev/null 2>&1 || true
