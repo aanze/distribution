@@ -15,4 +15,14 @@ makeinstall_target() {
   # /storage/.config/emulationstation/themes/steamlike during live dev.
   mkdir -p ${INSTALL}/usr/share/themes/${PKG_NAME}
   cp -rf ${PKG_DIR}/sources/. ${INSTALL}/usr/share/themes/${PKG_NAME}/
+  # The autostart helper is not part of the theme tree itself.
+  rm -f ${INSTALL}/usr/share/themes/${PKG_NAME}/012-sync-steamlike-theme
+
+  # Mirror the image theme into the writable /storage copy ES actually reads, on
+  # boot, so new per-system logos/backgrounds (GeForce NOW, ...) land without a
+  # manual deploy. (ES uses /storage/.config/emulationstation/themes/steamlike.)
+  mkdir -p ${INSTALL}/usr/lib/autostart/common
+  cp ${PKG_DIR}/sources/012-sync-steamlike-theme \
+     ${INSTALL}/usr/lib/autostart/common/012-sync-steamlike-theme
+  chmod 0755 ${INSTALL}/usr/lib/autostart/common/012-sync-steamlike-theme
 }
