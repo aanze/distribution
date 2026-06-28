@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Anze <aanzdev@gmail.com>
+Date: Sun, 28 Jun 2026 21:00:00 +0200
+Subject: [PATCH] emulationstation: GAMEPAD PROFILE selector (Xbox Elite / DualSense)
+
+Add a "GAMEPAD PROFILE" selector under Main Menu > System Settings >
+PERFORMANCE and in the Quick Access modal, next to the CHARGING MODE selector:
+
+  XBOX ELITE (PADDLES) / DUALSENSE (GYRO)
+
+Xbox Elite is the only InputPlumber target whose emulated pad exposes the AYN
+Odin 3 back paddles as evdev buttons (-> game buttons P1/P3 and the left-home
+capture combo); DualSense gives gyro instead. Persists inputplumber.profile and
+drives /usr/bin/gamepad-profile, which swaps the InputPlumber target and (for
+ds5) strips the paddle-source so input_sense still reads raw KEY_F13/F14 for
+capture. Gated on the Odin 3 InputPlumber composite, so it is hidden elsewhere.
+
+Applies after patch 011 (charge-mode): it inserts right after the CHARGING MODE
+blocks that patch introduces, so it must apply in numeric filename order.
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+ es-app/src/guis/GuiMenu.cpp | 44 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 44 insertions(+)
+
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -2012,6 +2012,27 @@
+ 		});
+ 	}
+ 
++	// Gamepad profile: Xbox Elite (the AYN Odin 3 back paddles work as real game
++	// buttons P1/P3) vs DualSense (gyroscope, no paddles). Only on the Odin 3,
++	// which ships this InputPlumber composite. Driven by /usr/bin/gamepad-profile;
++	// the screen-capture combo works in either profile.
++	if (Utils::FileSystem::exists("/usr/share/inputplumber/devices/01-ayn-controller.yaml")) {
++		auto gamepad_profile = std::make_shared<OptionListComponent<std::string> >(mWindow, _("GAMEPAD PROFILE"), false);
++		std::string curGamepadProfile = SystemConf::getInstance()->get("inputplumber.profile");
++		if (curGamepadProfile.empty() || curGamepadProfile == "xbox-series")
++			curGamepadProfile = "xbox-elite";
++		else if (curGamepadProfile == "ds5-edge")
++			curGamepadProfile = "ds5";
++		gamepad_profile->add(_("XBOX ELITE (PADDLES)"), "xbox-elite", curGamepadProfile == "xbox-elite");
++		gamepad_profile->add(_("DUALSENSE (GYRO)"), "ds5", curGamepadProfile == "ds5");
++		s->addWithLabel(_("GAMEPAD PROFILE"), gamepad_profile);
++		gamepad_profile->setSelectedChangedCallback([](const std::string& prof) {
++			SystemConf::getInstance()->set("inputplumber.profile", prof);
++			SystemConf::getInstance()->saveSystemConf();
++			Utils::Platform::runSystemCommand("/usr/bin/gamepad-profile set " + prof, "", nullptr);
++		});
++	}
++
+ 	// Perf Control: launch the CPU/GPU underclock + fan-curve tool (Pyxel GUI).
+ 	// Shown only where the tool is installed (the SM8xxx handhelds that bundle
+ 	// the Pyxel venv). The launcher takes over the screen and is killable by the
+@@ -5742,6 +5763,26 @@
+ 			});
+ 		}
+ 
++		// Gamepad profile (Quick Access): Xbox Elite (back paddles as game
++		// buttons P1/P3) vs DualSense (gyro). Same gating as the System Settings
++		// counterpart; driven by /usr/bin/gamepad-profile.
++		if (Utils::FileSystem::exists("/usr/share/inputplumber/devices/01-ayn-controller.yaml")) {
++			auto gamepad_profile = std::make_shared<OptionListComponent<std::string> >(window, _("GAMEPAD PROFILE"), false);
++			std::string curGamepadProfile = SystemConf::getInstance()->get("inputplumber.profile");
++			if (curGamepadProfile.empty() || curGamepadProfile == "xbox-series")
++				curGamepadProfile = "xbox-elite";
++			else if (curGamepadProfile == "ds5-edge")
++				curGamepadProfile = "ds5";
++			gamepad_profile->add(_("XBOX ELITE (PADDLES)"), "xbox-elite", curGamepadProfile == "xbox-elite");
++			gamepad_profile->add(_("DUALSENSE (GYRO)"), "ds5", curGamepadProfile == "ds5");
++			s->addWithLabel(_("GAMEPAD PROFILE"), gamepad_profile);
++			gamepad_profile->setSelectedChangedCallback([](const std::string& prof) {
++				SystemConf::getInstance()->set("inputplumber.profile", prof);
++				SystemConf::getInstance()->saveSystemConf();
++				Utils::Platform::runSystemCommand("/usr/bin/gamepad-profile set " + prof, "", nullptr);
++			});
++		}
++
+             if (AudioManager::getInstance()->isSongPlaying())
+             {
+                 std::string songName = AudioManager::getInstance()->getSongName();
