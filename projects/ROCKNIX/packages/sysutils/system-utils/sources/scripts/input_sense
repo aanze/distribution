@@ -206,6 +206,17 @@ execute_kill() {
     ${DEBUG} && log $0 "Execute: killall ${TO_KILL}"
     killall ${TO_KILL} 2>/dev/null
   fi
+  # Robust full-session teardown so the panic combo works EVERYWHERE and never
+  # leaves a foreground session running alongside EmulationStation. Two reasons
+  # the registered kill above is not enough on its own:
+  #   - A gamescope session spawns a 'gamescopereaper' that RESPAWNS the
+  #     compositor when only "gamescope" is killed, orphaning the whole session.
+  #   - /tmp/.process-kill-data is a single slot, so launching one session
+  #     (e.g. GeForce NOW) over another (Steam) overwrites it and orphans the
+  #     first; the orphan then wedges the next launch/kill.
+  # SIGKILL the known session roots unconditionally (no-ops when not running) so
+  # returning to ES always means the previous session is fully dead.
+  killall -9 gamescopereaper gamescope geforcenow-electron 2>/dev/null
 }
 
 execute_action() {
