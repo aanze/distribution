@@ -113,6 +113,8 @@ const getGameProfile = callable("get_game_profile");
 const setGameProfile = callable("set_game_profile");
 const getChargeMode = callable("get_charge_mode");
 const applyChargeMode = callable("set_charge_mode");
+const getGamepadProfile = callable("get_gamepad_profile");
+const applyGamepadProfile = callable("set_gamepad_profile");
 // The canonical "global" profile is owned by the ROCKNIX Perf Control tool
 // (its profiles.json "active"). We read it as the source of truth and write it
 // back when the user picks a profile here, so the two tools never disagree and a
@@ -274,16 +276,23 @@ function Content() {
     const [gameName, setGameName] = SP_REACT.useState(state.runningGameName);
     const [chargeAvail, setChargeAvail] = SP_REACT.useState(false);
     const [chargeMode, setChargeMode] = SP_REACT.useState("preserve");
+    const [gpAvail, setGpAvail] = SP_REACT.useState(false);
+    const [gpProfile, setGpProfile] = SP_REACT.useState("xbox-elite");
     // Underclocking + Fan Curve are folded away by default; the user opens them
     // on demand. Keeps the panel short — Presets and Power are the common knobs.
     const [showUnderclock, setShowUnderclock] = SP_REACT.useState(false);
     const [showFanCurve, setShowFanCurve] = SP_REACT.useState(false);
     SP_REACT.useEffect(() => {
         getChargeMode().then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => { });
+        getGamepadProfile().then((s) => { setGpAvail(s.available); setGpProfile(s.profile); }).catch(() => { });
     }, []);
     const handleChargeMode = (mode) => {
         setChargeMode(mode); // optimistic
         applyChargeMode(mode).then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => { });
+    };
+    const handleGamepadProfile = (profile) => {
+        setGpProfile(profile); // optimistic
+        applyGamepadProfile(profile).then((s) => { setGpAvail(s.available); setGpProfile(s.profile); }).catch(() => { });
     };
     const refreshHardware = async () => {
         const [cpu, gpu, preset] = await Promise.all([getCpuInfo(), getGpuInfo(), getPreset(state.activePreset)]);
@@ -477,7 +486,10 @@ function Content() {
                             { data: "full", label: "Full charge (100%)" },
                             { data: "preserve", label: "Battery care (80%)" },
                             { data: "bypass", label: "Bypass (run on AC)" },
-                        ], selectedOption: chargeMode, onChange: (o) => handleChargeMode(o.data) }) }) })), SP_JSX.jsxs(Collapsible, { title: `Underclocking${temps.cpu || temps.gpu
+                        ], selectedOption: chargeMode, onChange: (o) => handleChargeMode(o.data) }) }) })), gpAvail && (SP_JSX.jsx(DFL.PanelSection, { title: "Controller", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Gamepad profile", rgOptions: [
+                            { data: "xbox-elite", label: "Xbox Elite (paddles)" },
+                            { data: "ds5", label: "DualSense (gyro)" },
+                        ], selectedOption: gpProfile, onChange: (o) => handleGamepadProfile(o.data) }) }) })), SP_JSX.jsxs(Collapsible, { title: `Underclocking${temps.cpu || temps.gpu
                     ? ` · ${[
                         temps.cpu ? `CPU ${(temps.cpu / 1000).toFixed(0)}°C` : "",
                         temps.gpu ? `GPU ${(temps.gpu / 1000).toFixed(0)}°C` : "",
