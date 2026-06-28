@@ -1,0 +1,122 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2025-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# gamepad-profile - manage the InputPlumber controller-emulation profile.
+#
+# Two profiles are supported on devices that ship a paddle-source block in
+# their InputPlumber composite (AYN Odin 3):
+#
+#   xbox-elite  (default) - emulate an Xbox One Elite pad. This is the ONLY
+#                 InputPlumber target whose emulated device actually exposes
+#                 the back paddles as evdev buttons (LeftPaddle1/RightPaddle1
+#                 -> BTN_TRIGGER_HAPPY7/5), so the Odin 3 back paddles work as
+#                 real game buttons (P3/P1) and for the left-home capture combo.
+#   ds5         - emulate a DualSense (gyro). No paddle buttons; the override
+#                 STRIPS the paddle-source block so the gpio-keys paddle device
+#                 is left ungrabbed and input_sense reads its raw KEY_F13/F14
+#                 for the capture combo (so capture works in this profile too).
+#
+# The compiled-in default in the device YAML is xbox-elite, so that profile
+# needs no override; ds5 is applied as a /run bind-mount override.
+#
+# Usage: gamepad-profile {get|label|set <profile>|toggle|apply}
+
+source /etc/profile
+
+SETTING="inputplumber.profile"
+OVERRIDE_YAML="/run/inputplumber-profile.yaml"
+DEFAULT_PROFILE="xbox-elite"
+
+find_device_yaml() {
+    local model
+    model=$(tr -d '\0' < /sys/firmware/devicetree/base/model 2>/dev/null || \
+            cat /sys/class/dmi/id/product_name 2>/dev/null)
+    [ -n "${model}" ] && \
+        grep -rl "value: ${model}" /usr/share/inputplumber/devices/ 2>/dev/null | head -1
+}
+
+# Map legacy / empty settings onto the two currently supported profiles.
+normalize() {
+    case "${1}" in
+        ds5|ds5-edge|dualsense)        echo "ds5" ;;
+        xbox-elite|xbox-series|"")     echo "xbox-elite" ;;
+        *)                             echo "${1}" ;;
+    esac
+}
+
+get_profile() { normalize "$(get_setting "${SETTING}")"; }
+
+human_label() {
+    case "$(get_profile)" in
+        xbox-elite) echo "Xbox Elite (paddles)" ;;
+        ds5)        echo "DualSense (gyro)" ;;
+        *)          echo "$(get_profile)" ;;
+    esac
+}
+
+apply_profile() {
+    local target dev had_override="no"
+    target="$(normalize "${1}")"
+    dev="$(find_device_yaml)"
+    [ -z "${dev}" ] && return 1
+
+    # Drop any existing override so we transform the real base file.
+    if grep -qF " ${dev} " /proc/mounts; then
+        had_override="yes"
+        umount "${dev}" 2>/dev/null
+    fi
+
+    if [ "${target}" = "${DEFAULT_PROFILE}" ]; then
+        rm -f "${OVERRIDE_YAML}"
+        # Base file already is the default profile; only restart if we actually
+        # removed a prior override (avoids a needless controller reset at boot).
+        [ "${had_override}" = "no" ] && return 0
+    else
+        # Non-default (ds5): strip the paddle-source block (between the
+        # '# >>> paddle-source' / '# <<< paddle-source' markers) so the paddle
+        # device stays ungrabbed, and retarget to the requested profile.
+        awk -v target="${target}" '
+            /# >>> paddle-source/ { skip=1; next }
+            /# <<< paddle-source/ { skip=0; next }
+            skip { next }
+            /^target_devices:/ {
+                print "target_devices:"
+                print "  - " target
+                print "  - keyboard"
+                t=1; next
+            }
+            t && /^[[:space:]]*-[[:space:]]/ { next }
+            { t=0; print }
+        ' "${dev}" > "${OVERRIDE_YAML}"
+        mount --bind "${OVERRIDE_YAML}" "${dev}"
+    fi
+
+    # Restart InputPlumber so the new target/sources take effect, then nudge
+    # input_sense to re-scan (the paddle device moves between grabbed/ungrabbed).
+    systemctl restart inputplumber
+    systemctl try-restart input.service 2>/dev/null
+    return 0
+}
+
+case "${1}" in
+    get)    get_profile ;;
+    label)  human_label ;;
+    apply)  apply_profile "$(get_profile)" ;;
+    set)
+        new="$(normalize "${2}")"
+        set_setting "${SETTING}" "${new}"
+        apply_profile "${new}"
+        echo "${new}"
+        ;;
+    toggle)
+        if [ "$(get_profile)" = "xbox-elite" ]; then new="ds5"; else new="xbox-elite"; fi
+        set_setting "${SETTING}" "${new}"
+        apply_profile "${new}"
+        echo "${new}"
+        ;;
+    *)
+        echo "usage: gamepad-profile {get|label|set <xbox-elite|ds5>|toggle|apply}" >&2
+        exit 1
+        ;;
+esac
