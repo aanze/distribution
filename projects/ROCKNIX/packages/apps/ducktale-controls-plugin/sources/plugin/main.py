@@ -372,6 +372,34 @@ class Plugin:
             decky.logger.error(f"charge-mode set failed: {e}")
         return await self.get_charge_mode()
 
+    # Mirrors the EmulationStation "Gamepad profile" selector so the controller
+    # emulation can be switched from inside Steam. Backed by the same
+    # /usr/bin/gamepad-profile script: xbox-elite exposes the AYN Odin 3 back
+    # paddles as real buttons (P1/P3), ds5 gives gyro instead. Only meaningful on
+    # devices that ship the Odin 3 InputPlumber composite.
+    async def get_gamepad_profile(self):
+        node = "/usr/share/inputplumber/devices/01-ayn-controller.yaml"
+        available = os.path.exists(node)
+        profile = "xbox-elite"
+        if available:
+            try:
+                out = subprocess.run(["/usr/bin/gamepad-profile", "get"],
+                                     capture_output=True, text=True, timeout=10).stdout.strip()
+                if out:
+                    profile = out
+            except Exception as e:
+                decky.logger.error(f"gamepad-profile get failed: {e}")
+        return {"available": available, "profile": profile}
+
+    async def set_gamepad_profile(self, profile):
+        if profile not in ("xbox-elite", "ds5"):
+            profile = "xbox-elite"
+        try:
+            subprocess.run(["/usr/bin/gamepad-profile", "set", profile], check=False, timeout=25)
+        except Exception as e:
+            decky.logger.error(f"gamepad-profile set failed: {e}")
+        return await self.get_gamepad_profile()
+
     async def get_cpu_info(self):
         result = {}
         for policy in CPU_POLICIES:
