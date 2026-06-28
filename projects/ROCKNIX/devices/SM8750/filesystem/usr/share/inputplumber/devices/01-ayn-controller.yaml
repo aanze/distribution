@@ -29,6 +29,24 @@ source_devices:
       phys_path: rsinput-gamepad/input0
       handler: event*
     capability_map_id: ayn_mcu
+  # >>> paddle-source (xbox-elite profile only)
+  # AYN Odin 3 back paddles (M1/M2): a separate gpio-keys device created by
+  # SM8750 kernel patch 0510, emitting KEY_F13 (M1, left) / KEY_F14 (M2,
+  # right). Matched by name ("gpio-keys-paddles") because its phys_path is
+  # shared with the other gpio-keys node. The ayn_mcu map turns KEY_F13/F14
+  # into Left/RightPaddle1, so the paddles become real Xbox Elite paddle
+  # buttons (BTN_TRIGGER_HAPPY7/5 on the emulated pad).
+  #
+  # This block is present only for the xbox-elite profile. The Switch Gamepad
+  # Profile control STRIPS it (between the >>> / <<< markers) when switching to
+  # ds5, leaving the paddle device ungrabbed so input_sense reads the raw
+  # KEY_F13/F14 directly for the screen-capture combo (works in every profile).
+  - group: gamepad
+    evdev:
+      name: gpio-keys-paddles
+      handler: event*
+    capability_map_id: ayn_mcu
+  # <<< paddle-source
 
 # Optional configuration for the composite device
 options:
@@ -37,7 +55,15 @@ options:
   # external service enables management of the device. Defaults to 'false'
   auto_manage: true
 
-# The target input device(s) to emulate by default
+# The target input device(s) to emulate by default.
+# xbox-elite is the only InputPlumber target whose emulated pad actually
+# exposes the back paddles as evdev buttons (LeftPaddle1/RightPaddle1 ->
+# BTN_TRIGGER_HAPPY7/5); the DualSense Edge target drops them through its
+# UHID round-trip. So xbox-elite is the default (paddles work out of the box).
+# The Switch Gamepad Profile control toggles this to ds5 (DualSense, gyro, no
+# paddles) via a /run override that ALSO strips the paddle-source block above,
+# leaving the paddle device ungrabbed so input_sense reads raw KEY_F13/F14 for
+# the capture combo (which therefore works in every profile).
 target_devices:
-  - ds5
+  - xbox-elite
   - keyboard
