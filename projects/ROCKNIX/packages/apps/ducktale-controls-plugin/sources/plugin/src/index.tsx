@@ -63,6 +63,8 @@ const getGameProfile = callable<[gameId: string], string | null>("get_game_profi
 const setGameProfile = callable<[gameId: string, presetName: string], boolean>("set_game_profile");
 const getChargeMode = callable<[], { available: boolean; mode: string }>("get_charge_mode");
 const applyChargeMode = callable<[mode: string], { available: boolean; mode: string }>("set_charge_mode");
+const getGamepadProfile = callable<[], { available: boolean; profile: string }>("get_gamepad_profile");
+const applyGamepadProfile = callable<[profile: string], { available: boolean; profile: string }>("set_gamepad_profile");
 // The canonical "global" profile is owned by the ROCKNIX Perf Control tool
 // (its profiles.json "active"). We read it as the source of truth and write it
 // back when the user picks a profile here, so the two tools never disagree and a
@@ -290,6 +292,8 @@ function Content() {
 
   const [chargeAvail, setChargeAvail] = useState<boolean>(false);
   const [chargeMode, setChargeMode] = useState<string>("preserve");
+  const [gpAvail, setGpAvail] = useState<boolean>(false);
+  const [gpProfile, setGpProfile] = useState<string>("xbox-elite");
 
   // Underclocking + Fan Curve are folded away by default; the user opens them
   // on demand. Keeps the panel short — Presets and Power are the common knobs.
@@ -298,11 +302,17 @@ function Content() {
 
   useEffect(() => {
     getChargeMode().then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => {});
+    getGamepadProfile().then((s) => { setGpAvail(s.available); setGpProfile(s.profile); }).catch(() => {});
   }, []);
 
   const handleChargeMode = (mode: string) => {
     setChargeMode(mode);  // optimistic
     applyChargeMode(mode).then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => {});
+  };
+
+  const handleGamepadProfile = (profile: string) => {
+    setGpProfile(profile);  // optimistic
+    applyGamepadProfile(profile).then((s) => { setGpAvail(s.available); setGpProfile(s.profile); }).catch(() => {});
   };
 
 
@@ -567,6 +577,22 @@ function Content() {
               ]}
               selectedOption={chargeMode}
               onChange={(o) => handleChargeMode(o.data as string)}
+            />
+          </PanelSectionRow>
+        </PanelSection>
+      )}
+
+      {gpAvail && (
+        <PanelSection title="Controller">
+          <PanelSectionRow>
+            <DropdownItem
+              label="Gamepad profile"
+              rgOptions={[
+                { data: "xbox-elite", label: "Xbox Elite (paddles)" },
+                { data: "ds5", label: "DualSense (gyro)" },
+              ]}
+              selectedOption={gpProfile}
+              onChange={(o) => handleGamepadProfile(o.data as string)}
             />
           </PanelSectionRow>
         </PanelSection>
