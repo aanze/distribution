@@ -45,9 +45,9 @@ On top of stock ROCKNIX:
 
 Captured on an AYN Odin 3.
 
-### The "steamlike" theme
+### The "steamlike" theme &amp; on-device tooling
 
-Console tabs, cover-art shelves and hero backdrops in EmulationStation:
+More than a skin: a Steam Big-Picture-style EmulationStation front-end — console tabs, cover-art shelves and hero backdrops — fronting a whole on-device toolset. Several capabilities install as their own main-menu sections or Tools apps, set up straight from the handheld (no PC needed): update **Proton-CachyOS**, install/update **RPCS3** and **Citron**, and **GeForce NOW** as a native **arm64** cloud client — the official client built for ARM, not x86-emulated.
 
 <table>
   <tr>
@@ -56,21 +56,21 @@ Console tabs, cover-art shelves and hero backdrops in EmulationStation:
   </tr>
   <tr>
     <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-tab-moonlight.png?raw=yes"/></td>
-    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-gamelist.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-tab-geforcenow.png?raw=yes"/></td>
   </tr>
   <tr>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-gamelist.png?raw=yes"/></td>
     <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/theme-tools.png?raw=yes"/></td>
   </tr>
 </table>
 
 ### Steam
 
-Steam Big-Picture library and the built-in **DUCKTALE-CONTROLS** Decky plugin (CPU/GPU/fan + bypass charging, synced with Perf Control):
+Steam comes with its own built-in **DUCKTALE-CONTROLS** Decky plugin, so the whole system can be driven from the Quick Access menu without leaving the game: **underclock presets** (bound to the on-device Perf Control profiles), a **fan curve**, a **charge-bypass toggle**, and a **gamepad-profile switch**.
 
 <table>
   <tr>
-    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/steam-library.png?raw=yes"/></td>
-    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/decky-controls.png?raw=yes"/></td>
+    <td><img src="https://github.com/aanze/distribution/blob/aanze-next/distributions/ROCKNIX/logos/screenshots/steam-ducktale-controls.png?raw=yes"/></td>
   </tr>
 </table>
 
