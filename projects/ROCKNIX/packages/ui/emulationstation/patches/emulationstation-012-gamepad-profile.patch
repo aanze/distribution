@@ -6,11 +6,11 @@ Subject: [PATCH] emulationstation: GAMEPAD PROFILE selector (Xbox Elite / DualSe
 Add a "GAMEPAD PROFILE" selector under Main Menu > System Settings >
 PERFORMANCE and in the Quick Access modal, next to the CHARGING MODE selector:
 
-  XBOX ELITE (PADDLES) / DUALSENSE (GYRO)
+  XBOX ELITE (PADDLES) / DUALSENSE
 
 Xbox Elite is the only InputPlumber target whose emulated pad exposes the AYN
 Odin 3 back paddles as evdev buttons (-> game buttons P1/P3 and the left-home
-capture combo); DualSense gives gyro instead. Persists inputplumber.profile and
+capture combo); DualSense is a plain PlayStation pad, no paddles. Persists inputplumber.profile and
 drives /usr/bin/gamepad-profile, which swaps the InputPlumber target and (for
 ds5) strips the paddle-source so input_sense still reads raw KEY_F13/F14 for
 capture. Gated on the Odin 3 InputPlumber composite, so it is hidden elsewhere.
@@ -30,7 +30,7 @@ Signed-off-by: Anze <aanzdev@gmail.com>
  	}
  
 +	// Gamepad profile: Xbox Elite (the AYN Odin 3 back paddles work as real game
-+	// buttons P1/P3) vs DualSense (gyroscope, no paddles). Only on the Odin 3,
++	// buttons P1/P3) vs DualSense (PlayStation layout, no paddles). Only on the Odin 3,
 +	// which ships this InputPlumber composite. Driven by /usr/bin/gamepad-profile;
 +	// the screen-capture combo works in either profile.
 +	if (Utils::FileSystem::exists("/usr/share/inputplumber/devices/01-ayn-controller.yaml")) {
@@ -41,7 +41,7 @@ Signed-off-by: Anze <aanzdev@gmail.com>
 +		else if (curGamepadProfile == "ds5-edge")
 +			curGamepadProfile = "ds5";
 +		gamepad_profile->add(_("XBOX ELITE (PADDLES)"), "xbox-elite", curGamepadProfile == "xbox-elite");
-+		gamepad_profile->add(_("DUALSENSE (GYRO)"), "ds5", curGamepadProfile == "ds5");
++		gamepad_profile->add(_("DUALSENSE"), "ds5", curGamepadProfile == "ds5");
 +		s->addWithLabel(_("GAMEPAD PROFILE"), gamepad_profile);
 +		gamepad_profile->setSelectedChangedCallback([](const std::string& prof) {
 +			SystemConf::getInstance()->set("inputplumber.profile", prof);
@@ -58,7 +58,7 @@ Signed-off-by: Anze <aanzdev@gmail.com>
  		}
  
 +		// Gamepad profile (Quick Access): Xbox Elite (back paddles as game
-+		// buttons P1/P3) vs DualSense (gyro). Same gating as the System Settings
++		// buttons P1/P3) vs DualSense (no paddles). Same gating as the System Settings
 +		// counterpart; driven by /usr/bin/gamepad-profile.
 +		if (Utils::FileSystem::exists("/usr/share/inputplumber/devices/01-ayn-controller.yaml")) {
 +			auto gamepad_profile = std::make_shared<OptionListComponent<std::string> >(window, _("GAMEPAD PROFILE"), false);
@@ -68,7 +68,7 @@ Signed-off-by: Anze <aanzdev@gmail.com>
 +			else if (curGamepadProfile == "ds5-edge")
 +				curGamepadProfile = "ds5";
 +			gamepad_profile->add(_("XBOX ELITE (PADDLES)"), "xbox-elite", curGamepadProfile == "xbox-elite");
-+			gamepad_profile->add(_("DUALSENSE (GYRO)"), "ds5", curGamepadProfile == "ds5");
++			gamepad_profile->add(_("DUALSENSE"), "ds5", curGamepadProfile == "ds5");
 +			s->addWithLabel(_("GAMEPAD PROFILE"), gamepad_profile);
 +			gamepad_profile->setSelectedChangedCallback([](const std::string& prof) {
 +				SystemConf::getInstance()->set("inputplumber.profile", prof);
