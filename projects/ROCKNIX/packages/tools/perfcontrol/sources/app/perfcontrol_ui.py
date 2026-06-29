@@ -194,10 +194,31 @@ class App(object):
         # Reflect reality: detect which profile the hardware is actually running
         # (the Steam/Decky plugin may have applied one behind our back) and make
         # it the active selection so the marker is never stale. None = "custom".
+        #
+        # CRUCIAL: only ADOPT a live match when it is a real, *different* saved
+        # profile. NEVER overwrite the persisted selection with None just because
+        # the live clocks match nothing: that happens routinely when the live
+        # caps have merely drifted (after an OTA the OPP table can shift so the
+        # stored exact freqs snap elsewhere; the backgrounded boot re-apply can
+        # lose a race; a Steam session or suspend/resume can reset caps) and
+        # writing None here would silently, permanently reset a profile that is
+        # still perfectly valid in our store. Keep `active`; the boot quirk then
+        # re-asserts it, and `self.live_name` (possibly None) still drives the
+        # "custom" indicator without destroying the user's choice.
         self.live_name = P.match_current(self.store.profiles, hw.live_clocks())
-        if self.live_name != self.store.active:
-            self.store.active = self.live_name
-            self.store.persist()
+        if self.live_name is not None:
+            # Hardware matches a saved profile (maybe one the Steam/Decky plugin
+            # applied behind our back) -> adopt it as the selection.
+            if self.live_name != self.store.active:
+                self.store.active = self.live_name
+                self.store.persist()
+        elif self.store.active in self.store.profiles:
+            # Nothing matches but we DO have a persisted selection: the live caps
+            # have merely drifted. Re-ASSERT the profile (clocks only, like the
+            # boot quirk) instead of discarding it, so opening Perf Control
+            # restores the underclock rather than the old code's silent reset.
+            A.apply_caps(self.store.profiles[self.store.active])
+            self.live_name = self.store.active
         _names = self.names()
         if self.store.active in _names:
             self.prof_idx = _names.index(self.store.active)
