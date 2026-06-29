@@ -488,7 +488,7 @@ function Content() {
                             { data: "bypass", label: "Bypass (run on AC)" },
                         ], selectedOption: chargeMode, onChange: (o) => handleChargeMode(o.data) }) }) })), gpAvail && (SP_JSX.jsx(DFL.PanelSection, { title: "Controller", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Gamepad profile", rgOptions: [
                             { data: "xbox-elite", label: "Xbox Elite (paddles)" },
-                            { data: "ds5", label: "DualSense (gyro)" },
+                            { data: "ds5", label: "DualSense" },
                         ], selectedOption: gpProfile, onChange: (o) => handleGamepadProfile(o.data) }) }) })), SP_JSX.jsxs(Collapsible, { title: `Underclocking${temps.cpu || temps.gpu
                     ? ` · ${[
                         temps.cpu ? `CPU ${(temps.cpu / 1000).toFixed(0)}°C` : "",
