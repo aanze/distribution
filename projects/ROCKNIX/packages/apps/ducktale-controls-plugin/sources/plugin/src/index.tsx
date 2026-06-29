@@ -589,7 +589,7 @@ function Content() {
               label="Gamepad profile"
               rgOptions={[
                 { data: "xbox-elite", label: "Xbox Elite (paddles)" },
-                { data: "ds5", label: "DualSense (gyro)" },
+                { data: "ds5", label: "DualSense" },
               ]}
               selectedOption={gpProfile}
               onChange={(o) => handleGamepadProfile(o.data as string)}
