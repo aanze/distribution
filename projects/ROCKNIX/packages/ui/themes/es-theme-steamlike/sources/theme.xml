@@ -36,6 +36,21 @@
 
    <!--
    ============================================================
+   SCREEN VIEW = window-level HUD overlays (engine core).
+   The engine applies controllerActivity / clock / batteryIndicator
+   from THIS "screen" view, NOT the per-system/per-game views, so the
+   per-view <controllerActivity visible="false"> below never takes
+   effect. Hide the controller-activity indicator here, where the core
+   actually reads it (otherwise it draws a small pad dot in the
+   bottom-left corner: white-ish idle, accent-coloured on input).
+   ============================================================
+   -->
+   <view name="screen">
+      <controllerActivity name="controllerActivity"><visible>false</visible></controllerActivity>
+   </view>
+
+   <!--
+   ============================================================
    SYSTEM VIEW = Steam top "tab bar"
    Clean dark premium background (no random game art).
    ============================================================
