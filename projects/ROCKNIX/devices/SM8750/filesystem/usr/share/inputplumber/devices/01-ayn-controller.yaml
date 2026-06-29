@@ -60,8 +60,9 @@ options:
 # exposes the back paddles as evdev buttons (LeftPaddle1/RightPaddle1 ->
 # BTN_TRIGGER_HAPPY7/5); the DualSense Edge target drops them through its
 # UHID round-trip. So xbox-elite is the default (paddles work out of the box).
-# The Switch Gamepad Profile control toggles this to ds5 (DualSense, gyro, no
-# paddles) via a /run override that ALSO strips the paddle-source block above,
+# The Switch Gamepad Profile control toggles this to ds5 (DualSense, no
+# paddles; the Odin 3 IMU is SLPI-owned so there is no gyro either) via a /run
+# override that ALSO strips the paddle-source block above,
 # leaving the paddle device ungrabbed so input_sense reads raw KEY_F13/F14 for
 # the capture combo (which therefore works in every profile).
 target_devices:
