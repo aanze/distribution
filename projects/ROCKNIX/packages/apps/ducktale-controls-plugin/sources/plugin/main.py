@@ -375,7 +375,9 @@ class Plugin:
     # Mirrors the EmulationStation "Gamepad profile" selector so the controller
     # emulation can be switched from inside Steam. Backed by the same
     # /usr/bin/gamepad-profile script: xbox-elite exposes the AYN Odin 3 back
-    # paddles as real buttons (P1/P3), ds5 gives gyro instead. Only meaningful on
+    # paddles as real buttons (P1/P3); ds5 is a plain DualSense (PlayStation
+    # layout/prompts, no paddles -- the Odin 3 IMU is SLPI-owned so there is no
+    # gyro). Only meaningful on
     # devices that ship the Odin 3 InputPlumber composite.
     async def get_gamepad_profile(self):
         node = "/usr/share/inputplumber/devices/01-ayn-controller.yaml"
