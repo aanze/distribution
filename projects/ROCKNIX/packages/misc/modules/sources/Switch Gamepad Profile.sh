@@ -4,7 +4,7 @@
 #
 # Toggle the InputPlumber controller-emulation profile between
 # Xbox Elite (the AYN Odin 3 back paddles work as real game buttons P1/P3)
-# and DualSense (gyroscope, no paddles). The preference persists across
+# and DualSense (PlayStation layout/prompts, no paddles). The preference persists across
 # reboots. All the actual work lives in the shared /usr/bin/gamepad-profile
 # backend, which also drives the Quick Settings and Ducktale Controls toggles.
 
