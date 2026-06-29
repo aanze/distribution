@@ -12,7 +12,9 @@
 #                 the back paddles as evdev buttons (LeftPaddle1/RightPaddle1
 #                 -> BTN_TRIGGER_HAPPY7/5), so the Odin 3 back paddles work as
 #                 real game buttons (P3/P1) and for the left-home capture combo.
-#   ds5         - emulate a DualSense (gyro). No paddle buttons; the override
+#   ds5         - emulate a DualSense (PlayStation layout/prompts). No paddle
+#                 buttons (the UHID target drops them; and the Odin 3 IMU is
+#                 SLPI-owned, so gyro is not reachable from Linux). The override
 #                 STRIPS the paddle-source block so the gpio-keys paddle device
 #                 is left ungrabbed and input_sense reads its raw KEY_F13/F14
 #                 for the capture combo (so capture works in this profile too).
@@ -50,7 +52,7 @@ get_profile() { normalize "$(get_setting "${SETTING}")"; }
 human_label() {
     case "$(get_profile)" in
         xbox-elite) echo "Xbox Elite (paddles)" ;;
-        ds5)        echo "DualSense (gyro)" ;;
+        ds5)        echo "DualSense" ;;
         *)          echo "$(get_profile)" ;;
     esac
 }
