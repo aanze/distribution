@@ -25,23 +25,53 @@ if [ ! -e "${CAP}/arm" ]; then
   exit 1
 fi
 
+# Arm the CWB single-shot, busy-poll until a fresh frame lands (snappier than a
+# fixed sleep), copy it out, disarm. Echoes the frame count reached so the caller
+# can tell a real grab (>=2) from a wedged engine (0).
+arm_and_grab() {
+  echo 1 > "${CAP}/arm"
+  local i=0 f=0
+  while [ ${i} -lt 400 ]; do
+    f=$(sed -n 's/.*frames=\([0-9]*\).*/\1/p' "${CAP}/status" 2>/dev/null)
+    [ "${f:-0}" -ge 2 ] && break
+    i=$((i + 1))
+  done
+  cp "${CAP}/frame.raw" "${RAW}" 2>/dev/null
+  echo 0 > "${CAP}/arm"
+  printf '%s' "${f:-0}"
+}
+
+# Recover a WEDGED CWB. The single-shot writeback can get stuck (status frames=0,
+# all-black frame) after a screen-record or a session teardown (gamescope kill):
+# the writeback rides the live compositor CTL's flush, and a teardown leaves it
+# bound to a dead CTL so no frame ever completes. Power-cycling the display output
+# tears the DPU pipeline down and back up, re-binding the CWB to a live CTL.
+# sway/EmulationStation only (best-effort under gamescope, where it's a no-op).
+cwb_recover() {
+  local sock
+  sock=$(find /run -name 'sway-ipc.*.sock' 2>/dev/null | head -1)
+  [ -S "${sock}" ] || return 1
+  SWAYSOCK="${sock}" swaymsg 'output * power off' >/dev/null 2>&1 || return 1
+  sleep 0.6
+  SWAYSOCK="${sock}" swaymsg 'output * power on'  >/dev/null 2>&1
+  sleep 0.9
+  return 0
+}
+
 mkdir -p "${SAVE_DIR}"
 OUT="${SAVE_DIR}/$(date +'%Y-%m-%d-%H%M%S').png"
 
-# Arm, wait for a fresh frame to land (bounded busy-poll, snappier than sleep),
-# grab the latest, disarm.
-echo 1 > "${CAP}/arm"
-i=0
-while [ ${i} -lt 400 ]; do
-  f=$(sed -n 's/.*frames=\([0-9]*\).*/\1/p' "${CAP}/status" 2>/dev/null)
-  [ "${f:-0}" -ge 2 ] && break
-  i=$((i + 1))
-done
-cp "${CAP}/frame.raw" "${RAW}" 2>/dev/null
-echo 0 > "${CAP}/arm"
+frames=$(arm_and_grab)
+if [ "${frames:-0}" -lt 2 ]; then
+  # Wedged engine -> recover the display pipeline and retry once.
+  cwb_recover && frames=$(arm_and_grab)
+fi
 
-if [ ! -s "${RAW}" ]; then
-  echo "capture produced no data"
+# frames<2 means nothing real latched (frame.raw is an 8 MB zero buffer, which
+# would otherwise convert to a black PNG) -> treat as failure.
+if [ "${frames:-0}" -lt 2 ] || [ ! -s "${RAW}" ]; then
+  echo "capture produced no data (frames=${frames})"
+  rm -f "${RAW}"
   exit 1
 fi
 
