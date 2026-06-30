@@ -56,3 +56,11 @@ case ${DEVICE} in
     PKG_DEPENDS_TARGET+=" themecfg"
     ;;
 esac
+
+# GPU Driver Manager (swappable Mesa Turnip / Vulkan driver, per-game). Adreno
+# (freedreno) handhelds only. Dedicated case block at EOF, cherry-pick friendly.
+case ${DEVICE} in
+  SM8250|SM8550|SM8650|SM8750)
+    PKG_DEPENDS_TARGET+=" gpu-driver"
+    ;;
+esac
