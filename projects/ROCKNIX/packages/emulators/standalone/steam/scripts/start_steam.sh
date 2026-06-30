@@ -148,29 +148,41 @@ steam_launch_bigpicture() {
     touch "$gamescope_mode_file"
   fi
   unset MESA_LOADER_DRIVER_OVERRIDE
+
+  # Swappable Mesa Turnip driver for the Steam session (Steam + Proton games),
+  # but NOT gamescope: GPU_DRV is injected AFTER the gamescope `--`, so the
+  # compositor keeps running on the rock-solid stock driver. A broken
+  # experimental driver then crashes only the game session, never the display.
+  # See packages/tools/gpu-driver.
+  local GPU_DRV=""
+  if [ -x /usr/bin/gpu-driver ]; then
+    local _vkdf
+    _vkdf="$(/usr/bin/gpu-driver vkdf "${PLATFORM}" "${GAME}" 2>/dev/null)"
+    [ -n "${_vkdf}" ] && GPU_DRV="env VK_DRIVER_FILES=${_vkdf}"
+  fi
   if [ "${STEAM_FLAVOR}" = "arm64" ]; then
     SDL_VIDEODRIVER=x11 LD_LIBRARY_PATH=/storage/.local/share/Steam/lib/aarch64-linux-gnu/ ${EMUPERF} /storage/.local/share/Steam/steamrtarm64/steam -steamdeck -exitsteam
     if [ "${GAMESCOPE}" = "0" ]; then
-      SDL_VIDEODRIVER=x11 LD_LIBRARY_PATH=/storage/.local/share/Steam/lib/aarch64-linux-gnu/ ${EMUPERF} /storage/.local/share/Steam/steamrtarm64/steam -nofriendsui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
+      SDL_VIDEODRIVER=x11 LD_LIBRARY_PATH=/storage/.local/share/Steam/lib/aarch64-linux-gnu/ ${EMUPERF} ${GPU_DRV} /storage/.local/share/Steam/steamrtarm64/steam -nofriendsui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       exit 0
     else
       systemctl stop sway
       GAMESCOPE_MODE_SAVE_FILE="${gamescope_mode_file}" GAMESCOPE_FAKE_OUTPUT_MM=508x286 env -u WAYLAND_DISPLAY LD_LIBRARY_PATH=/storage/.local/share/Steam/lib/aarch64-linux-gnu/ ${EMUPERF} \
         gamescope $PREFER_OUTPUT -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
-        /storage/.local/share/Steam/steamrtarm64/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
+        ${GPU_DRV} /storage/.local/share/Steam/steamrtarm64/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       systemctl start essway
       exit 0
     fi
   else
     FEX /usr/bin/steam -steamdeck -exitsteam
     if [ "${GAMESCOPE}" = "0" ]; then
-      ${EMUPERF} FEX /usr/bin/steam -nofriendsui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
+      ${EMUPERF} ${GPU_DRV} FEX /usr/bin/steam -nofriendsui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       exit 0
     else
       systemctl stop sway
       GAMESCOPE_MODE_SAVE_FILE="${gamescope_mode_file}" GAMESCOPE_FAKE_OUTPUT_MM=508x286 env -u WAYLAND_DISPLAY ${EMUPERF} \
         gamescope $PREFER_OUTPUT -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
-        FEX /usr/bin/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
+        ${GPU_DRV} FEX /usr/bin/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       systemctl start essway
       exit 0
     fi
