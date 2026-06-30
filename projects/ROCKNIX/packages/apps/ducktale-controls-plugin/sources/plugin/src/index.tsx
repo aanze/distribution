@@ -65,6 +65,18 @@ const getChargeMode = callable<[], { available: boolean; mode: string }>("get_ch
 const applyChargeMode = callable<[mode: string], { available: boolean; mode: string }>("set_charge_mode");
 const getGamepadProfile = callable<[], { available: boolean; profile: string }>("get_gamepad_profile");
 const applyGamepadProfile = callable<[profile: string], { available: boolean; profile: string }>("set_gamepad_profile");
+
+// --- GPU Driver Manager (swappable Mesa Turnip / Vulkan) ------------------- //
+type GpuDrv = { id: string; mesa_version: string; channel: string; favorite: boolean; is_default: boolean; path: string };
+type GpuCatEntry = { id: string; mesa_version: string; channel: string; notes?: string };
+type GpuList = { available: boolean; default: string; drivers: GpuDrv[]; per_game: Record<string, string> };
+const getGpuDrivers = callable<[], GpuList>("get_gpu_drivers");
+const getGpuCatalog = callable<[refresh: boolean], { available: boolean; drivers: GpuCatEntry[]; error?: string }>("get_gpu_catalog");
+const installGpuDriver = callable<[id: string], { ok: boolean; message: string }>("install_gpu_driver");
+const removeGpuDriver = callable<[id: string], { ok: boolean }>("remove_gpu_driver");
+const setGpuDefault = callable<[id: string], GpuList>("set_gpu_default");
+const setGpuFavorite = callable<[id: string, on: boolean], GpuList>("set_gpu_favorite");
+const verifyGpuDriver = callable<[id: string], { ok: boolean; message: string }>("verify_gpu_driver");
 // The canonical "global" profile is owned by the ROCKNIX Perf Control tool
 // (its profiles.json "active"). We read it as the source of truth and write it
 // back when the user picks a profile here, so the two tools never disagree and a
@@ -292,6 +304,13 @@ function Content() {
 
   const [chargeAvail, setChargeAvail] = useState<boolean>(false);
   const [chargeMode, setChargeMode] = useState<string>("preserve");
+
+  const [gpuDrvAvail, setGpuDrvAvail] = useState<boolean>(false);
+  const [gpuDefault, setGpuDefaultState] = useState<string>("stock");
+  const [gpuDrivers, setGpuDrivers] = useState<GpuDrv[]>([]);
+  const [gpuCatalog, setGpuCatalog] = useState<GpuCatEntry[]>([]);
+  const [gpuMsg, setGpuMsg] = useState<string>("");
+  const [showGpuDriver, setShowGpuDriver] = useState<boolean>(false);
   const [gpAvail, setGpAvail] = useState<boolean>(false);
   const [gpProfile, setGpProfile] = useState<string>("xbox-elite");
 
@@ -303,7 +322,47 @@ function Content() {
   useEffect(() => {
     getChargeMode().then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => {});
     getGamepadProfile().then((s) => { setGpAvail(s.available); setGpProfile(s.profile); }).catch(() => {});
+    getGpuDrivers().then((d) => {
+      setGpuDrvAvail(d.available);
+      setGpuDefaultState(d.default || "stock");
+      setGpuDrivers(d.drivers || []);
+    }).catch(() => {});
   }, []);
+
+  const refreshGpu = () =>
+    getGpuDrivers().then((d) => {
+      setGpuDrvAvail(d.available);
+      setGpuDefaultState(d.default || "stock");
+      setGpuDrivers(d.drivers || []);
+    }).catch(() => {});
+
+  const handleGpuDefault = (id: string) => {
+    setGpuDefaultState(id);  // optimistic
+    setGpuDefault(id).then((d) => {
+      setGpuDefaultState(d.default || "stock"); setGpuDrivers(d.drivers || []);
+    }).catch(() => {});
+  };
+  const handleGpuFavorite = (id: string, on: boolean) =>
+    setGpuFavorite(id, on).then((d) => setGpuDrivers(d.drivers || [])).catch(() => {});
+  const handleGpuRemove = (id: string) => {
+    setGpuMsg(`Removing ${id}…`);
+    removeGpuDriver(id).then(() => { setGpuMsg(""); refreshGpu(); }).catch(() => setGpuMsg("remove failed"));
+  };
+  const handleGpuVerify = (id: string) => {
+    setGpuMsg("Verifying…");
+    verifyGpuDriver(id).then((r) => setGpuMsg(r.message || (r.ok ? "OK" : "FAIL"))).catch(() => setGpuMsg("verify failed"));
+  };
+  const handleGpuCatalog = () => {
+    setGpuMsg("Fetching catalog…");
+    getGpuCatalog(true).then((c) => {
+      setGpuCatalog(c.drivers || []);
+      setGpuMsg(c.error ? `catalog: ${c.error}` : ((c.drivers && c.drivers.length) ? "" : "catalog empty / offline"));
+    }).catch(() => setGpuMsg("catalog fetch failed"));
+  };
+  const handleGpuInstall = (id: string) => {
+    setGpuMsg(`Installing ${id}…`);
+    installGpuDriver(id).then((r) => { setGpuMsg(r.message); refreshGpu(); }).catch(() => setGpuMsg("install failed"));
+  };
 
   const handleChargeMode = (mode: string) => {
     setChargeMode(mode);  // optimistic
@@ -662,6 +721,66 @@ function Content() {
           disabled={!editMode}
         />
       </Collapsible>
+
+      {gpuDrvAvail && (
+        <Collapsible
+          title={`GPU Driver · ${(() => {
+            const d = gpuDrivers.find((x) => x.id === gpuDefault);
+            const ver = d ? ` · Mesa ${d.mesa_version}` : "";
+            return `${gpuDefault === "stock" ? "stock" : gpuDefault}${ver}`;
+          })()}`}
+          open={showGpuDriver}
+          onToggle={() => setShowGpuDriver((v) => !v)}
+        >
+          <PanelSectionRow>
+            <DropdownItem
+              label="Active driver"
+              rgOptions={gpuDrivers.map((d) => ({
+                data: d.id,
+                label: d.id === "stock"
+                  ? `Stock (system) · Mesa ${d.mesa_version}`
+                  : `${d.id} · Mesa ${d.mesa_version}${d.favorite ? " ★" : ""}`,
+              }))}
+              selectedOption={gpuDefault}
+              onChange={(o) => handleGpuDefault(o.data as string)}
+            />
+          </PanelSectionRow>
+          {gpuDrivers.filter((d) => d.id !== "stock").map((d) => (
+            <PanelSectionRow key={d.id}>
+              <ButtonItem layout="below" onClick={() => handleGpuFavorite(d.id, !d.favorite)}>
+                {d.favorite ? "★" : "☆"} {d.id}
+              </ButtonItem>
+              <ButtonItem layout="below" onClick={() => handleGpuRemove(d.id)}>
+                <FaTrash /> Remove
+              </ButtonItem>
+            </PanelSectionRow>
+          ))}
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={() => handleGpuVerify(gpuDefault)}>
+              Verify active
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={handleGpuCatalog}>
+              Refresh catalog (online)
+            </ButtonItem>
+          </PanelSectionRow>
+          {gpuCatalog
+            .filter((c) => !gpuDrivers.some((d) => d.id === c.id))
+            .map((c) => (
+              <PanelSectionRow key={c.id}>
+                <ButtonItem layout="below" onClick={() => handleGpuInstall(c.id)}>
+                  ⬇ {c.id} · {c.mesa_version} ({c.channel})
+                </ButtonItem>
+              </PanelSectionRow>
+            ))}
+          {gpuMsg && (
+            <PanelSectionRow>
+              <div style={{ fontSize: "0.8em", opacity: 0.8, padding: "0 16px" }}>{gpuMsg}</div>
+            </PanelSectionRow>
+          )}
+        </Collapsible>
+      )}
     </div>
   );
 }
