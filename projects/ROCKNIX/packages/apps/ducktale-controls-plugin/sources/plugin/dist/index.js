@@ -115,6 +115,13 @@ const getChargeMode = callable("get_charge_mode");
 const applyChargeMode = callable("set_charge_mode");
 const getGamepadProfile = callable("get_gamepad_profile");
 const applyGamepadProfile = callable("set_gamepad_profile");
+const getGpuDrivers = callable("get_gpu_drivers");
+const getGpuCatalog = callable("get_gpu_catalog");
+const installGpuDriver = callable("install_gpu_driver");
+const removeGpuDriver = callable("remove_gpu_driver");
+const setGpuDefault = callable("set_gpu_default");
+const setGpuFavorite = callable("set_gpu_favorite");
+const verifyGpuDriver = callable("verify_gpu_driver");
 // The canonical "global" profile is owned by the ROCKNIX Perf Control tool
 // (its profiles.json "active"). We read it as the source of truth and write it
 // back when the user picks a profile here, so the two tools never disagree and a
@@ -276,6 +283,12 @@ function Content() {
     const [gameName, setGameName] = SP_REACT.useState(state.runningGameName);
     const [chargeAvail, setChargeAvail] = SP_REACT.useState(false);
     const [chargeMode, setChargeMode] = SP_REACT.useState("preserve");
+    const [gpuDrvAvail, setGpuDrvAvail] = SP_REACT.useState(false);
+    const [gpuDefault, setGpuDefaultState] = SP_REACT.useState("stock");
+    const [gpuDrivers, setGpuDrivers] = SP_REACT.useState([]);
+    const [gpuCatalog, setGpuCatalog] = SP_REACT.useState([]);
+    const [gpuMsg, setGpuMsg] = SP_REACT.useState("");
+    const [showGpuDriver, setShowGpuDriver] = SP_REACT.useState(false);
     const [gpAvail, setGpAvail] = SP_REACT.useState(false);
     const [gpProfile, setGpProfile] = SP_REACT.useState("xbox-elite");
     // Underclocking + Fan Curve are folded away by default; the user opens them
@@ -285,7 +298,44 @@ function Content() {
     SP_REACT.useEffect(() => {
         getChargeMode().then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => { });
         getGamepadProfile().then((s) => { setGpAvail(s.available); setGpProfile(s.profile); }).catch(() => { });
+        getGpuDrivers().then((d) => {
+            setGpuDrvAvail(d.available);
+            setGpuDefaultState(d.default || "stock");
+            setGpuDrivers(d.drivers || []);
+        }).catch(() => { });
     }, []);
+    const refreshGpu = () => getGpuDrivers().then((d) => {
+        setGpuDrvAvail(d.available);
+        setGpuDefaultState(d.default || "stock");
+        setGpuDrivers(d.drivers || []);
+    }).catch(() => { });
+    const handleGpuDefault = (id) => {
+        setGpuDefaultState(id); // optimistic
+        setGpuDefault(id).then((d) => {
+            setGpuDefaultState(d.default || "stock");
+            setGpuDrivers(d.drivers || []);
+        }).catch(() => { });
+    };
+    const handleGpuFavorite = (id, on) => setGpuFavorite(id, on).then((d) => setGpuDrivers(d.drivers || [])).catch(() => { });
+    const handleGpuRemove = (id) => {
+        setGpuMsg(`Removing ${id}…`);
+        removeGpuDriver(id).then(() => { setGpuMsg(""); refreshGpu(); }).catch(() => setGpuMsg("remove failed"));
+    };
+    const handleGpuVerify = (id) => {
+        setGpuMsg("Verifying…");
+        verifyGpuDriver(id).then((r) => setGpuMsg(r.message || (r.ok ? "OK" : "FAIL"))).catch(() => setGpuMsg("verify failed"));
+    };
+    const handleGpuCatalog = () => {
+        setGpuMsg("Fetching catalog…");
+        getGpuCatalog(true).then((c) => {
+            setGpuCatalog(c.drivers || []);
+            setGpuMsg(c.error ? `catalog: ${c.error}` : ((c.drivers && c.drivers.length) ? "" : "catalog empty / offline"));
+        }).catch(() => setGpuMsg("catalog fetch failed"));
+    };
+    const handleGpuInstall = (id) => {
+        setGpuMsg(`Installing ${id}…`);
+        installGpuDriver(id).then((r) => { setGpuMsg(r.message); refreshGpu(); }).catch(() => setGpuMsg("install failed"));
+    };
     const handleChargeMode = (mode) => {
         setChargeMode(mode); // optimistic
         applyChargeMode(mode).then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => { });
@@ -489,6 +539,7 @@ function Content() {
                         ], selectedOption: chargeMode, onChange: (o) => handleChargeMode(o.data) }) }) })), gpAvail && (SP_JSX.jsx(DFL.PanelSection, { title: "Controller", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Gamepad profile", rgOptions: [
                             { data: "xbox-elite", label: "Xbox Elite (paddles)" },
                             { data: "ds5", label: "DualSense" },
+                            { data: "streaming", label: "Streaming (GFN/Moonlight)" },
                         ], selectedOption: gpProfile, onChange: (o) => handleGamepadProfile(o.data) }) }) })), SP_JSX.jsxs(Collapsible, { title: `Underclocking${temps.cpu || temps.gpu
                     ? ` · ${[
                         temps.cpu ? `CPU ${(temps.cpu / 1000).toFixed(0)}°C` : "",
@@ -510,7 +561,18 @@ function Content() {
                             const idx = freqs.indexOf(gpuMaxFreq);
                             const liveStr = liveGpuMax && liveGpuMax !== gpuMaxFreq ? ` (${Math.round(liveGpuMax / 1000000)} MHz)` : "";
                             return (SP_JSX.jsx(DFL.SliderField, { label: "GPU", description: `${Math.round(gpuMaxFreq / 1000000)} MHz${liveStr}`, value: idx >= 0 ? idx : freqs.length - 1, min: 0, max: freqs.length - 1, step: 1, disabled: !editMode, onChange: (i) => handleGpuMaxChange(i) }));
-                        })() })] }), SP_JSX.jsx(Collapsible, { title: "Fan Curve", open: showFanCurve, onToggle: () => setShowFanCurve((v) => !v), children: SP_JSX.jsx(FanCurveEditor, { points: curvePoints, onChange: handleCurveChange, disabled: !editMode }) })] }));
+                        })() })] }), SP_JSX.jsx(Collapsible, { title: "Fan Curve", open: showFanCurve, onToggle: () => setShowFanCurve((v) => !v), children: SP_JSX.jsx(FanCurveEditor, { points: curvePoints, onChange: handleCurveChange, disabled: !editMode }) }), gpuDrvAvail && (SP_JSX.jsxs(Collapsible, { title: `GPU Driver · ${(() => {
+                    const d = gpuDrivers.find((x) => x.id === gpuDefault);
+                    const ver = d ? ` · Mesa ${d.mesa_version}` : "";
+                    return `${gpuDefault === "stock" ? "stock" : gpuDefault}${ver}`;
+                })()}`, open: showGpuDriver, onToggle: () => setShowGpuDriver((v) => !v), children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Active driver", rgOptions: gpuDrivers.map((d) => ({
+                                data: d.id,
+                                label: d.id === "stock"
+                                    ? `Stock (system) · Mesa ${d.mesa_version}`
+                                    : `${d.id} · Mesa ${d.mesa_version}${d.favorite ? " ★" : ""}`,
+                            })), selectedOption: gpuDefault, onChange: (o) => handleGpuDefault(o.data) }) }), gpuDrivers.filter((d) => d.id !== "stock").map((d) => (SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: () => handleGpuFavorite(d.id, !d.favorite), children: [d.favorite ? "★" : "☆", " ", d.id] }), SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: () => handleGpuRemove(d.id), children: [SP_JSX.jsx(FaTrash, {}), " Remove"] })] }, d.id))), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => handleGpuVerify(gpuDefault), children: "Verify active" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: handleGpuCatalog, children: "Refresh catalog (online)" }) }), gpuCatalog
+                        .filter((c) => !gpuDrivers.some((d) => d.id === c.id))
+                        .map((c) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: () => handleGpuInstall(c.id), children: ["\u2B07 ", c.id, " \u00B7 ", c.mesa_version, " (", c.channel, ")"] }) }, c.id))), gpuMsg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "0.8em", opacity: 0.8, padding: "0 16px" }, children: gpuMsg }) }))] }))] }));
 }
 var index = definePlugin(() => {
     // Seed the baseline from the canonical active profile at plugin load. It
