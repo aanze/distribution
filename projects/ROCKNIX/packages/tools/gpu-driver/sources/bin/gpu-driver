@@ -1,0 +1,563 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# GPU Driver Manager - headless CLI backend.
+#
+# Swaps the Mesa Turnip (Vulkan) ICD per-game via VK_DRIVER_FILES, without
+# rebuilding the OS. The system driver in /usr is never touched and is always
+# the fallback ("stock"). Installed alternative drivers live under
+#   /storage/.local/share/gpu-drivers/<id>/
+#       libvulkan_freedreno.so
+#       freedreno_icd.aarch64.json   (library_path -> the .so above, absolute)
+#       meta.json                    (id, mesa_version, channel, sha256, ...)
+# Selection state (default + per-game overrides + favorites) lives in
+#   /storage/.config/gpu-drivers/state.json
+#
+# Design: per-PROCESS injection only. We print an `export VK_DRIVER_FILES=...`
+# line that runemu.sh / the Steam launcher eval into the *game* environment.
+# gamescope/sway/ES keep running on the rock-solid stock driver, so a broken
+# experimental driver crashes only the game, never the session.
+
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+import urllib.error
+import hashlib
+import tempfile
+import shutil
+
+SCHEMA = 1
+
+DRIVERS_DIR = "/storage/.local/share/gpu-drivers"
+CONFIG_DIR = "/storage/.config/gpu-drivers"
+STATE_PATH = os.path.join(CONFIG_DIR, "state.json")
+CATALOG_CACHE = os.path.join(CONFIG_DIR, "catalog.json")
+
+SYSTEM_ICD = "/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json"
+SYSTEM_SO = "/usr/lib/libvulkan_freedreno.so"
+ICD_NAME = "freedreno_icd.aarch64.json"
+SO_NAME = "libvulkan_freedreno.so"
+
+STOCK = "stock"
+
+# Catalog manifest published by the fork CI (GitHub Releases). Overridable via
+# env for testing. Finalised when the build/publish workflow lands.
+MANIFEST_URL = os.environ.get(
+    "GPU_DRIVER_MANIFEST_URL",
+    "https://github.com/aanze/rocknix-turnip/releases/latest/download/manifest.json",
+)
+USER_AGENT = "rocknix-gpu-driver/0.1"
+
+
+# ----------------------------------------------------------------------------- helpers
+
+def _eprint(*a):
+    print(*a, file=sys.stderr)
+
+
+def _load_json(path, default):
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def _atomic_write_json(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def load_state():
+    st = _load_json(STATE_PATH, {})
+    st.setdefault("schema", SCHEMA)
+    st.setdefault("default", STOCK)
+    st.setdefault("per_game", {})
+    st.setdefault("favorites", [])
+    st.setdefault("notes", {})
+    return st
+
+
+def save_state(st):
+    _atomic_write_json(STATE_PATH, st)
+
+
+def driver_dir(drv_id):
+    return os.path.join(DRIVERS_DIR, drv_id)
+
+
+def driver_icd(drv_id):
+    return os.path.join(driver_dir(drv_id), ICD_NAME)
+
+
+def driver_so(drv_id):
+    return os.path.join(driver_dir(drv_id), SO_NAME)
+
+
+def driver_meta(drv_id):
+    return _load_json(os.path.join(driver_dir(drv_id), "meta.json"), {})
+
+
+def installed_ids():
+    if not os.path.isdir(DRIVERS_DIR):
+        return []
+    out = []
+    for name in sorted(os.listdir(DRIVERS_DIR)):
+        if os.path.isfile(driver_so(name)) and os.path.isfile(driver_icd(name)):
+            out.append(name)
+    return out
+
+
+def write_icd(drv_id, api_version="1.4.348"):
+    icd = {
+        "ICD": {
+            "api_version": api_version,
+            "library_arch": "64",
+            "library_path": driver_so(drv_id),
+        },
+        "file_format_version": "1.0.1",
+    }
+    _atomic_write_json(driver_icd(drv_id), icd)
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def so_mesa_version(path):
+    """Extract the Mesa version baked into a libvulkan_freedreno.so (the same
+    string vulkaninfo's driverInfo reports, e.g. '26.1.2'). '?' if unreadable.
+    This is what GameHub/Winlator would call the 'Turnip' version on Android."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        m = re.search(rb"Mesa (\d[\w.\-]*)", data)
+        return m.group(1).decode("ascii", "replace") if m else "?"
+    except OSError:
+        return "?"
+
+
+# ----------------------------------------------------------------------------- resolve
+
+def resolve(platform=None, rom=None):
+    """Return the driver id for this launch context. Precedence:
+    per-game (platform:rom) > per-game (rom) > per-system (@platform) > default."""
+    st = load_state()
+    keys = []
+    if platform and rom:
+        keys.append("%s:%s" % (platform, rom))
+    if rom:
+        keys.append(rom)
+    if platform:
+        keys.append("@%s" % platform)  # per-system override (e.g. @ps3, @switch)
+    for k in keys:
+        drv = st["per_game"].get(k)
+        if drv:
+            return drv
+    return st.get("default", STOCK)
+
+
+def icd_for(drv_id):
+    """Absolute ICD path for a driver id, or None for stock / missing."""
+    if drv_id == STOCK or not drv_id:
+        return None
+    icd = driver_icd(drv_id)
+    return icd if os.path.isfile(icd) and os.path.isfile(driver_so(drv_id)) else None
+
+
+# ----------------------------------------------------------------------------- probe
+
+def _clean_probe_env():
+    """A sanitized environment for dlopen-probing a driver. We are testing the
+    DRIVER, not the caller's session: strip anything that can make a perfectly
+    good ICD fail to load or negotiate -- a session LD_LIBRARY_PATH/LD_PRELOAD
+    (e.g. a Steam runtime) shadowing our system libs, a stale VK_ICD_FILENAMES,
+    and the implicit Vulkan layers (Steam overlay/fossilize, MangoHud). Those
+    Steam layers in particular reject vkCreateInstance with ERROR_INCOMPATIBLE_
+    DRIVER when probed from inside the Steam session (e.g. the Decky plugin),
+    which is a false negative about the driver itself."""
+    env = dict(os.environ)
+    for k in ("LD_LIBRARY_PATH", "LD_PRELOAD", "VK_ICD_FILENAMES",
+              "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES", "VK_LOADER_LAYERS_ENABLE"):
+        env.pop(k, None)
+    # Ignore implicit layers during the probe (they are not the driver under test).
+    env["VK_LOADER_LAYERS_DISABLE"] = "~implicit~"
+    env["DISABLE_VKBASALT"] = "1"
+    env["DISABLE_MANGOHUD"] = "1"
+    return env
+
+
+def probe(drv_id):
+    """dlopen-probe a driver via vulkaninfo, in a sanitized env. (ok, driverInfo)."""
+    env = _clean_probe_env()
+    icd = icd_for(drv_id) if drv_id != STOCK else SYSTEM_ICD
+    if drv_id == STOCK:
+        pass  # clean env already has no VK_DRIVER_FILES -> loader auto-discovers /usr
+    else:
+        if not icd:
+            return (False, "not installed")
+        env["VK_DRIVER_FILES"] = icd
+    try:
+        out = subprocess.run(
+            ["vulkaninfo", "--summary"],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return (False, "probe failed: %s" % e)
+    blob = out.stdout + out.stderr
+    info = ""
+    found = False
+    for line in out.stdout.splitlines():
+        s = line.strip()
+        if s.startswith("driverInfo"):
+            info = s.split("=", 1)[1].strip() if "=" in s else s
+        if "Adreno" in s:
+            found = True
+    ok = (out.returncode == 0) and found
+    if not ok and not info:
+        info = blob.strip().splitlines()[-1] if blob.strip() else "no Adreno device"
+    return (ok, info)
+
+
+# ----------------------------------------------------------------------------- commands
+
+def cmd_env(args):
+    """Print the shell line to inject into a game's environment. Empty = stock."""
+    platform = args[0] if len(args) > 0 else None
+    rom = args[1] if len(args) > 1 else None
+    drv = resolve(platform, rom)
+    icd = icd_for(drv)
+    if icd:
+        print("export VK_DRIVER_FILES='%s'" % icd)
+    # stock -> print nothing; the loader auto-discovers /usr.
+    return 0
+
+
+def cmd_vkdf(args):
+    """Print just the ICD path for a launch context (empty = stock). For use as
+    an `env VK_DRIVER_FILES=$(gpu-driver vkdf ...)` prefix."""
+    platform = args[0] if len(args) > 0 else None
+    rom = args[1] if len(args) > 1 else None
+    icd = icd_for(resolve(platform, rom))
+    if icd:
+        print(icd)
+    return 0
+
+
+def cmd_active(args):
+    platform = args[0] if len(args) > 0 else None
+    rom = args[1] if len(args) > 1 else None
+    drv = resolve(platform, rom)
+    print(drv)
+    return 0
+
+
+def cmd_list(args):
+    st = load_state()
+    rows = [(STOCK, so_mesa_version(SYSTEM_SO), "system", "/usr")]
+    for did in installed_ids():
+        m = driver_meta(did)
+        rows.append((did, m.get("mesa_version", "?"), m.get("channel", "?"),
+                     driver_dir(did)))
+    if "--json" in args:
+        out = []
+        for did, ver, ch, path in rows:
+            out.append({
+                "id": did, "mesa_version": ver, "channel": ch, "path": path,
+                "is_default": st["default"] == did,
+                "favorite": did in st["favorites"],
+            })
+        print(json.dumps({"default": st["default"], "drivers": out,
+                           "per_game": st["per_game"]}, indent=2))
+        return 0
+    print("%-28s %-12s %-9s %s" % ("ID", "MESA", "CHANNEL", "FLAGS"))
+    for did, ver, ch, _ in rows:
+        flags = []
+        if st["default"] == did:
+            flags.append("default")
+        if did in st["favorites"]:
+            flags.append("fav")
+        print("%-28s %-12s %-9s %s" % (did, ver, ch, ",".join(flags)))
+    return 0
+
+
+def cmd_set_default(args):
+    if not args:
+        _eprint("usage: gpu-driver set-default <id|stock>")
+        return 2
+    drv = args[0]
+    if drv != STOCK and drv not in installed_ids():
+        _eprint("unknown driver: %s" % drv)
+        return 1
+    st = load_state()
+    st["default"] = drv
+    save_state(st)
+    print("default = %s" % drv)
+    return 0
+
+
+def cmd_set_game(args):
+    if len(args) < 2:
+        _eprint("usage: gpu-driver set-game <key> <id|stock|clear>")
+        return 2
+    key, drv = args[0], args[1]
+    st = load_state()
+    if drv in ("clear", "none", ""):
+        st["per_game"].pop(key, None)
+    else:
+        if drv != STOCK and drv not in installed_ids():
+            _eprint("unknown driver: %s" % drv)
+            return 1
+        st["per_game"][key] = drv
+    save_state(st)
+    return 0
+
+
+def cmd_favorite(args):
+    if not args:
+        _eprint("usage: gpu-driver favorite <id> [--off]")
+        return 2
+    drv = args[0]
+    off = "--off" in args
+    st = load_state()
+    favs = set(st["favorites"])
+    if off:
+        favs.discard(drv)
+    else:
+        favs.add(drv)
+    st["favorites"] = sorted(favs)
+    save_state(st)
+    return 0
+
+
+def cmd_verify(args):
+    if not args:
+        _eprint("usage: gpu-driver verify <id|stock>")
+        return 2
+    ok, info = probe(args[0])
+    print("%s: %s (%s)" % (args[0], "OK" if ok else "FAIL", info))
+    return 0 if ok else 1
+
+
+def _download(url, dest):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as out:
+        shutil.copyfileobj(resp, out)
+
+
+def cmd_catalog(args):
+    if "--refresh" in args:
+        try:
+            req = urllib.request.Request(MANIFEST_URL, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            _atomic_write_json(CATALOG_CACHE, data)
+        except (urllib.error.URLError, ValueError, OSError, TimeoutError) as e:
+            _eprint("catalog refresh failed: %s" % e)
+            return 1
+    cat = _load_json(CATALOG_CACHE, {"schema": SCHEMA, "drivers": []})
+    if "--json" in args:
+        print(json.dumps(cat, indent=2))
+        return 0
+    inst = set(installed_ids())
+    for d in cat.get("drivers", []):
+        did = d.get("id", "?")
+        mark = "[installed]" if did in inst else ""
+        print("%-28s %-12s %-9s %s" % (did, d.get("mesa_version", "?"),
+                                        d.get("channel", "?"), mark))
+    return 0
+
+
+def _install_files(drv_id, so_src, meta, api_version):
+    """Place an already-downloaded .so + meta into the driver dir, probe, commit."""
+    ddir = driver_dir(drv_id)
+    staging = ddir + ".staging"
+    if os.path.isdir(staging):
+        shutil.rmtree(staging)
+    os.makedirs(staging, exist_ok=True)
+    try:
+        shutil.copyfile(so_src, os.path.join(staging, SO_NAME))
+        # write ICD pointing at the FINAL location (probe uses the staged dir though)
+        # We probe from staging by writing a staging ICD first.
+        staging_icd = os.path.join(staging, ICD_NAME)
+        _atomic_write_json(staging_icd, {
+            "ICD": {"api_version": api_version, "library_arch": "64",
+                    "library_path": os.path.join(staging, SO_NAME)},
+            "file_format_version": "1.0.1",
+        })
+        env = _clean_probe_env()
+        env["VK_DRIVER_FILES"] = staging_icd
+        try:
+            out = subprocess.run(["vulkaninfo", "--summary"], env=env,
+                                 capture_output=True, text=True, timeout=30)
+            ok = out.returncode == 0 and "Adreno" in out.stdout
+        except (OSError, subprocess.TimeoutExpired):
+            ok = False
+        if not ok:
+            _eprint("install %s: dlopen-probe FAILED, refusing to install" % drv_id)
+            shutil.rmtree(staging)
+            return False
+        # commit: swap staging -> final
+        if os.path.isdir(ddir):
+            shutil.rmtree(ddir)
+        os.rename(staging, ddir)
+        write_icd(drv_id, api_version)  # rewrite ICD with final path
+        meta = dict(meta)
+        meta["id"] = drv_id
+        meta["sha256"] = sha256_file(driver_so(drv_id))
+        _atomic_write_json(os.path.join(ddir, "meta.json"), meta)
+        return True
+    finally:
+        if os.path.isdir(staging):
+            shutil.rmtree(staging)
+
+
+def cmd_install_local(args):
+    """install-local <path-to-.so> --id <id> [--mesa X] [--channel C] [--api V]"""
+    if not args:
+        _eprint("usage: gpu-driver install-local <path.so> --id <id> "
+                "[--mesa X] [--channel C] [--api V]")
+        return 2
+    so = args[0]
+    if not os.path.isfile(so):
+        _eprint("no such file: %s" % so)
+        return 1
+
+    def opt(name, default=None):
+        return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else default
+
+    drv_id = opt("--id")
+    if not drv_id:
+        _eprint("--id is required")
+        return 2
+    meta = {"mesa_version": opt("--mesa", "?"), "channel": opt("--channel", "local"),
+            "source": "install-local"}
+    api = opt("--api", "1.4.348")
+    ok = _install_files(drv_id, so, meta, api)
+    if ok:
+        print("installed %s (%s)" % (drv_id, meta["mesa_version"]))
+    return 0 if ok else 1
+
+
+def cmd_install(args):
+    """install <id> : fetch from catalog, verify sha, probe, commit."""
+    if not args:
+        _eprint("usage: gpu-driver install <id>")
+        return 2
+    drv_id = args[0]
+    cat = _load_json(CATALOG_CACHE, {"drivers": []})
+    entry = next((d for d in cat.get("drivers", []) if d.get("id") == drv_id), None)
+    if not entry:
+        _eprint("not in catalog (try: gpu-driver catalog --refresh): %s" % drv_id)
+        return 1
+    url = entry.get("url")
+    if not url:
+        _eprint("catalog entry has no url")
+        return 1
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".so")
+    tmp.close()
+    try:
+        _download(url, tmp.name)
+        want = entry.get("sha256")
+        if want and sha256_file(tmp.name) != want:
+            _eprint("sha256 mismatch for %s, aborting" % drv_id)
+            return 1
+        meta = {"mesa_version": entry.get("mesa_version", "?"),
+                "channel": entry.get("channel", "?"), "source": url,
+                "notes": entry.get("notes", "")}
+        ok = _install_files(drv_id, tmp.name, meta, entry.get("api_version", "1.4.348"))
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        _eprint("download failed: %s" % e)
+        return 1
+    finally:
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)
+    if ok:
+        print("installed %s (%s)" % (drv_id, meta["mesa_version"]))
+    return 0 if ok else 1
+
+
+def cmd_remove(args):
+    if not args:
+        _eprint("usage: gpu-driver remove <id>")
+        return 2
+    drv_id = args[0]
+    ddir = driver_dir(drv_id)
+    if not os.path.isdir(ddir):
+        _eprint("not installed: %s" % drv_id)
+        return 1
+    shutil.rmtree(ddir)
+    st = load_state()
+    if st["default"] == drv_id:
+        st["default"] = STOCK
+    st["per_game"] = {k: v for k, v in st["per_game"].items() if v != drv_id}
+    st["favorites"] = [f for f in st["favorites"] if f != drv_id]
+    save_state(st)
+    print("removed %s" % drv_id)
+    return 0
+
+
+def cmd_boot(args):
+    """Boot guard: if the default driver no longer probes OK, revert to stock."""
+    st = load_state()
+    drv = st.get("default", STOCK)
+    if drv == STOCK:
+        return 0
+    ok, info = probe(drv)
+    if not ok:
+        st["default"] = STOCK
+        st.setdefault("notes", {})[drv] = "auto-reverted at boot: %s" % info
+        save_state(st)
+        _eprint("gpu-driver: default '%s' failed probe (%s) -> reverted to stock"
+                % (drv, info))
+    return 0
+
+
+COMMANDS = {
+    "env": cmd_env,
+    "vkdf": cmd_vkdf,
+    "active": cmd_active,
+    "list": cmd_list,
+    "catalog": cmd_catalog,
+    "install": cmd_install,
+    "install-local": cmd_install_local,
+    "remove": cmd_remove,
+    "set-default": cmd_set_default,
+    "set-game": cmd_set_game,
+    "favorite": cmd_favorite,
+    "verify": cmd_verify,
+    "boot": cmd_boot,
+}
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
+        print("usage: gpu-driver <command> [args]")
+        print("commands: " + ", ".join(sorted(COMMANDS)))
+        return 0
+    cmd = argv[1]
+    fn = COMMANDS.get(cmd)
+    if not fn:
+        _eprint("unknown command: %s" % cmd)
+        return 2
+    return fn(argv[2:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
