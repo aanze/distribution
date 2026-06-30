@@ -402,6 +402,90 @@ class Plugin:
             decky.logger.error(f"gamepad-profile set failed: {e}")
         return await self.get_gamepad_profile()
 
+    # --- GPU Driver Manager (swappable Mesa Turnip / Vulkan) --------------- #
+    # Mirrors the /usr/bin/gpu-driver CLI so the active Turnip driver can be
+    # picked from inside Steam. The stock /usr driver is always present and is
+    # the fallback; selecting a driver only changes what the GAME process loads
+    # (VK_DRIVER_FILES), never the compositor. See packages/tools/gpu-driver.
+    GPU_DRIVER_BIN = "/usr/bin/gpu-driver"
+
+    def _gpu_driver_available(self):
+        return os.path.exists(self.GPU_DRIVER_BIN)
+
+    def _gpu_env(self):
+        # Decky runs plugin backends under its OWN bundled Python and exports
+        # PYTHONHOME/PYTHONPATH. If those leak into /usr/bin/gpu-driver (system
+        # python3) they hijack its stdlib -> urllib then raises "unknown url
+        # type: https" on catalogue fetch (and worse). Strip them (and LD_*) so
+        # the CLI always runs against the clean system environment.
+        env = dict(os.environ)
+        for k in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONEXECUTABLE",
+                  "PYTHONNOUSERSITE", "LD_LIBRARY_PATH", "LD_PRELOAD"):
+            env.pop(k, None)
+        return env
+
+    async def _gpu_run(self, args, timeout=20):
+        # Run in a thread executor so a slow call (catalogue fetch / driver
+        # download) never blocks Decky's asyncio loop -> no plugin reload/freeze.
+        def run():
+            try:
+                return subprocess.run([self.GPU_DRIVER_BIN] + args, env=self._gpu_env(),
+                                      capture_output=True, text=True, timeout=timeout)
+            except Exception as e:
+                decky.logger.error(f"gpu-driver {args} failed: {e}")
+                return None
+        return await asyncio.get_event_loop().run_in_executor(None, run)
+
+    async def get_gpu_drivers(self):
+        if not self._gpu_driver_available():
+            return {"available": False, "default": "stock", "drivers": [], "per_game": {}}
+        out = await self._gpu_run(["list", "--json"])
+        if not out or out.returncode != 0:
+            return {"available": True, "default": "stock", "drivers": [], "per_game": {}}
+        try:
+            data = json.loads(out.stdout)
+            data["available"] = True
+            return data
+        except Exception:
+            return {"available": True, "default": "stock", "drivers": [], "per_game": {}}
+
+    async def get_gpu_catalog(self, refresh: bool = False):
+        if not self._gpu_driver_available():
+            return {"available": False, "drivers": []}
+        args = ["catalog", "--refresh", "--json"] if refresh else ["catalog", "--json"]
+        out = await self._gpu_run(args, timeout=40)
+        if not out or out.returncode != 0:
+            return {"available": True, "drivers": [], "error": (out.stderr.strip() if out else "no output")}
+        try:
+            data = json.loads(out.stdout)
+            data["available"] = True
+            return data
+        except Exception:
+            return {"available": True, "drivers": []}
+
+    async def install_gpu_driver(self, drv_id: str):
+        out = await self._gpu_run(["install", drv_id], timeout=180)
+        ok = bool(out and out.returncode == 0)
+        return {"ok": ok, "message": (out.stdout or out.stderr).strip() if out else "failed"}
+
+    async def remove_gpu_driver(self, drv_id: str):
+        out = await self._gpu_run(["remove", drv_id])
+        return {"ok": bool(out and out.returncode == 0)}
+
+    async def set_gpu_default(self, drv_id: str):
+        await self._gpu_run(["set-default", drv_id])
+        return await self.get_gpu_drivers()
+
+    async def set_gpu_favorite(self, drv_id: str, on: bool = True):
+        args = ["favorite", drv_id] + ([] if on else ["--off"])
+        await self._gpu_run(args)
+        return await self.get_gpu_drivers()
+
+    async def verify_gpu_driver(self, drv_id: str):
+        out = await self._gpu_run(["verify", drv_id], timeout=40)
+        return {"ok": bool(out and out.returncode == 0),
+                "message": (out.stdout or "").strip() if out else "failed"}
+
     async def get_cpu_info(self):
         result = {}
         for policy in CPU_POLICIES:
