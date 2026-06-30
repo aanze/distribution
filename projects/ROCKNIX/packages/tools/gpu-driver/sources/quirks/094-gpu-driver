@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# GPU Driver Manager boot guard. If the user selected a non-stock default Turnip
+# driver and it no longer loads (e.g. a kernel/MSM uABI change after an OTA, or a
+# corrupt download), silently revert the default to the stock /usr driver so the
+# device always comes up on a known-good GPU stack. The stock driver is never
+# touched, so this can only ever restore, never break. Backgrounded so it never
+# delays boot.
+
+if [ -x /usr/bin/gpu-driver ]; then
+  # 1) safety: validate the active default, revert to stock if it no longer loads
+  # 2) opportunistically refresh the online driver catalogue so the GPU Driver
+  #    Manager UI is pre-populated. Network-failure-safe (no-op offline); never
+  #    installs or switches anything on its own.
+  ( /usr/bin/gpu-driver boot
+    /usr/bin/gpu-driver catalog --refresh ) >/dev/null 2>&1 &
+fi
+exit 0
