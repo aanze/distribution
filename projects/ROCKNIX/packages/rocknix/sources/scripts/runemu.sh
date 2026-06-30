@@ -386,6 +386,15 @@ then
     export PAN_MESA_DEBUG=forcepack
 fi
 
+### Swappable Mesa Turnip (Vulkan) driver, per-game. The GPU Driver Manager
+### resolves default/per-game/stock and prints an `export VK_DRIVER_FILES=...`
+### line (empty for stock). Injected into the emulator process only; the
+### compositor stays on the stock driver. See packages/tools/gpu-driver.
+if [ -x /usr/bin/gpu-driver ]; then
+  eval "$(/usr/bin/gpu-driver env "${PLATFORM}" "${ROMNAME##*/}" 2>/dev/null)"
+  ${VERBOSE} && [ -n "${VK_DRIVER_FILES}" ] && log $0 "GPU driver override: ${VK_DRIVER_FILES}"
+fi
+
 ### Offline all but the number of threads we need for this game if configured.
 NUMTHREADS=$(get_setting "threads" "${PLATFORM}" "${ROMNAME##*/}")
 if [ -n "${NUMTHREADS}" ] &&

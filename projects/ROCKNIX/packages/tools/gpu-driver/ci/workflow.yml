@@ -1,0 +1,42 @@
+# Optional GitHub Actions workflow for the aanze/rocknix-turnip repo.
+# Copy this to that repo's .github/workflows/build-catalogue.yml.
+#
+# Runs on a SELF-HOSTED runner installed on your ROCKNIX build host (label
+# `rocknix-build`), because building an ABI-correct Turnip needs the warm
+# ROCKNIX toolchain (see ci/README.md). It checks out your ROCKNIX fork next to
+# this repo and invokes build-turnip-catalog.sh.
+name: build-turnip-catalogue
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: "space-separated version specs (e.g. 'stable:26.1.3 git:origin/main:nightly')"
+        required: true
+        default: "stable:26.1.3"
+      tag:
+        description: "release tag to publish under"
+        required: true
+        default: "catalog"
+
+jobs:
+  build:
+    runs-on: [self-hosted, rocknix-build]
+    steps:
+      - name: Checkout rocknix fork (build tree)
+        uses: actions/checkout@v4
+        with:
+          repository: aanze/rocknix          # <-- your ROCKNIX fork
+          ref: aanze-next
+          path: rocknix
+      - name: Build + publish catalogue
+        env:
+          PROJECT: ROCKNIX
+          DEVICE: SM8750
+          ARCH: aarch64
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd rocknix
+          ./projects/ROCKNIX/packages/tools/gpu-driver/ci/build-turnip-catalog.sh \
+            --repo "${{ github.repository }}" \
+            --tag "${{ github.event.inputs.tag }}" \
+            ${{ github.event.inputs.versions }}
