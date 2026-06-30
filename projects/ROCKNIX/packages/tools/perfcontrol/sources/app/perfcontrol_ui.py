@@ -9,6 +9,8 @@
 import os
 import sys
 import time
+import json
+import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -24,7 +26,24 @@ W, H = 360, 240
 # palette indices (pyxel default 16-col palette)
 BG, FG, DIM, HEAD, OK, BAD, WARN, SEL = 1, 7, 13, 10, 11, 8, 9, 6
 
-TABS = ["PROFILES", "CPU", "GPU", "FAN", "MONITOR"]
+TABS = ["PROFILES", "CPU", "GPU", "FAN", "DRIVER", "MONITOR"]
+
+GPU_DRIVER_BIN = "/usr/bin/gpu-driver"
+
+# Per-scope driver assignment in the DRIVER tab. "Default" = the global default
+# applied to every game. The rest are per-SYSTEM overrides keyed by the
+# EmulationStation platform name (what runemu passes), via gpu-driver's
+# "@<platform>" key. These are the Vulkan-heavy emulators where the Turnip
+# version actually matters (RPCS3/Citron the headline cases).
+DRIVER_SCOPES = [
+    ("Default (all games)", None),
+    ("RPCS3  (ps3)", "@ps3"),
+    ("Citron (switch)", "@switch"),
+    ("PCSX2  (ps2)", "@ps2"),
+    ("Cemu   (wiiu)", "@wiiu"),
+    ("Dolphin (gamecube)", "@gamecube"),
+    ("Dolphin (wii)", "@wii"),
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -191,6 +210,15 @@ class App(object):
         self._mon_last = 0
         self._mon = {}
 
+        # GPU Driver tab state (swappable Mesa Turnip / Vulkan driver)
+        self.drv_idx = 0
+        self.drv_scope_idx = 0     # 0=Default, else a per-system override scope
+        self.drv_rows = []
+        self.drv_default = "stock"
+        self.drv_per_game = {}     # {"@ps3": "<id>", ...}
+        self.drv_avail = os.path.exists(GPU_DRIVER_BIN)
+        self._drv_loaded = False
+
         # Reflect reality: detect which profile the hardware is actually running
         # (the Steam/Decky plugin may have applied one behind our back) and make
         # it the active selection so the marker is never stale. None = "custom".
@@ -290,11 +318,13 @@ class App(object):
 
         if L_BTN():
             self.tab = (self.tab - 1) % len(TABS)
+            self._drv_loaded = False
         if R_BTN():
             self.tab = (self.tab + 1) % len(TABS)
+            self._drv_loaded = False
 
         name = TABS[self.tab]
-        if name in ("CPU", "GPU", "FAN") and B_BTN():
+        if name in ("CPU", "GPU", "FAN", "DRIVER") and B_BTN():
             self.tab = 0          # B = back to the profile list
             return
         if name == "PROFILES":
@@ -305,9 +335,112 @@ class App(object):
             self.upd_gpu()
         elif name == "FAN":
             self.upd_fan()
+        elif name == "DRIVER":
+            self.upd_driver()
         elif name == "MONITOR":
             if B_BTN():
                 pyxel.quit()
+
+    # -- gpu driver ------------------------------------------------------- #
+    def _gpud(self, args, timeout=20):
+        try:
+            return subprocess.run([GPU_DRIVER_BIN] + args,
+                                  capture_output=True, text=True, timeout=timeout)
+        except Exception:
+            return None
+
+    def _load_drivers(self):
+        self.drv_rows = []
+        self.drv_default = "stock"
+        self.drv_avail = os.path.exists(GPU_DRIVER_BIN)
+        if not self.drv_avail:
+            return
+        installed = set()
+        out = self._gpud(["list", "--json"])
+        if out and out.returncode == 0:
+            try:
+                d = json.loads(out.stdout)
+                self.drv_default = d.get("default", "stock")
+                self.drv_per_game = d.get("per_game", {}) or {}
+                for x in d.get("drivers", []):
+                    self.drv_rows.append({"id": x["id"], "ver": x.get("mesa_version", "?"),
+                                          "ch": x.get("channel", "?"),
+                                          "fav": bool(x.get("favorite")), "installed": True})
+                    installed.add(x["id"])
+            except Exception:
+                pass
+        cat = self._gpud(["catalog", "--json"])
+        if cat and cat.returncode == 0:
+            try:
+                for x in json.loads(cat.stdout).get("drivers", []):
+                    if x.get("id") not in installed:
+                        self.drv_rows.append({"id": x["id"], "ver": x.get("mesa_version", "?"),
+                                              "ch": x.get("channel", "?"),
+                                              "fav": False, "installed": False})
+            except Exception:
+                pass
+        if self.drv_idx >= len(self.drv_rows):
+            self.drv_idx = max(0, len(self.drv_rows) - 1)
+
+    def _scope_current(self):
+        """Driver id currently assigned to the selected scope (None = use default)."""
+        key = DRIVER_SCOPES[self.drv_scope_idx][1]
+        if key is None:
+            return self.drv_default
+        return self.drv_per_game.get(key)
+
+    def upd_driver(self):
+        if not self._drv_loaded:
+            self._load_drivers()
+            self._drv_loaded = True
+        rows = self.drv_rows
+        # Left/Right pick the SCOPE (Default / RPCS3 / Citron / ...)
+        if LEFT():
+            self.drv_scope_idx = (self.drv_scope_idx - 1) % len(DRIVER_SCOPES)
+        if RIGHT():
+            self.drv_scope_idx = (self.drv_scope_idx + 1) % len(DRIVER_SCOPES)
+        # Up/Down pick the DRIVER
+        if UP(True) and rows:
+            self.drv_idx = (self.drv_idx - 1) % len(rows)
+        if DOWN(True) and rows:
+            self.drv_idx = (self.drv_idx + 1) % len(rows)
+        if X_BTN():
+            self.say("Refreshing catalog...")
+            self._gpud(["catalog", "--refresh"], timeout=40)
+            self._load_drivers()
+            self.say("Catalog refreshed")
+            return
+        scope_key = DRIVER_SCOPES[self.drv_scope_idx][1]
+        scope_name = DRIVER_SCOPES[self.drv_scope_idx][0]
+        # Delete/Back-select clears a per-system override (-> falls back to default)
+        if DELETE_BTN() and scope_key is not None:
+            self._gpud(["set-game", scope_key, "clear"])
+            self.say("%s -> use default" % scope_name)
+            self._load_drivers()
+            return
+        if not rows:
+            return
+        row = rows[self.drv_idx]
+        if A_BTN():
+            # Install first if this is a catalogue (not-yet-installed) entry.
+            if not row["installed"]:
+                self.say("Installing %s (downloading)..." % row["id"])
+                r = self._gpud(["install", row["id"]], timeout=180)
+                if not (r and r.returncode == 0):
+                    self.say("Install failed (check network)")
+                    self._load_drivers()
+                    return
+                self._load_drivers()
+            # Assign the (now installed) driver to the selected scope.
+            if scope_key is None:
+                self._gpud(["set-default", row["id"]])
+            else:
+                self._gpud(["set-game", scope_key, row["id"]])
+            self.say("%s -> %s" % (scope_name, row["id"]))
+            self._load_drivers()
+        elif Y_BTN() and row["installed"] and row["id"] != "stock":
+            self._gpud(["favorite", row["id"]] + ([] if not row["fav"] else ["--off"]))
+            self._load_drivers()
 
     # -- profiles --------------------------------------------------------- #
     def upd_profiles(self):
@@ -518,6 +651,8 @@ class App(object):
             self.draw_gpu()
         elif name == "FAN":
             self.draw_fan()
+        elif name == "DRIVER":
+            self.draw_driver()
         elif name == "MONITOR":
             self.draw_monitor()
         self._draw_toast()
@@ -616,6 +751,40 @@ class App(object):
         pyxel.text(14, y + 6, "cur %s MHz   gov %s" % (
             (self.gpu["cur"] or 0) // 1000000, self.gpu["governor"]), DIM)
         pyxel.text(6, H - 18, "Up/Dn:row  Left/Right:value   L/R:tabs", DIM)
+
+    def draw_driver(self):
+        pyxel.text(6, 16, "GPU DRIVER  (Mesa Turnip / Vulkan)", HEAD)
+        if not self.drv_avail:
+            pyxel.text(10, 34, "gpu-driver not available on this device.", BAD)
+            return
+        # Scope selector (Default / per-system). Left/Right cycles it.
+        scope_name = DRIVER_SCOPES[self.drv_scope_idx][0]
+        cur = self._scope_current()
+        cur_txt = cur if cur else "(use default: %s)" % self.drv_default
+        pyxel.text(6, 25, "Scope:  < %s >" % scope_name, HEAD)
+        pyxel.text(6, 34, "uses: %s" % cur_txt, OK)
+        rows = self.drv_rows
+        y = 46
+        if not rows:
+            pyxel.text(10, y, "No drivers. Press X to fetch the online catalog.", FG)
+        for i, r in enumerate(rows):
+            if y > H - 44:
+                break
+            sel = i == self.drv_idx
+            mark = ">" if sel else " "
+            fav = "*" if r["fav"] else " "
+            label = ("stock  Mesa %s" % r["ver"]) if r["id"] == "stock" \
+                else "%s  Mesa %s" % (r["id"], r["ver"])
+            # mark the driver assigned to the CURRENT scope
+            here = " <-- this scope" if (r["installed"] and cur and r["id"] == cur) else ""
+            defl = " [global default]" if (r["installed"] and r["id"] == self.drv_default) else ""
+            state = "" if r["installed"] else "  [download]"
+            pyxel.text(10, y, "%s%s%s%s%s%s" % (mark, fav, label, here, defl, state),
+                       FG if sel else DIM)
+            y += 10
+        pyxel.text(6, H - 38, "L/R:scope  Up/Dn:driver  A:assign to scope (installs if needed)", DIM)
+        pyxel.text(6, H - 28, "Y:favorite  X:refresh catalog  Select:clear this scope", DIM)
+        pyxel.text(6, H - 18, "Per-process: a bad driver crashes the game, not the UI.  B:back", DIM)
 
     def draw_fan(self):
         mode = self.work.get("fan_mode", "auto")
