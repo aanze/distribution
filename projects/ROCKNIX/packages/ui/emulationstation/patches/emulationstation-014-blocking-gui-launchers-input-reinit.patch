@@ -1,0 +1,96 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] GuiMenu: launchGame window/input discipline for blocking GUI launchers
+
+The PERF CONTROL entries (System Settings > Performance and the Quick
+Access modal) and the STEAMLIKE THEME MANAGER entry launch full-screen
+Pyxel GUIs through a bare Utils::Platform::runSystemCommand() on the UI
+thread. That blocks ES in waitpid() with SDL completely unpumped - unlike
+game/Tools launches, which go through FileData::launchGame and wrap the
+blocking child in window->deinit()/init() (closing and REOPENING every
+SDL joystick) plus window->normalizeNextUpdate().
+
+Why that matters (root cause of the "OLED screensaver in Perf Control
+wedge", diagnosed live on device 2026-07-03): every suspend/wake runs the
+Odin 3 sleep quirk that restarts InputPlumber (rsinput geni workaround),
+which deletes and recreates the virtual "Microsoft X-Box One Elite 2 pad"
+evdev node. If that happens while ES is blocked inside one of these bare
+launchers, ES keeps reading the DELETED node forever (verified:
+/proc/<es>/fd -> "/dev/input/event7 (deleted)") and comes back deaf to
+all gamepad input. 60 s later (ScreenSaverTime) the "oled" screensaver
+fires, and since no button press can ever reach ES, nothing dismisses it:
+screen shows the sweeping OLED band, SSH works, controls dead, reboot
+required. In ES proper the same IP restart is harmless because SDL is
+pumping udev hotplug events live - which is exactly why the wedge was
+only ever seen "inside an app".
+
+The deltaTime jump on resume (mTimeSinceLastInput += whole blocked
+duration) could also trip the screensaver instantly at app exit;
+normalizeNextUpdate() clamps it exactly like launchGame does.
+
+Fix: give the three blocking GUI launchers the proven launchGame
+discipline - window->deinit() before, window->init() +
+window->normalizeNextUpdate() after. init() re-enumerates SDL joysticks
+from scratch, so whatever happened to input devices while ES was blocked,
+it comes back with fresh fds. Sub-second command entries (charge-mode,
+gamepad-profile set, governors, ...) stay bare: ES is only blocked for
+milliseconds there, no suspend/wake can slip in.
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -2037,9 +2037,21 @@
+ 	// Shown only where the tool is installed (the SM8xxx handhelds that bundle
+ 	// the Pyxel venv). The launcher takes over the screen and is killable by the
+ 	// global panic combo; ES resumes when it exits.
++	// Blocking full-screen launcher: same window/input discipline as
++	// FileData::launchGame. deinit/init re-opens every SDL joystick on return,
++	// so ES survives an InputPlumber restart that happened while it was blocked
++	// (every suspend/wake restarts IP and recreates the virtual pad node; a bare
++	// runSystemCommand leaves ES reading a deleted evdev node = deaf controls,
++	// and 60s later the OLED screensaver fires with nothing able to dismiss it).
++	// normalizeNextUpdate() keeps the resumed frame's multi-minute deltaTime
++	// from instantly tripping the screensaver idle timer on exit.
+ 	if (Utils::FileSystem::exists("/usr/share/perfcontrol/perfcontrol-gui")) {
+-		s->addEntry(_("PERF CONTROL"), false, [] {
++		s->addEntry(_("PERF CONTROL"), false, [this] {
++			Window* w = mWindow;
++			w->deinit();
+ 			Utils::Platform::runSystemCommand("\"/usr/share/perfcontrol/perfcontrol-gui\"", "", nullptr);
++			w->init();
++			w->normalizeNextUpdate();
+ 		});
+ 	}
+ 
+@@ -4906,8 +4918,15 @@
+ 	// runs full-screen (the launcher restarts ES on exit if anything changed).
+ 	if (Settings::getInstance()->getString("ThemeSet") == "steamlike")
+ 	{
+-		s->addEntry(_("STEAMLIKE THEME MANAGER"), true, [] {
++		// Blocking full-screen launcher: launchGame discipline (see the PERF
++		// CONTROL entry in openSystemSettings) so ES re-opens its joysticks on
++		// return. If the launcher restarts ES the init() never runs - harmless.
++		s->addEntry(_("STEAMLIKE THEME MANAGER"), true, [this] {
++			Window* w = mWindow;
++			w->deinit();
+ 			Utils::Platform::runSystemCommand("/usr/bin/steamlike-theme-manager", "", nullptr);
++			w->init();
++			w->normalizeNextUpdate();
+ 		});
+ 	}
+ 
+@@ -5741,8 +5760,13 @@
+ 		// without diving into System Settings > Performance. Each is gated on the
+ 		// same condition as its System Settings counterpart.
+ 		if (Utils::FileSystem::exists("/usr/share/perfcontrol/perfcontrol-gui")) {
+-			s->addEntry(_("PERF CONTROL"), false, [] {
++			// Blocking full-screen launcher: launchGame discipline (see the
++			// System Settings entry) so ES re-opens its joysticks on return.
++			s->addEntry(_("PERF CONTROL"), false, [window] {
++				window->deinit();
+ 				Utils::Platform::runSystemCommand("\"/usr/share/perfcontrol/perfcontrol-gui\"", "", nullptr);
++				window->init();
++				window->normalizeNextUpdate();
+ 			});
+ 		}
+ 		// Charging mode: full charge / battery care (~80%) / bypass (run on AC).
