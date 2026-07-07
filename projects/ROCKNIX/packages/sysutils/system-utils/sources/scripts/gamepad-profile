@@ -14,7 +14,7 @@
 #                 real game buttons (P3/P1) and for the left-home capture combo.
 #   ds5         - emulate a DualSense EDGE (PlayStation layout/prompts, PID
 #                 0x0df2). The override KEEPS the paddle source but swaps its
-#                 capability map to ayn_mcu_ds5edge (KEY_F13/F14 ->
+#                 capability map to ayn_mcu_ds5edge (BTN_Z/BTN_C ->
 #                 Left/RightPaddle2 = the Edge's REAL removable back-lever
 #                 bits 6/7 of buttons[2]); kernel patch 0513 decodes those as
 #                 BTN_TRIGGER_HAPPY3/4 on the emulated pad, so the Odin 3
@@ -23,7 +23,7 @@
 #                 gyro: the Odin 3 IMU is SLPI-owned, unreachable from Linux.)
 #                 Fallback: if the ds5edge map is absent from the build, the
 #                 override strips the paddle source and targets plain ds5, so
-#                 the raw KEY_F13/F14 capture path still works.
+#                 the raw BTN_Z/BTN_C capture path still works.
 #
 # The compiled-in default in the device YAML is xbox-elite, so that profile
 # needs no override; ds5 is applied as a /run bind-mount override.
@@ -103,7 +103,7 @@ apply_profile() {
             ' "${dev}" > "${OVERRIDE_YAML}"
         else
             # Fallback (ds5edge map not in this build): strip the paddle-source
-            # block so the paddle device stays ungrabbed (raw KEY_F13/F14 keeps
+            # block so the paddle device stays ungrabbed (raw BTN_Z/BTN_C keeps
             # the capture combo alive) and target a plain DualSense.
             awk '
                 /# >>> paddle-source/ { skip=1; next }
