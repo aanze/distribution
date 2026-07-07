@@ -89,15 +89,21 @@ FUNCTION_HOTKEY_KEY_F13_EVENT="*(KEY_F13), value 1*"
 FUNCTION_HOTKEY_KEY_F14_EVENT="*(KEY_F14), value 1*"
 
 # Back paddles as gamepad buttons: when the active gamepad profile is
-# paddle-capable (ds5-edge / xbox-elite), InputPlumber consumes the gpio-keys
-# paddle device and re-emits the paddles on the emulated controller as
-# BTN_TRIGGER_HAPPY7 (M1, left = LeftPaddle1) and BTN_TRIGGER_HAPPY5 (M2,
-# right = RightPaddle1). Combined with left-home they fire record / screenshot.
+# paddle-capable, InputPlumber consumes the gpio-keys paddle device and
+# re-emits the paddles on the emulated controller:
+#   xbox-elite profile: BTN_TRIGGER_HAPPY7 (M1, left = LeftPaddle1) and
+#                       BTN_TRIGGER_HAPPY5 (M2, right = RightPaddle1).
+#   ds5 profile (DualSense Edge, kernel patch 0513): BTN_TRIGGER_HAPPY3
+#                       (M1, left = LeftPaddle2) and BTN_TRIGGER_HAPPY4
+#                       (M2, right = RightPaddle2).
+# Combined with left-home they fire record / screenshot.
 # This is the live capture path; the KEY_F13/F14 handlers above stay as a
-# harmless no-op fallback (they only fire if the paddle device is NOT grabbed
-# by InputPlumber, i.e. a non-paddle profile, which we no longer ship).
+# harmless fallback (they only fire if the paddle device is NOT grabbed by
+# InputPlumber, e.g. the ds5 profile's no-paddle fallback override).
 FUNCTION_HOTKEY_BTN_TRIGGER_HAPPY7_EVENT="*(BTN_TRIGGER_HAPPY7), value 1*"
 FUNCTION_HOTKEY_BTN_TRIGGER_HAPPY5_EVENT="*(BTN_TRIGGER_HAPPY5), value 1*"
+FUNCTION_HOTKEY_BTN_TRIGGER_HAPPY3_EVENT="*(BTN_TRIGGER_HAPPY3), value 1*"
+FUNCTION_HOTKEY_BTN_TRIGGER_HAPPY4_EVENT="*(BTN_TRIGGER_HAPPY4), value 1*"
 
 FUNCTION_HOTKEY_TOUCH_EVENT="*(BTN_TOUCH), value 1*"
 
@@ -581,6 +587,24 @@ set +e
         # emulators AND gamescope/Steam).
         if [ "${HOME_LEFT_PRESSED}" = true ]; then
           ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_TRIGGER_HAPPY5_EVENT}: Screenshot (left home + right paddle)"
+          /usr/bin/rocknix-cwb-screenshot
+          SCREENSHOT_SUCCESS=$?
+          [ "$SCREENSHOT_SUCCESS" -eq 0 ] && /usr/bin/mako-notify "Screenshot Saved" -no-ra
+        fi
+     ;;
+     (${FUNCTION_HOTKEY_BTN_TRIGGER_HAPPY3_EVENT})
+        # Left back paddle on the DualSense Edge profile (LeftPaddle2, kernel
+        # patch 0513) + left home -> screen record toggle. Mirror of HAPPY7.
+        if [ "${HOME_LEFT_PRESSED}" = true ]; then
+          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_TRIGGER_HAPPY3_EVENT}: Screen record toggle (left home + left paddle, Edge)"
+          /usr/bin/rocknix-screenrecord toggle
+        fi
+     ;;
+     (${FUNCTION_HOTKEY_BTN_TRIGGER_HAPPY4_EVENT})
+        # Right back paddle on the DualSense Edge profile (RightPaddle2, kernel
+        # patch 0513) + left home -> screenshot. Mirror of HAPPY5.
+        if [ "${HOME_LEFT_PRESSED}" = true ]; then
+          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_TRIGGER_HAPPY4_EVENT}: Screenshot (left home + right paddle, Edge)"
           /usr/bin/rocknix-cwb-screenshot
           SCREENSHOT_SUCCESS=$?
           [ "$SCREENSHOT_SUCCESS" -eq 0 ] && /usr/bin/mako-notify "Screenshot Saved" -no-ra
