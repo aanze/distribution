@@ -138,6 +138,19 @@ for v in "${VERSIONS[@]}"; do
   case "${kind}" in
     stable)
       tag="${rest}"
+      # Fail fast, with an explanation, when the requested release tag does not
+      # exist upstream (typically: asking for a Mesa series that has not been
+      # released yet) — otherwise this surfaces as an opaque 404 mid-build.
+      # Offline (ls-remote fails/empty) -> skip the check and try the download.
+      if tags="$(git ls-remote --tags https://gitlab.freedesktop.org/mesa/mesa.git 'refs/tags/mesa-*' 2>/dev/null)" \
+         && [ -n "${tags}" ] \
+         && ! printf '%s\n' "${tags}" | grep -q "refs/tags/mesa-${tag}\$"; then
+        latest="$(printf '%s\n' "${tags}" | sed 's|.*refs/tags/mesa-||' | grep -v '\^{}$' | sort -V | tail -1)"
+        echo "stable:${tag}: Mesa has no release tag 'mesa-${tag}' (newest stable: ${latest})." >&2
+        echo "An unreleased series only exists on mesa main — build it as mesa-git instead" >&2
+        echo "(turnip-builder base option 3, or spec git:origin/main:<label>)." >&2
+        exit 2
+      fi
       url="${MESA_URL_BASE}/mesa-${tag}/mesa-mesa-${tag}.tar.gz"
       so="$(build_mesa "${tag}" "${url}")"
       build_one "turnip-${tag}-stable" "stable" "${so}" "${tag}"
