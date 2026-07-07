@@ -6,7 +6,7 @@ Subject: [PATCH] emulationstation: GAMEPAD PROFILE selector (Xbox Elite / DualSe
 Add a "GAMEPAD PROFILE" selector under Main Menu > System Settings >
 PERFORMANCE and in the Quick Access modal, next to the CHARGING MODE selector:
 
-  XBOX ELITE (PADDLES) / DUALSENSE
+  XBOX ELITE (PADDLES) / DUALSENSE EDGE (PADDLES)
 
 Xbox Elite is the only InputPlumber target whose emulated pad exposes the AYN
 Odin 3 back paddles as evdev buttons (-> game buttons P1/P3 and the left-home
@@ -41,7 +41,7 @@ Signed-off-by: Anze <aanzdev@gmail.com>
 +		else if (curGamepadProfile == "ds5-edge")
 +			curGamepadProfile = "ds5";
 +		gamepad_profile->add(_("XBOX ELITE (PADDLES)"), "xbox-elite", curGamepadProfile == "xbox-elite");
-+		gamepad_profile->add(_("DUALSENSE"), "ds5", curGamepadProfile == "ds5");
++		gamepad_profile->add(_("DUALSENSE EDGE (PADDLES)"), "ds5", curGamepadProfile == "ds5");
 +		s->addWithLabel(_("GAMEPAD PROFILE"), gamepad_profile);
 +		gamepad_profile->setSelectedChangedCallback([](const std::string& prof) {
 +			SystemConf::getInstance()->set("inputplumber.profile", prof);
@@ -68,7 +68,7 @@ Signed-off-by: Anze <aanzdev@gmail.com>
 +			else if (curGamepadProfile == "ds5-edge")
 +				curGamepadProfile = "ds5";
 +			gamepad_profile->add(_("XBOX ELITE (PADDLES)"), "xbox-elite", curGamepadProfile == "xbox-elite");
-+			gamepad_profile->add(_("DUALSENSE"), "ds5", curGamepadProfile == "ds5");
++			gamepad_profile->add(_("DUALSENSE EDGE (PADDLES)"), "ds5", curGamepadProfile == "ds5");
 +			s->addWithLabel(_("GAMEPAD PROFILE"), gamepad_profile);
 +			gamepad_profile->setSelectedChangedCallback([](const std::string& prof) {
 +				SystemConf::getInstance()->set("inputplumber.profile", prof);
