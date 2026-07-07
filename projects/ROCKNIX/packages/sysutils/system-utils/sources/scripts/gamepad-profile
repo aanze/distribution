@@ -12,12 +12,18 @@
 #                 the back paddles as evdev buttons (LeftPaddle1/RightPaddle1
 #                 -> BTN_TRIGGER_HAPPY7/5), so the Odin 3 back paddles work as
 #                 real game buttons (P3/P1) and for the left-home capture combo.
-#   ds5         - emulate a DualSense (PlayStation layout/prompts). No paddle
-#                 buttons (the UHID target drops them; and the Odin 3 IMU is
-#                 SLPI-owned, so gyro is not reachable from Linux). The override
-#                 STRIPS the paddle-source block so the gpio-keys paddle device
-#                 is left ungrabbed and input_sense reads its raw KEY_F13/F14
-#                 for the capture combo (so capture works in this profile too).
+#   ds5         - emulate a DualSense EDGE (PlayStation layout/prompts, PID
+#                 0x0df2). The override KEEPS the paddle source but swaps its
+#                 capability map to ayn_mcu_ds5edge (KEY_F13/F14 ->
+#                 Left/RightPaddle2 = the Edge's REAL removable back-lever
+#                 bits 6/7 of buttons[2]); kernel patch 0513 decodes those as
+#                 BTN_TRIGGER_HAPPY3/4 on the emulated pad, so the Odin 3
+#                 paddles are real Edge paddles here too. input_sense reads
+#                 HAPPY3/4 off the emulated pad for the capture combo. (No
+#                 gyro: the Odin 3 IMU is SLPI-owned, unreachable from Linux.)
+#                 Fallback: if the ds5edge map is absent from the build, the
+#                 override strips the paddle source and targets plain ds5, so
+#                 the raw KEY_F13/F14 capture path still works.
 #
 # The compiled-in default in the device YAML is xbox-elite, so that profile
 # needs no override; ds5 is applied as a /run bind-mount override.
@@ -75,22 +81,44 @@ apply_profile() {
         # removed a prior override (avoids a needless controller reset at boot).
         [ "${had_override}" = "no" ] && return 0
     else
-        # Non-default (ds5): strip the paddle-source block (between the
-        # '# >>> paddle-source' / '# <<< paddle-source' markers) so the paddle
-        # device stays ungrabbed, and retarget to the requested profile.
-        awk -v target="${target}" '
-            /# >>> paddle-source/ { skip=1; next }
-            /# <<< paddle-source/ { skip=0; next }
-            skip { next }
-            /^target_devices:/ {
-                print "target_devices:"
-                print "  - " target
-                print "  - keyboard"
-                t=1; next
-            }
-            t && /^[[:space:]]*-[[:space:]]/ { next }
-            { t=0; print }
-        ' "${dev}" > "${OVERRIDE_YAML}"
+        if [ -f /usr/share/inputplumber/capability_maps/ayn_mcu_ds5edge.yaml ]; then
+            # ds5 -> emulate a DualSense EDGE: keep the paddle source but swap
+            # its capability map to the Paddle2 variant (real Edge back-lever
+            # bits), and target ds5-edge (PID 0x0df2) so the kernel's Edge
+            # paddle decode (patch 0513) applies.
+            awk '
+                /# >>> paddle-source/ { inpad=1 }
+                /# <<< paddle-source/ { inpad=0 }
+                inpad && /capability_map_id:/ {
+                    print "    capability_map_id: ayn_mcu_ds5edge"; next
+                }
+                /^target_devices:/ {
+                    print "target_devices:"
+                    print "  - ds5-edge"
+                    print "  - keyboard"
+                    t=1; next
+                }
+                t && /^[[:space:]]*-[[:space:]]/ { next }
+                { t=0; print }
+            ' "${dev}" > "${OVERRIDE_YAML}"
+        else
+            # Fallback (ds5edge map not in this build): strip the paddle-source
+            # block so the paddle device stays ungrabbed (raw KEY_F13/F14 keeps
+            # the capture combo alive) and target a plain DualSense.
+            awk '
+                /# >>> paddle-source/ { skip=1; next }
+                /# <<< paddle-source/ { skip=0; next }
+                skip { next }
+                /^target_devices:/ {
+                    print "target_devices:"
+                    print "  - ds5"
+                    print "  - keyboard"
+                    t=1; next
+                }
+                t && /^[[:space:]]*-[[:space:]]/ { next }
+                { t=0; print }
+            ' "${dev}" > "${OVERRIDE_YAML}"
+        fi
         mount --bind "${OVERRIDE_YAML}" "${dev}"
     fi
 
