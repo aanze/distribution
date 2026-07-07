@@ -194,7 +194,13 @@ def _clean_probe_env():
     which is a false negative about the driver itself."""
     env = dict(os.environ)
     for k in ("LD_LIBRARY_PATH", "LD_PRELOAD", "VK_ICD_FILENAMES",
-              "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES", "VK_LOADER_LAYERS_ENABLE"):
+              "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES", "VK_LOADER_LAYERS_ENABLE",
+              # No WSI during the probe: /etc/profile exports DISPLAY/WAYLAND_
+              # DISPLAY unconditionally, so at boot (quirk 094, before sway is
+              # up) vulkaninfo would try AppCreateXcbSurface against a dead
+              # display and hard-fail -- a false negative that made the boot
+              # guard revert perfectly good drivers. Unset = surfaces skipped.
+              "DISPLAY", "WAYLAND_DISPLAY"):
         env.pop(k, None)
     # Ignore implicit layers during the probe (they are not the driver under test).
     env["VK_LOADER_LAYERS_DISABLE"] = "~implicit~"
@@ -521,6 +527,15 @@ def cmd_boot(args):
         return 0
     ok, info = probe(drv)
     if not ok:
+        # Differential check: if the always-good stock driver ALSO fails, the
+        # probe environment is broken (GPU/DRM not up yet, etc.), not the
+        # driver. Reverting on that evidence would wrongly discard the user's
+        # choice at every boot -- keep it and let a later verify decide.
+        stock_ok, _ = probe(STOCK)
+        if not stock_ok:
+            _eprint("gpu-driver: probe environment unhealthy (stock also fails)"
+                    " -> keeping default '%s'" % drv)
+            return 0
         st["default"] = STOCK
         st.setdefault("notes", {})[drv] = "auto-reverted at boot: %s" % info
         save_state(st)
