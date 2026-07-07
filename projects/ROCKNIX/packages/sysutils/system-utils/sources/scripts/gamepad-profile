@@ -58,7 +58,7 @@ get_profile() { normalize "$(get_setting "${SETTING}")"; }
 human_label() {
     case "$(get_profile)" in
         xbox-elite) echo "Xbox Elite (paddles)" ;;
-        ds5)        echo "DualSense" ;;
+        ds5)        echo "DualSense Edge (paddles)" ;;
         *)          echo "$(get_profile)" ;;
     esac
 }
