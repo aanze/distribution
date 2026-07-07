@@ -441,6 +441,17 @@ class App(object):
         elif Y_BTN() and row["installed"] and row["id"] != "stock":
             self._gpud(["favorite", row["id"]] + ([] if not row["fav"] else ["--off"]))
             self._load_drivers()
+        elif START() and row["installed"] and row["id"] != "stock":
+            # Delete the driver files. `gpu-driver remove` also clears any
+            # default/per-system/favorite references to it, so every UI on the
+            # shared state (this tab, the Decky plugin) stays consistent. If it
+            # is still in the online catalogue it reappears as [download].
+            did = row["id"]
+            def _rm(did=did):
+                self._gpud(["remove", did], timeout=30)
+                self._load_drivers()
+                self.say("Deleted %s" % did)
+            self.modal = ("confirm", "Delete driver '%s'?" % did, _rm)
 
     # -- profiles --------------------------------------------------------- #
     def upd_profiles(self):
@@ -783,7 +794,7 @@ class App(object):
                        FG if sel else DIM)
             y += 10
         pyxel.text(6, H - 38, "L/R:scope  Up/Dn:driver  A:assign to scope (installs if needed)", DIM)
-        pyxel.text(6, H - 28, "Y:favorite  X:refresh catalog  Select:clear this scope", DIM)
+        pyxel.text(6, H - 28, "Y:favorite  X:refresh catalog  Select:clear scope  Start:delete", DIM)
         pyxel.text(6, H - 18, "Per-process: a bad driver crashes the game, not the UI.  B:back", DIM)
 
     def draw_fan(self):
