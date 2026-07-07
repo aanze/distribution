@@ -141,14 +141,15 @@ mapping:
         button: LeftBumper
 
   # AYN Odin 3 back paddles (M1/M2) for the ds5-edge profile: mapped to
-  # Left/RightPaddle2, which the InputPlumber DualSense target packs into
+  # Left/RightPaddle2 (sourced from BTN_Z/BTN_C, the codes upstream PR #2940's
+  # gpio-keys node emits), which the InputPlumber DualSense target packs into
   # bits 6/7 of buttons[2] -- the REAL DualSense Edge removable back-lever
   # bits (Paddle1 would land on the Fn buttons, bits 4/5). The ROCKNIX
   # kernel patch 0513 decodes those bits as BTN_TRIGGER_HAPPY3/4 on the
   # emulated Edge pad. They are NOT on the MCU gamepad UART -
   # they are SoC TLMM GPIOs exposed by kernel patch 0510 as a separate
-  # gpio-keys device ("gpio-keys-paddles") emitting KEY_F13 (M1, left) /
-  # KEY_F14 (M2, right). That device is added as a second source in
+  # gpio-keys device ("gpio-keys-paddles") emitting BTN_Z (M1, left) /
+  # BTN_C (M2, right). That device is added as a second source in
   # 01-ayn-controller.yaml, so these source codes come from it (the MCU pad
   # never emits them). Mapped to Left/RightPaddle1 so they become real paddle
   # buttons on paddle-capable targets (ds5-edge / xbox-elite), where they emit
@@ -157,7 +158,7 @@ mapping:
     source_events:
       - evdev:
           event_type: KEY
-          event_code: KEY_F14
+          event_code: BTN_C
           value_type: button
     target_event:
       gamepad:
@@ -167,7 +168,7 @@ mapping:
     source_events:
       - evdev:
           event_type: KEY
-          event_code: KEY_F13
+          event_code: BTN_Z
           value_type: button
     target_event:
       gamepad:
