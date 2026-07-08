@@ -18,6 +18,7 @@ On top of stock ROCKNIX:
 * **Theme Manager** app: tune the look, set per-section backgrounds, pull cover/hero/logo art from SteamGridDB.
 * **Boot into SteamOS**: boot straight to the Steam/gamescope session; "return to desktop" drops back to EmulationStation.
 * **Perf Control**: CPU/GPU underclock and custom fan curves, two-way synced with the Steam plugin.
+* **GPU Driver Manager**: swap the Mesa **Turnip** (Vulkan) driver **per game/emulator** (RPCS3, Citron, …) or globally — pick or download newer/experimental drivers from Perf Control or the Steam plugin, no OS rebuild. Drivers + build tools: [aanze/rocknix-turnip](https://github.com/aanze/rocknix-turnip). *(Adreno / Odin 3)*
 * Built-in fork of the **Decky CPU/GPU/fan plugin** (installs with Decky, keeps your profile when you quit a game).
 * One-tap **Decky Loader** install and **Proton-CachyOS** update/rollback. *(Steam-capable)*
 * **GeForce NOW** as its own preinstalled main-menu section — a native-arm64 cloud-gaming client (log in with your NVIDIA account or Discord; no extra install step).
@@ -91,6 +92,12 @@ On-device CPU/GPU underclock and fan-curve tool (Tools section), two-way synced 
     <td></td>
   </tr>
 </table>
+
+### GPU Driver
+
+Swap the Mesa **Turnip** (Vulkan) driver **without rebuilding the OS** — pick it globally or **per game/emulator** (great for RPCS3, Citron and other Vulkan-heavy cores) from the **DRIVER** tab in Perf Control, or from the Steam/Decky panel. Download newer or experimental drivers from an online catalogue and mark favourites; the desktop compositor always stays on the rock-solid stock driver, and a broken default auto-reverts on the next boot.
+
+Drivers — and the tools that build them for ROCKNIX (glibc/ARM64, from Mesa releases, mesa-git, or community Turnip source) — live in a companion repo: **[aanze/rocknix-turnip](https://github.com/aanze/rocknix-turnip)**.
 
 ### Theme Manager
 
