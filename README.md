@@ -23,6 +23,7 @@ On top of stock ROCKNIX:
 * **GeForce NOW** as its own preinstalled main-menu section — a native-arm64 cloud-gaming client (log in with your NVIDIA account or Discord; no extra install step).
 * On-demand **Nintendo Switch (Citron)** and **PS3 (RPCS3)** install/update tools.
 * **Bypass charging**: run plugged in without charging or draining the battery. *(Odin 3)*
+* **Two controller profiles — both with working back paddles**: emulate an **Xbox Elite** or a **DualSense Edge** pad; the Odin 3's back paddles act as real paddle buttons in games either way (kernel-level support, upstreamed to ROCKNIX). Switch from Quick Settings or the DUCKTALE-CONTROLS plugin. *(Odin 3)*
 * **Right home button → Steam Quick Access**: open the Steam QAM with a single press. *(Odin 3)*
 * **OLED anti-image-retention screensaver**: a sweeping pixel-shift overlay that keeps the screen from burning in. *(Odin 3)*
 * **Screenshots & screen recording (video)**: capture a still, or one continuous clip — across EmulationStation, emulators, *and* Steam — saved to `roms/screenshots`. The two **back paddles** drive capture: *left home + left paddle* = record (toggle), *left home + right paddle* = screenshot (also *L1 + B* for a screenshot, *left home + Y* to record). *(Odin 3)*
