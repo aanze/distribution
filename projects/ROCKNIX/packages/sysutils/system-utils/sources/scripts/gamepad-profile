@@ -4,29 +4,25 @@
 #
 # gamepad-profile - manage the InputPlumber controller-emulation profile.
 #
-# Two profiles are supported on devices that ship a paddle-source block in
-# their InputPlumber composite (AYN Odin 3):
+# Since upstream PRs #2940/#2991/#2992/#2997 the STOCK SM8750 composite is
+# already the full DualSense Edge chain: gpio-keys-paddles source + ayn_mcu
+# mapping the paddles to Left/RightPaddle2 + ds5-edge target (real Edge
+# back-lever buttons, kernel-decoded as BTN_TRIGGER_HAPPY3/4). So:
 #
-#   xbox-elite  (default) - emulate an Xbox One Elite pad. This is the ONLY
-#                 InputPlumber target whose emulated device actually exposes
-#                 the back paddles as evdev buttons (LeftPaddle1/RightPaddle1
-#                 -> BTN_TRIGGER_HAPPY7/5), so the Odin 3 back paddles work as
-#                 real game buttons (P3/P1) and for the left-home capture combo.
-#   ds5         - emulate a DualSense EDGE (PlayStation layout/prompts, PID
-#                 0x0df2). The override KEEPS the paddle source but swaps its
-#                 capability map to ayn_mcu_ds5edge (BTN_Z/BTN_C ->
-#                 Left/RightPaddle2 = the Edge's REAL removable back-lever
-#                 bits 6/7 of buttons[2]); kernel patch 0513 decodes those as
-#                 BTN_TRIGGER_HAPPY3/4 on the emulated pad, so the Odin 3
-#                 paddles are real Edge paddles here too. input_sense reads
-#                 HAPPY3/4 off the emulated pad for the capture combo. (No
-#                 gyro: the Odin 3 IMU is SLPI-owned, unreachable from Linux.)
-#                 Fallback: if the ds5edge map is absent from the build, the
-#                 override strips the paddle source and targets plain ds5, so
-#                 the raw BTN_Z/BTN_C capture path still works.
+#   ds5         - DualSense Edge with real back paddles = the UNMODIFIED
+#                 stock config. No override at all.
+#   xbox-elite  (user-facing default) - emulate an Xbox One Elite pad via a
+#                 /run bind-mount override of the composite: retarget to
+#                 xbox-elite and swap ONLY the paddle-source's capability map
+#                 to ayn_mcu_elite (Paddle1), so the paddles come out as
+#                 BTN_TRIGGER_HAPPY7 (left) / HAPPY5 (right) - the codes the
+#                 fork's es_input, gamecontrollerdb and input_sense capture
+#                 combos are baked against.
 #
-# The compiled-in default in the device YAML is xbox-elite, so that profile
-# needs no override; ds5 is applied as a /run bind-mount override.
+# The capture combo works in both profiles (input_sense reads HAPPY7/5 on
+# the elite pad, HAPPY3/4 on the edge pad, raw BTN_Z/BTN_C as fallback).
+# No gyro in either profile: the Odin 3 IMU is SLPI-owned, unreachable from
+# Linux.
 #
 # Usage: gamepad-profile {get|label|set <profile>|toggle|apply}
 
@@ -34,7 +30,7 @@ source /etc/profile
 
 SETTING="inputplumber.profile"
 OVERRIDE_YAML="/run/inputplumber-profile.yaml"
-DEFAULT_PROFILE="xbox-elite"
+ELITE_MAP="/usr/share/inputplumber/capability_maps/ayn_mcu_elite.yaml"
 
 find_device_yaml() {
     local model
@@ -44,7 +40,8 @@ find_device_yaml() {
         grep -rl "value: ${model}" /usr/share/inputplumber/devices/ 2>/dev/null | head -1
 }
 
-# Map legacy / empty settings onto the two currently supported profiles.
+# Map legacy / empty settings onto the two supported profiles. An empty
+# setting keeps the fork's historical user-facing default: xbox-elite.
 normalize() {
     case "${1}" in
         ds5|ds5-edge|dualsense)        echo "ds5" ;;
@@ -75,55 +72,43 @@ apply_profile() {
         umount "${dev}" 2>/dev/null
     fi
 
-    if [ "${target}" = "${DEFAULT_PROFILE}" ]; then
+    if [ "${target}" = "ds5" ]; then
+        # DualSense Edge = the stock config. Nothing to override; only
+        # restart if we actually removed one (avoids a needless controller
+        # reset at boot).
         rm -f "${OVERRIDE_YAML}"
-        # Base file already is the default profile; only restart if we actually
-        # removed a prior override (avoids a needless controller reset at boot).
         [ "${had_override}" = "no" ] && return 0
     else
-        if [ -f /usr/share/inputplumber/capability_maps/ayn_mcu_ds5edge.yaml ]; then
-            # ds5 -> emulate a DualSense EDGE: keep the paddle source but swap
-            # its capability map to the Paddle2 variant (real Edge back-lever
-            # bits), and target ds5-edge (PID 0x0df2) so the kernel's Edge
-            # paddle decode (patch 0513) applies.
-            awk '
-                /# >>> paddle-source/ { inpad=1 }
-                /# <<< paddle-source/ { inpad=0 }
-                inpad && /capability_map_id:/ {
-                    print "    capability_map_id: ayn_mcu_ds5edge"; next
+        # xbox-elite: retarget the composite and swap the paddle source's
+        # capability map to the Paddle1 variant (-> HAPPY7/5 on the emulated
+        # Elite pad). The paddle source is identified by its device name.
+        # Fallback: if the elite map is absent from this build, only the
+        # retarget applies - the paddles then surface as Paddle2 (HAPPY8/6),
+        # a degraded but functional layout.
+        awk -v elitemap="$([ -f "${ELITE_MAP}" ] && echo yes || echo no)" '
+            /name: gpio-keys-paddles/ { inpad=1 }
+            inpad && /capability_map_id:/ {
+                if (elitemap == "yes") {
+                    print "    capability_map_id: ayn_mcu_elite"
+                } else {
+                    print
                 }
-                /^target_devices:/ {
-                    print "target_devices:"
-                    print "  - ds5-edge"
-                    print "  - keyboard"
-                    t=1; next
-                }
-                t && /^[[:space:]]*-[[:space:]]/ { next }
-                { t=0; print }
-            ' "${dev}" > "${OVERRIDE_YAML}"
-        else
-            # Fallback (ds5edge map not in this build): strip the paddle-source
-            # block so the paddle device stays ungrabbed (raw BTN_Z/BTN_C keeps
-            # the capture combo alive) and target a plain DualSense.
-            awk '
-                /# >>> paddle-source/ { skip=1; next }
-                /# <<< paddle-source/ { skip=0; next }
-                skip { next }
-                /^target_devices:/ {
-                    print "target_devices:"
-                    print "  - ds5"
-                    print "  - keyboard"
-                    t=1; next
-                }
-                t && /^[[:space:]]*-[[:space:]]/ { next }
-                { t=0; print }
-            ' "${dev}" > "${OVERRIDE_YAML}"
-        fi
+                inpad=0; next
+            }
+            /^target_devices:/ {
+                print "target_devices:"
+                print "  - xbox-elite"
+                print "  - keyboard"
+                t=1; next
+            }
+            t && /^[[:space:]]*-[[:space:]]/ { next }
+            { t=0; print }
+        ' "${dev}" > "${OVERRIDE_YAML}"
         mount --bind "${OVERRIDE_YAML}" "${dev}"
     fi
 
     # Restart InputPlumber so the new target/sources take effect, then nudge
-    # input_sense to re-scan (the paddle device moves between grabbed/ungrabbed).
+    # input_sense to re-scan (the emulated pad's paddle codes change).
     systemctl restart inputplumber
     systemctl try-restart input.service 2>/dev/null
     return 0
