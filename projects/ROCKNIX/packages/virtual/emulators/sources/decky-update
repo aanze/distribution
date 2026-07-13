@@ -70,6 +70,17 @@ fail() {
 
 # Canonical ROCKNIX service unit (the upstream "release" unit, baked in so we
 # don't have to curl it from GitHub at install time like seilent does).
+#
+# CHOWN_PLUGIN_PATH=0: on ROCKNIX everything runs as root, so the loader's
+# per-start "ensure plugin folder ownership" recursive chown/chmod is useless --
+# and actively harmful: file_owner() can never return EFFECTIVE_USER when the
+# host user IS the effective user ("root" matches the HOST_USER branch first),
+# so the chown re-runs on EVERY plugin start. Each pass fires IN_ATTRIB inotify
+# events on main.py/dist/index.js; with developer mode on, Decky's file-watcher
+# treats those as edits and hot-reloads any plugin carrying the "debug" flag
+# (the store build of decky-steamgriddb ships it) -> infinite load/chown/reload
+# loop: the backend dies every second and the plugin's UI never works.
+# Diagnosed live on the Odin 3, 2026-07-13.
 write_service() {
   mkdir -p "${SERVICE_DIR}"
   cat > "${SERVICE_UNIT}" <<EOF
@@ -87,6 +98,7 @@ WorkingDirectory=${SERVICES}
 Environment=UNPRIVILEGED_PATH=${HOMEBREW}
 Environment=PRIVILEGED_PATH=${HOMEBREW}
 Environment=LOG_LEVEL=INFO
+Environment=CHOWN_PLUGIN_PATH=0
 [Install]
 WantedBy=multi-user.target
 EOF
