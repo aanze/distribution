@@ -1,0 +1,17 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# Re-apply the active Perf Control profile's CPU/GPU clock caps after resume.
+# Deep suspend offlines every non-boot CPU; a cpufreq policy whose CPUs ALL go
+# offline (the big cluster - e.g. policy6 = cpu6/7 on SM8750) is torn down and
+# recreated at resume with factory limits, silently dropping the profile's
+# scaling_max_freq cap while the profile still reads as active. The boot CPU's
+# policy and the GPU devfreq are untouched, so only the big cluster reverts
+# (proven on AYN Odin 3: policy6 3072000 -> 4089600 across a cpu6/7 hotplug
+# cycle). Clocks only, foreground: the fan curve is owned by the fancontrol
+# service / Decky plugin which persist on their own, and we want the caps back
+# before the session resumes rendering.
+
+[ -x /usr/bin/perfcontrol ] && /usr/bin/perfcontrol boot >/dev/null 2>&1
+exit 0
