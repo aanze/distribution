@@ -94,6 +94,14 @@ const state = {
 
 let switching = false;
 
+// Bumped on every EXPLICIT user preset action (select/create/rename/delete).
+// Async resolvers (panel-mount resolve, game-lifetime baseline reads) capture
+// the epoch before their await and drop their result if it changed underneath:
+// a resolve issued BEFORE the user's pick otherwise lands AFTER it and snaps
+// the dropdown back to the previous profile while the hardware runs the new
+// one (fan audibly changes, display doesn't) until re-picked.
+let selectionEpoch = 0;
+
 
 // Detect which saved preset matches the live hardware clocks (per-policy CPU max
 // + GPU max). Lets the panel reflect a profile applied OUTSIDE the plugin (e.g.
@@ -414,8 +422,11 @@ function Content() {
     (async () => {
       // Reflect the canonical active profile (Perf Control's "active", or the
       // live clocks as a fallback) before drawing, so the dropdown isn't stale.
+      // Epoch-guarded: if the user picks a preset while this read is in
+      // flight, the stale result must NOT snap the dropdown back.
+      const epoch = selectionEpoch;
       const detected = await resolveActivePreset();
-      if (detected) {
+      if (detected && epoch === selectionEpoch) {
         state.activePreset = detected;
         setSelectedPreset(detected);
       }
@@ -478,6 +489,7 @@ function Content() {
 
   const handleSelectPreset = async (name: string) => {
     if (name === selectedPreset) return;
+    selectionEpoch++;
     switching = true;
     try {
       setSelectedPreset(name);
@@ -499,6 +511,7 @@ function Content() {
   };
 
   const handleCreatePreset = async () => {
+    selectionEpoch++;
     const name = `Preset ${presets.length}`;
     const settings = await getCurrentSettings();
     await savePreset(name, JSON.stringify(settings));
@@ -514,6 +527,7 @@ function Content() {
     if (trimmed && trimmed !== selectedPreset) {
       const ok = await renamePreset(selectedPreset, trimmed);
       if (ok) {
+        selectionEpoch++;
         setSelectedPreset(trimmed);
         state.activePreset = trimmed;
         await refreshPresets();
@@ -538,6 +552,7 @@ function Content() {
 
   const handleDeletePreset = async () => {
     if (selectedPreset === "Default") return;
+    selectionEpoch++;
     await deletePreset(selectedPreset);
     setSelectedPreset("Default");
     state.activePreset = "Default";
@@ -790,8 +805,9 @@ export default definePlugin(() => {
   // otherwise only resolves when the QAM panel mounts, so launching a game
   // without ever opening the panel would leave state.activePreset at the init
   // "Default".
+  const seedEpoch = selectionEpoch;
   resolveActivePreset().then((p) => {
-    if (p) { state.activePreset = p; state.preGamePreset = p; }
+    if (p && seedEpoch === selectionEpoch) { state.activePreset = p; state.preGamePreset = p; }
   });
 
   const reg = SteamClient.GameSessions.RegisterForAppLifetimeNotifications(async (e: {unAppID: number, bRunning: boolean}) => {
@@ -802,8 +818,11 @@ export default definePlugin(() => {
       // resolves), so without it state.activePreset would still be the init
       // "Default" and get restored on exit — clobbering the system / Perf-Control
       // profile that the 095-perfcontrol boot quirk applied.
+      const baselineEpoch = selectionEpoch;
       const live = await resolveActivePreset();
-      if (live) state.activePreset = live;
+      // Drop the read if the user picked a preset while it was in flight —
+      // their pick is newer truth than what we read.
+      if (live && baselineEpoch === selectionEpoch) state.activePreset = live;
       state.preGamePreset = state.activePreset;  // remember the baseline before this game
       state.runningAppId = e.unAppID;
       const app = appStore.GetAppOverviewByAppID(e.unAppID);
@@ -821,7 +840,12 @@ export default definePlugin(() => {
       // rather than relying on the pre-game snapshot alone — is what keeps an
       // underclock set mid-game (or set globally) from being dropped to
       // "Default" when the game exits.
+      const restoreEpoch = selectionEpoch;
       const canonical = await getActiveProfile();
+      // If the user picked a preset while this read was in flight, their pick
+      // already applied AND persisted itself — restoring on top of it would
+      // undo an explicit choice. Last pick wins.
+      if (restoreEpoch !== selectionEpoch) return;
       const restore = canonical || state.preGamePreset || "Default";
       state.activePreset = restore;
       applyPreset(restore);
