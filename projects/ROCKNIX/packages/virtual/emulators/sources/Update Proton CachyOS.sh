@@ -149,8 +149,11 @@ stage_asset() {
   target_name="${name%.tar.xz}"
 
   rm -f "${PART}"
-  echo "  Downloading: ${url}" >&2
-  wget -c -t 5 -O "${PART}" "${url}" >/dev/null 2>&1 || { line_fail "download failed."; return 1; }
+  echo "  Downloading: ${name}" >&2
+  # busybox wget draws its progress bar (%, size, ETA) on stderr; keep it on
+  # the tool console so the download never looks stuck (same UX as the
+  # Install Steam tool). stdout must stay clean: it returns the staging path.
+  wget -c -t 5 -O "${PART}" "${url}" 1>&2 || { line_fail "download failed."; return 1; }
 
   size="$(stat -c%s "${PART}" 2>/dev/null || echo 0)"
   if [ "${size}" -lt 50000000 ]; then
@@ -163,7 +166,9 @@ stage_asset() {
 
   rm -rf "${STAGING}"
   mkdir -p "${STAGING}"
+  echo "  Extracting (a few hundred MB, takes a minute or two)..." >&2
   tar -xf "${PART}" -C "${STAGING}" || { line_fail "extraction failed (corrupt download?)."; return 1; }
+  echo "  Extraction done." >&2
 
   extracted="${STAGING}/${target_name}"
   if [ ! -d "${extracted}" ]; then
