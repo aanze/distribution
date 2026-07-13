@@ -31,9 +31,10 @@ makeinstall_target() {
   chmod 0755 ${INSTALL}/usr/bin/sgdb-fetch ${INSTALL}/usr/bin/steamlike-theme-manager
 
   # pre-baked 2:3 Tools cover-cards (shipped read-only). A common autostart
-  # script re-points the Tools gamelist at these every boot -- no on-device
-  # ImageMagick at boot, so it can never hang. A Theme Manager rebuild
-  # regenerates into /storage/.config/themecfg/covers, which takes precedence.
+  # script re-points the Tools gamelist at these every boot; it only invokes
+  # ImageMagick (timeout-guarded) for tools MISSING a cover, i.e. new upstream
+  # tools that appear via OTA. A Theme Manager rebuild regenerates into
+  # /storage/.config/themecfg/covers, which takes precedence.
   mkdir -p ${INSTALL}/usr/share/themecfg/covers
   cp -f ${PKG_DIR}/sources/covers/*.png ${INSTALL}/usr/share/themecfg/covers/
   chmod 0644 ${INSTALL}/usr/share/themecfg/covers/*.png
