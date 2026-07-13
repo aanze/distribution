@@ -155,12 +155,41 @@ def bake_covers():
     return made
 
 
+def bake_missing_covers():
+    """Bake covers ONLY for tools that have none in either covers dir.
+
+    This is what the boot quirk runs: a new upstream tool (its icon appears in
+    the synced gamelist after an OTA, e.g. YAPS2 2026-07) would otherwise stay
+    a square icon until the user manually rebuilds in the Theme Manager. The
+    usual case is zero missing -> a pure XML scan, no ImageMagick at all.
+    """
+    if not os.path.isfile(GAMELIST):
+        return 0
+    _tree, root = _parse(GAMELIST)
+    made = 0
+    for g in root.findall("game"):
+        path = g.findtext("path") or ""
+        if not path or _cover_path(_stem(path)):
+            continue
+        icon = _icon_for(g)
+        if not icon or not os.path.exists(icon):
+            continue
+        os.makedirs(USER_COVERS, exist_ok=True)
+        if _bake_one(icon, os.path.join(USER_COVERS, _stem(path) + ".png")):
+            made += 1
+    return made
+
+
 def main(argv):
     mode = argv[1] if len(argv) > 1 else "--apply"
     if mode == "--bake":
         n = bake_covers()
         apply_covers()
         print("baked %d tool covers" % n)
+    elif mode == "--bake-missing":
+        n = bake_missing_covers()
+        apply_covers()
+        print("baked %d missing tool covers" % n)
     else:
         print("applied %d tool covers" % apply_covers())
     return 0
