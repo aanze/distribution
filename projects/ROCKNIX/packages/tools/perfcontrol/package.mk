@@ -36,13 +36,20 @@ makeinstall_target() {
   cp -f "${PKG_DIR}/sources/scripts/perfcontrol-gui" ${INSTALL}/usr/share/perfcontrol/perfcontrol-gui
   chmod 0755 ${INSTALL}/usr/share/perfcontrol/perfcontrol-gui
 
-  # boot re-apply quirk (clocks only) for the active device
+  # boot + post-resume re-apply quirks (clocks only) for the active device.
+  # The resume one matters: deep suspend offlines cpu6/7, which tears down the
+  # big-cluster cpufreq policy and resets its max cap to factory at resume.
   for d in ${PERFCONTROL_DEVICES}; do
     if [ "${DEVICE}" = "${d}" ]; then
       mkdir -p ${INSTALL}/usr/lib/autostart/quirks/platforms/${DEVICE}
       cp -f ${PKG_DIR}/sources/quirks/095-perfcontrol \
         ${INSTALL}/usr/lib/autostart/quirks/platforms/${DEVICE}/095-perfcontrol
       chmod 0755 ${INSTALL}/usr/lib/autostart/quirks/platforms/${DEVICE}/095-perfcontrol
+
+      mkdir -p ${INSTALL}/usr/lib/autostart/quirks/platforms/${DEVICE}/sleep.d/post
+      cp -f ${PKG_DIR}/sources/quirks/095-perfcontrol-resume \
+        ${INSTALL}/usr/lib/autostart/quirks/platforms/${DEVICE}/sleep.d/post/095-perfcontrol
+      chmod 0755 ${INSTALL}/usr/lib/autostart/quirks/platforms/${DEVICE}/sleep.d/post/095-perfcontrol
     fi
   done
 }
