@@ -10,9 +10,15 @@
 # AND after every other first-boot setup script -- so nothing can run after us and
 # leave the gamelist pointing back at the .svg icons. The companion essway.service
 # drop-in makes ES start only after rocknix-autostart finishes, so this re-point is
-# the final word before ES reads the gamelist. Pure XML rewrite (no ImageMagick) ->
-# fast, cannot hang. Covers ship read-only in /usr/share/themecfg/covers (a Theme
-# Manager rebuild writes to /storage/.config/themecfg/covers and takes precedence).
+# the final word before ES reads the gamelist. Covers ship read-only in
+# /usr/share/themecfg/covers (a Theme Manager rebuild writes to
+# /storage/.config/themecfg/covers and takes precedence).
+#
+# --bake-missing first: a tool added by an upstream OTA (e.g. YAPS2, 2026-07)
+# has no pre-baked cover yet, so bake one from its icon into the user covers
+# dir. The usual case is ZERO missing -> a pure XML scan, no ImageMagick, a few
+# ms. Guarded by timeout + followed by a plain --apply so a wedged bake can
+# neither block boot nor leave the gamelist un-repointed.
 
 ES_CFG=/storage/.config/emulationstation/es_settings.cfg
 
@@ -20,5 +26,6 @@ ES_CFG=/storage/.config/emulationstation/es_settings.cfg
 THEME=$(sed -n 's/.*name="ThemeSet" value="\([^"]*\)".*/\1/p' "$ES_CFG" 2>/dev/null)
 [ "$THEME" = "steamlike" ] || exit 0
 
+timeout 60 python3 /usr/share/themecfg/app/gen_tool_covers.py --bake-missing >/dev/null 2>&1
 python3 /usr/share/themecfg/app/gen_tool_covers.py --apply >/dev/null 2>&1
 exit 0
