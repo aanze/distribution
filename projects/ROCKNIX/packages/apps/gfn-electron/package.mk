@@ -2,16 +2,20 @@
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 
 PKG_NAME="gfn-electron"
-PKG_VERSION="3.0.0"
+PKG_VERSION="3.0.1"
 PKG_ARCH="aarch64"
 PKG_LICENSE="GPL-3.0"
 PKG_SITE="https://github.com/hmlendea/gfn-electron"
-# Prebuilt arm64 bundle: upstream only ships x86_64, so we cross-build the arm64
-# Electron app ourselves with electron-builder (pure-JS app, no native deps) and
-# host the unpacked tree as a tarball. See the personal-mods notes / build recipe:
-#   git clone https://github.com/hmlendea/gfn-electron && npm install \
-#     && npx electron-builder --linux AppImage --arm64 --publish never
-#   tar czf gfn-electron-${PKG_VERSION}-arm64.tar.gz -C dist linux-arm64-unpacked
+# 3.1.0: the app runs on a CUSTOM Electron 39 (Chromium 142) we build from
+# source for arm64 with `use_v4l2_codec=true use_vaapi=false` so Chromium's
+# stateful V4L2 decoder drives the Qualcomm iris hardware decoder (/dev/video0)
+# for the GFN WebRTC H.264/VP9 stream. Device-verified: Chromium's GPU process
+# opens /dev/video0 and enumerates iris h264 baseline/main/high + vp9 as HW
+# decode. scripts/main.js enables the 'AcceleratedVideoDecoder' feature (the
+# post-M132 rename of 'VaapiVideoDecoder', which is now a silent no-op).
+# Build recipe + gotchas (v8 checks OFF, MT21 dtor, modern V4L2 UAPI headers):
+# ~/src/electron-v4l2/build-electron-v4l2.sh (see rocknix-gfn-hw-decode memory).
+#   compose: dist.zip runtime + patched resources/app -> stripped tarball.
 # The local sources/ cache (sources/gfn-electron/) lets this build offline; the
 # PKG_URL only matters for clean rebuilds on another host.
 PKG_URL="https://github.com/Aanze/distribution/releases/download/gfn-electron-${PKG_VERSION}/gfn-electron-${PKG_VERSION}-arm64.tar.gz"
@@ -19,7 +23,7 @@ PKG_SOURCE_NAME="gfn-electron-${PKG_VERSION}-arm64.tar.gz"
 # wvkbd (rocknix-touchscreen-keyboard) provides the on-screen keyboard the
 # launcher summons for the first NVIDIA login.
 PKG_DEPENDS_TARGET="toolchain rocknix-touchscreen-keyboard"
-PKG_LONGDESC="GeForce NOW desktop client (hmlendea/gfn-electron), cross-built for arm64. A native-arm64 Electron wrapper of the GeForce NOW web app, so video decode rides the device's VAAPI/V4L2 (qcom-iris) path. Launched from EmulationStation; first login uses NVIDIA account or Discord (Google sign-in is blocked inside Electron)."
+PKG_LONGDESC="GeForce NOW desktop client (hmlendea/gfn-electron) on a custom arm64 Electron 39 built with use_v4l2_codec=true, so the GFN WebRTC video stream HARDWARE-decodes on the Qualcomm iris V4L2 decoder (/dev/video0) instead of the CPU. Launched from EmulationStation; first login uses NVIDIA account or Discord (Google sign-in is blocked inside Electron)."
 PKG_TOOLCHAIN="manual"
 
 makeinstall_target() {
