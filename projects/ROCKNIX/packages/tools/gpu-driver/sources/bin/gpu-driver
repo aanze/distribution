@@ -183,6 +183,10 @@ def icd_for(drv_id):
 
 # ----------------------------------------------------------------------------- probe
 
+# Absolute path: PATH-resolution must never pick /usr/sbin's x86-64 vulkaninfo.
+VULKANINFO = "/usr/bin/vulkaninfo"
+
+
 def _clean_probe_env():
     """A sanitized environment for dlopen-probing a driver. We are testing the
     DRIVER, not the caller's session: strip anything that can make a perfectly
@@ -202,6 +206,13 @@ def _clean_probe_env():
               # guard revert perfectly good drivers. Unset = surfaces skipped.
               "DISPLAY", "WAYLAND_DISPLAY"):
         env.pop(k, None)
+    # The probe must run the NATIVE vulkaninfo: the image also ships an x86-64
+    # vulkaninfo in /usr/sbin (FEX/Steam diagnostics), and the Decky backend's
+    # PATH puts /usr/sbin before /usr/bin -- a bare "vulkaninfo" then resolves
+    # to the x86 build, FEX runs it transparently, and its x86 loader rejects
+    # our aarch64 ICD with ERROR_INCOMPATIBLE_DRIVER: a false negative about a
+    # perfectly good driver (seen live 2026-07-15 from the Decky verify).
+    env["PATH"] = "/usr/bin:/bin"
     # Ignore implicit layers during the probe (they are not the driver under test).
     env["VK_LOADER_LAYERS_DISABLE"] = "~implicit~"
     env["DISABLE_VKBASALT"] = "1"
@@ -221,7 +232,7 @@ def probe(drv_id):
         env["VK_DRIVER_FILES"] = icd
     try:
         out = subprocess.run(
-            ["vulkaninfo", "--summary"],
+            [VULKANINFO, "--summary"],
             env=env, capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -410,7 +421,7 @@ def _install_files(drv_id, so_src, meta, api_version):
         env = _clean_probe_env()
         env["VK_DRIVER_FILES"] = staging_icd
         try:
-            out = subprocess.run(["vulkaninfo", "--summary"], env=env,
+            out = subprocess.run([VULKANINFO, "--summary"], env=env,
                                  capture_output=True, text=True, timeout=30)
             ok = out.returncode == 0 and "Adreno" in out.stdout
         except (OSError, subprocess.TimeoutExpired):
