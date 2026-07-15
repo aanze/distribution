@@ -710,4 +710,16 @@ it's recommended to have a mouse and keyboard to modify settings.</desc>
         <players>1</players>
         <image>./images/citron.svg</image>
     </game>
+    <game>
+        <path>./Fix Right Stick.sh</path>
+        <name>Fix Right Stick</name>
+        <desc>Restore the measured right-stick calibration (full edge reach) if it ever reverts to bad values - e.g. after a GPcal re-run, whose rotation sweep records unreachable diagonal peaks as the axis maxima. Applies instantly and persists across reboots.</desc>
+        <developer>DUCKTALE</developer>
+        <publisher>DUCKTALE</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>tool</genre>
+        <players>1</players>
+        <image>./images/calibrate-gamepad.svg</image>
+    </game>
 </gameList>
