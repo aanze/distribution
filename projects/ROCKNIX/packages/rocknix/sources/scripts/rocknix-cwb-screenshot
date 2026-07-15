@@ -89,6 +89,43 @@ if systemctl is-active --quiet rocknix-screenrecord.service 2>/dev/null; then
   exit 1
 fi
 
+# Under gamescope the debugfs single-shot never latches (the WB completion
+# never fires on the gamescope CTL) and a stalled arm leaks the WB IRQ
+# callback, wedging ALL capture until reboot (fixed in 0506, but never poke
+# the broken path anyway). The NV12 ring DOES work under gamescope, so take
+# the shot through a short throwaway recording: start the recorder, ask it for
+# one live frame (SIGUSR1 dump), stop it.
+if pgrep -x gamescope >/dev/null 2>&1; then
+  rm -f "${LIVE}"
+  JUNK=/tmp/.cwb-ringshot.mp4
+  systemctl reset-failed rocknix-ringshot.service 2>/dev/null
+  if systemd-run --collect --quiet --unit=rocknix-ringshot \
+       /usr/bin/rocknix-cwb-record "${JUNK}" 5 30 270 2>/dev/null; then
+    sleep 0.3    # let the recorder install its SIGUSR1 handler first
+    i=0
+    while [ ${i} -lt 50 ]; do    # ~2.5s for a frame to land
+      systemctl kill --signal=USR1 rocknix-ringshot.service 2>/dev/null
+      [ -s "${LIVE}" ] && break
+      sleep 0.05; i=$((i + 1))
+    done
+    systemctl stop rocknix-ringshot.service 2>/dev/null
+  fi
+  rm -f "${JUNK}"
+  if [ -s "${LIVE}" ]; then
+    convert -size ${W}x${H} -depth 8 bgra:"${LIVE}" -rotate 270 "${OUT}" 2>/dev/null
+    RC=$?
+    rm -f "${LIVE}"
+    if [ ${RC} -eq 0 ] && [ -s "${OUT}" ]; then
+      /usr/bin/capture-feedback shot-ok >/dev/null 2>&1 &
+      echo "Screenshot saved (gamescope ring): ${OUT}"
+      exit 0
+    fi
+  fi
+  /usr/bin/capture-feedback shot-fail >/dev/null 2>&1 &
+  echo "gamescope ring screenshot failed"
+  exit 1
+fi
+
 frames=$(arm_and_grab)
 if [ "${frames:-0}" -lt 2 ]; then
   # Wedged engine -> recover the display pipeline and retry once.
