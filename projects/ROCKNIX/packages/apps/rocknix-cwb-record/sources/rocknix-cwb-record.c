@@ -20,6 +20,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <linux/videodev2.h>
+#include <linux/dma-buf.h>
 
 struct dpucap_geom { __u32 width, height, fourcc, num_buffers;
 	__u32 y_stride, y_size, uv_stride, uv_size, total_size; };
@@ -36,6 +37,59 @@ struct dpucap_frame { __u32 index, sequence; __u64 timestamp_ns; };
 
 static volatile sig_atomic_t stop;
 static void on_sig(int s) { (void)s; stop = 1; }
+
+/* Live screenshot: the debugfs single-shot cannot run while the NV12 ring is
+ * recording (one CWB engine), so rocknix-cwb-screenshot sends SIGUSR1 and the
+ * recorder dumps the next dequeued ring frame as tight BGRA to LIVE_SHOT --
+ * one screenshot without interrupting the recording. */
+#define LIVE_SHOT "/tmp/.cwb-live-shot.bgra"
+static volatile sig_atomic_t want_shot;
+static void on_usr1(int s) { (void)s; want_shot = 1; }
+
+static inline uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+static void dump_live_shot(const struct dpucap_geom *g, const uint8_t *nv12,
+			   int dmafd)
+{
+	struct dma_buf_sync sync = { .flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ };
+	uint32_t w = g->width, h = g->height;
+	size_t rgbsz = (size_t)w * h * 4;
+	uint8_t *rgb = malloc(rgbsz);
+	static const char tmp[] = LIVE_SHOT ".part";
+	int fd;
+
+	if (!rgb) return;
+	ioctl(dmafd, DMA_BUF_IOCTL_SYNC, &sync);
+	const uint8_t *y = nv12, *uv = nv12 + g->y_size;
+	for (uint32_t j = 0; j < h; j++) {
+		const uint8_t *yr = y + (size_t)j * g->y_stride;
+		const uint8_t *ur = uv + (size_t)(j / 2) * g->uv_stride;
+		uint8_t *o = rgb + (size_t)j * w * 4;
+		for (uint32_t i = 0; i < w; i++) {
+			/* BT.601 limited range, BGRA byte order (matches the
+			 * script's existing `convert bgra:` pipeline) */
+			int c = yr[i] - 16;
+			int d = ur[i & ~1u] - 128, e = ur[(i & ~1u) + 1] - 128;
+			o[i*4+0] = clamp8((298*c + 516*d + 128) >> 8);
+			o[i*4+1] = clamp8((298*c - 100*d - 208*e + 128) >> 8);
+			o[i*4+2] = clamp8((298*c + 409*e + 128) >> 8);
+			o[i*4+3] = 0xff;
+		}
+	}
+	sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+	ioctl(dmafd, DMA_BUF_IOCTL_SYNC, &sync);
+	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd >= 0) {
+		ssize_t n = write(fd, rgb, rgbsz);
+		close(fd);
+		if (n == (ssize_t)rgbsz)
+			rename(tmp, LIVE_SHOT);	/* atomic publish */
+		else
+			unlink(tmp);
+	}
+	free(rgb);
+	fprintf(stderr, "live shot %ux%u -> %s\n", w, h, LIVE_SHOT);
+}
 
 static int xioctl(int fd, unsigned long req, void *p, const char *name)
 {
@@ -307,6 +361,7 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, on_sig);
 	signal(SIGTERM, on_sig);
+	signal(SIGUSR1, on_usr1);
 
 	int cap = open("/dev/dpu_capture0", O_RDWR | O_CLOEXEC);
 	if (cap < 0) die("open dpu_capture0: %s\n", strerror(errno));
@@ -321,6 +376,14 @@ int main(int argc, char **argv)
 		struct dpucap_expbuf e = { .index = i };
 		if (IOCTL(cap, DPUCAP_EXPBUF, &e) < 0) die("EXPBUF %u\n", i);
 		dfd[i] = e.fd;
+	}
+
+	/* CPU view of the ring for SIGUSR1 live screenshots; best-effort (a
+	 * failed mmap only disables the live-shot feature, not recording) */
+	uint8_t *rptr[16] = {0};
+	for (unsigned i = 0; i < g.num_buffers; i++) {
+		rptr[i] = mmap(NULL, g.total_size, PROT_READ, MAP_SHARED, dfd[i], 0);
+		if (rptr[i] == MAP_FAILED) rptr[i] = NULL;
 	}
 
 	int enc = open("/dev/video1", O_RDWR | O_NONBLOCK | O_CLOEXEC);
@@ -420,6 +483,12 @@ int main(int argc, char **argv)
 		if (pfd[0].revents & POLLIN) {
 			struct dpucap_frame fr;
 			if (ioctl(cap, DPUCAP_DQBUF, &fr) == 0) {
+				if (want_shot) {
+					want_shot = 0;
+					if (rptr[fr.index])
+						dump_live_shot(&g, rptr[fr.index],
+							       dfd[fr.index]);
+				}
 				uint64_t t = now_ns();
 				if (frame_interval && (t - last_frame) < frame_interval) {
 					ioctl(cap, DPUCAP_QBUF, &fr.index);
