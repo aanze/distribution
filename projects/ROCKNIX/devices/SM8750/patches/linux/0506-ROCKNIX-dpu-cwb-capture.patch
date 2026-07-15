@@ -25,11 +25,9 @@ userspace WHILE THE OLD COMPOSITOR IS STILL LIVE:
   new display path settles.
 
 Signed-off-by: Anze <aanzdev@gmail.com>
-diff --git a/drivers/gpu/drm/msm/Makefile b/drivers/gpu/drm/msm/Makefile
-index ba45e99..d81acbb 100644
 --- a/drivers/gpu/drm/msm/Makefile
 +++ b/drivers/gpu/drm/msm/Makefile
-@@ -69,6 +69,7 @@ msm-display-$(CONFIG_DRM_MSM_MDP5) += \
+@@ -69,6 +69,7 @@
  	disp/mdp5/mdp5_smp.o \
  
  msm-display-$(CONFIG_DRM_MSM_DPU) += \
@@ -37,12 +35,9 @@ index ba45e99..d81acbb 100644
  	disp/dpu1/dpu_core_perf.o \
  	disp/dpu1/dpu_crtc.o \
  	disp/dpu1/dpu_encoder.o \
-diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-new file mode 100644
-index 0000000..7f3b768
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,1131 @@
+@@ -0,0 +1,1129 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -223,7 +218,6 @@ index 0000000..7f3b768
 +	ot.height = CAP_H;
 +	ot.is_wfd = false;
 +	ot.frame_rate = 120;
-+	ot.vbif_idx = c->wb->caps->vbif_idx;
 +	ot.rd = false;
 +
 +	if (!cap_clk_force(c, true, &forced))
@@ -238,7 +232,6 @@ index 0000000..7f3b768
 +	struct dpu_vbif_set_qos_params q = {0};
 +	bool forced = false;
 +
-+	q.vbif_idx = c->wb->caps->vbif_idx;
 +	q.xin_id = c->wb->caps->xin_id;
 +	q.num = c->wb->idx - WB_0;
 +	q.is_rt = true;
@@ -1174,9 +1167,6 @@ index 0000000..7f3b768
 +	kfree(c);
 +	g_cap = NULL;
 +}
-diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.h b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.h
-new file mode 100644
-index 0000000..060ed50
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.h
 @@ -0,0 +1,52 @@
@@ -1232,8 +1222,6 @@ index 0000000..060ed50
 +void dpu_capture_drain(struct dpu_kms *dpu_kms, struct dpu_hw_ctl *ctl);
 +
 +#endif /* _DPU_CAPTURE_H_ */
-diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
-index 2756c57..520302b 100644
 --- a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
 @@ -34,6 +34,7 @@
@@ -1244,7 +1232,7 @@ index 2756c57..520302b 100644
  #include "disp/msm_disp_snapshot.h"
  
  #define DPU_DEBUG_ENC(e, fmt, ...) DRM_DEBUG_ATOMIC("enc%d " fmt,\
-@@ -1427,6 +1428,17 @@ static void dpu_encoder_virt_atomic_disable(struct drm_encoder *drm_enc,
+@@ -1408,6 +1409,17 @@
  
  	trace_dpu_enc_disable(DRMID(drm_enc));
  
@@ -1262,7 +1250,7 @@ index 2756c57..520302b 100644
  	/* wait for idle */
  	dpu_encoder_wait_for_tx_complete(drm_enc);
  
-@@ -1784,6 +1796,16 @@ static void dpu_encoder_helper_hw_reset(struct dpu_encoder_phys *phys_enc)
+@@ -1765,6 +1777,16 @@
  	DRM_DEBUG_KMS("id:%u ctl %d reset\n", DRMID(drm_enc),
  		      ctl->idx);
  
@@ -1279,7 +1267,7 @@ index 2756c57..520302b 100644
  	rc = ctl->ops.reset(ctl);
  	if (rc) {
  		DPU_ERROR_ENC(dpu_enc, "ctl %d reset failure\n",  ctl->idx);
-@@ -1813,6 +1835,24 @@ static void _dpu_encoder_kickoff_phys(struct dpu_encoder_virt *dpu_enc)
+@@ -1794,6 +1816,24 @@
  	/* update pending counts and trigger kickoff ctl flush atomically */
  	spin_lock_irqsave(&dpu_enc->enc_spinlock, lock_flags);
  
@@ -1304,7 +1292,7 @@ index 2756c57..520302b 100644
  	/* don't perform flush/start operations for slave encoders */
  	for (i = 0; i < dpu_enc->num_phys_encs; i++) {
  		struct dpu_encoder_phys *phys = dpu_enc->phys_encs[i];
-@@ -2283,6 +2323,15 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
+@@ -2264,6 +2304,15 @@
  
  	dpu_enc = to_dpu_encoder_virt(phys_enc->parent);
  
@@ -1320,11 +1308,9 @@ index 2756c57..520302b 100644
  	ctl->ops.reset(ctl);
  
  	dpu_encoder_helper_reset_mixers(phys_enc);
-diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
-index 36a497f..59f6772 100644
 --- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.c
-@@ -334,6 +334,54 @@ static void dpu_hw_ctl_update_pending_flush_cwb_v1(struct dpu_hw_ctl *ctx,
+@@ -334,6 +334,54 @@
  	ctx->pending_flush_mask |= BIT(CWB_IDX);
  }
  
@@ -1379,7 +1365,7 @@ index 36a497f..59f6772 100644
  static void dpu_hw_ctl_update_pending_flush_intf_v1(struct dpu_hw_ctl *ctx,
  		enum dpu_intf intf)
  {
-@@ -828,6 +876,8 @@ struct dpu_hw_ctl *dpu_hw_ctl_init(struct drm_device *dev,
+@@ -828,6 +876,8 @@
  			dpu_hw_ctl_update_pending_flush_merge_3d_v1;
  		c->ops.update_pending_flush_wb = dpu_hw_ctl_update_pending_flush_wb_v1;
  		c->ops.update_pending_flush_cwb = dpu_hw_ctl_update_pending_flush_cwb_v1;
@@ -1388,15 +1374,12 @@ index 36a497f..59f6772 100644
  		c->ops.update_pending_flush_dsc =
  			dpu_hw_ctl_update_pending_flush_dsc_v1;
  		c->ops.update_pending_flush_cdm = dpu_hw_ctl_update_pending_flush_cdm_v1;
-diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h
-index e535bf0..c204952 100644
 --- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_ctl.h
-@@ -131,6 +131,27 @@ struct dpu_hw_ctl_ops {
- 	void (*update_pending_flush_cwb)(struct dpu_hw_ctl *ctx,
+@@ -132,6 +132,27 @@
  		enum dpu_cwb blk);
  
-+	/**
+ 	/**
 +	 * @set_capture_active: OR a writeback + CWB mux mask into the CTL's
 +	 * WB/CWB ACTIVE registers without touching INTF/CTL_TOP. Used by the
 +	 * out-of-band CWB screen-capture path to ride the realtime CTL flush.
@@ -1417,11 +1400,10 @@ index e535bf0..c204952 100644
 +		enum dpu_wb wb, u32 cwb_mask, enum dpu_merge_3d merge_3d,
 +		enum dpu_cdm cdm);
 +
- 	/**
++	/**
  	 * @update_pending_flush_intf: OR in the given flushbits to the
  	 * cached pending_(intf_)flush_mask.
-diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_kms.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_kms.c
-index 014b2c5..d914529 100644
+ 	 * No effect on hardware
 --- a/drivers/gpu/drm/msm/disp/dpu1/dpu_kms.c
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_kms.c
 @@ -36,6 +36,7 @@
@@ -1432,17 +1414,17 @@ index 014b2c5..d914529 100644
  
  #define CREATE_TRACE_POINTS
  #include "dpu_trace.h"
-@@ -888,6 +889,9 @@ static void _dpu_kms_hw_destroy(struct dpu_kms *dpu_kms)
- {
- 	int i;
+@@ -888,6 +889,9 @@
  
+ static void _dpu_kms_hw_destroy(struct dpu_kms *dpu_kms)
+ {
 +	/* free capture buffers (uses the vm) before the MMU is torn down */
 +	dpu_capture_destroy(dpu_kms);
 +
  	dpu_kms->hw_intr = NULL;
  
  	/* safe to call these more than once during shutdown */
-@@ -1286,6 +1290,8 @@ static int dpu_kms_hw_init(struct msm_kms *kms)
+@@ -1279,6 +1283,8 @@
  
  	dpu_vbif_init_memtypes(dpu_kms);
  
