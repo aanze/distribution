@@ -201,13 +201,34 @@ if [ "${PUBLISH}" -eq 1 ] && command -v gh >/dev/null \
   gh release download "${TAG}" --repo "${REPO}" --pattern manifest.json \
      --output "${OLD_MANIFEST}" --clobber 2>/dev/null || echo '{"drivers":[]}' > "${OLD_MANIFEST}"
 fi
+# Asset list of the release: used to PRUNE manifest entries whose .so was
+# deleted by hand from the release (otherwise a removed driver keeps showing
+# as [download] on every device forever -- the merge is cumulative).
+ASSET_LIST="${OUT}/assets.txt"; : > "${ASSET_LIST}"
+if [ "${PUBLISH}" -eq 1 ] && command -v gh >/dev/null \
+   && gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
+  gh release view "${TAG}" --repo "${REPO}" --json assets \
+     --jq '.assets[].name' > "${ASSET_LIST}" 2>/dev/null || : > "${ASSET_LIST}"
+fi
 
-python3 - "${OLD_MANIFEST}" "${OUT}/new.json" "${DEVICE}" > "${MANIFEST}" <<'PY'
+ASSET_LIST_FILE="${ASSET_LIST}" python3 - "${OLD_MANIFEST}" "${OUT}/new.json" "${DEVICE}" > "${MANIFEST}" <<'PY'
 import sys, json
 old = json.load(open(sys.argv[1]))
 new = json.load(open(sys.argv[2]))
 device = sys.argv[3]
 by = {d["id"]: d for d in old.get("drivers", [])}   # keep existing
+# prune entries whose asset was deleted from the release by hand (an empty
+# asset list means we could not read the release -- prune nothing)
+import os
+assets = set()
+alist = os.environ.get("ASSET_LIST_FILE", "")
+if alist and os.path.exists(alist):
+    assets = {l.strip() for l in open(alist) if l.strip()}
+if assets:
+    def _aname(i, d):
+        u = d.get("url", "")
+        return u.rsplit("/", 1)[-1] if u else "libvulkan_freedreno-%s.so" % i
+    by = {i: d for i, d in by.items() if _aname(i, d) in assets}
 for d in new:                                        # add / override same id
     by[d["id"]] = d
 json.dump({"schema": 1, "generated_for": device,
@@ -215,7 +236,7 @@ json.dump({"schema": 1, "generated_for": device,
           sys.stdout, indent=2)
 print()
 PY
-rm -f "${OUT}/new.json" "${OLD_MANIFEST}"
+rm -f "${OUT}/new.json" "${OLD_MANIFEST}" "${ASSET_LIST}"
 
 echo "=== manifest.json (merged catalogue) ==="; cat "${MANIFEST}"
 echo "=== assets in ${OUT} ==="; ls -lh "${OUT}"
