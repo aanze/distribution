@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX/DUCKTALE
+#
+# Stick calibration lifecycle (see /usr/bin/rsinput-cal-apply): install a udev
+# rule so the calibration re-applies on EVERY rsinput module load (suspend/
+# resume reloads it via modules.bad; a manual modprobe cycle recovers a frozen
+# stick), and apply once now to beat the autostart-vs-module-probe boot race.
+
+mkdir -p /run/udev/rules.d
+cat > /run/udev/rules.d/98-rsinput-cal.rules <<RULES
+ACTION=="add", SUBSYSTEM=="module", KERNEL=="rsinput", RUN+="/usr/bin/rsinput-cal-apply"
+RULES
+udevadm control --reload 2>/dev/null
+/usr/bin/rsinput-cal-apply &
