@@ -48,6 +48,28 @@ static void on_usr1(int s) { (void)s; want_shot = 1; }
 
 static inline uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
+/* NV12 (strided) -> tight BGRA, BT.601 limited range, BGRA byte order
+ * (matches the script's existing `convert bgra:` pipeline) */
+static void nv12_to_bgra(uint8_t *rgb, const uint8_t *nv12, uint32_t w,
+			 uint32_t h, uint32_t y_stride, uint32_t uv_stride,
+			 uint32_t y_size)
+{
+	const uint8_t *y = nv12, *uv = nv12 + y_size;
+	for (uint32_t j = 0; j < h; j++) {
+		const uint8_t *yr = y + (size_t)j * y_stride;
+		const uint8_t *ur = uv + (size_t)(j / 2) * uv_stride;
+		uint8_t *o = rgb + (size_t)j * w * 4;
+		for (uint32_t i = 0; i < w; i++) {
+			int c = yr[i] - 16;
+			int d = ur[i & ~1u] - 128, e = ur[(i & ~1u) + 1] - 128;
+			o[i*4+0] = clamp8((298*c + 516*d + 128) >> 8);
+			o[i*4+1] = clamp8((298*c - 100*d - 208*e + 128) >> 8);
+			o[i*4+2] = clamp8((298*c + 409*e + 128) >> 8);
+			o[i*4+3] = 0xff;
+		}
+	}
+}
+
 static void dump_live_shot(const struct dpucap_geom *g, const uint8_t *nv12,
 			   int dmafd)
 {
@@ -60,22 +82,7 @@ static void dump_live_shot(const struct dpucap_geom *g, const uint8_t *nv12,
 
 	if (!rgb) return;
 	ioctl(dmafd, DMA_BUF_IOCTL_SYNC, &sync);
-	const uint8_t *y = nv12, *uv = nv12 + g->y_size;
-	for (uint32_t j = 0; j < h; j++) {
-		const uint8_t *yr = y + (size_t)j * g->y_stride;
-		const uint8_t *ur = uv + (size_t)(j / 2) * g->uv_stride;
-		uint8_t *o = rgb + (size_t)j * w * 4;
-		for (uint32_t i = 0; i < w; i++) {
-			/* BT.601 limited range, BGRA byte order (matches the
-			 * script's existing `convert bgra:` pipeline) */
-			int c = yr[i] - 16;
-			int d = ur[i & ~1u] - 128, e = ur[(i & ~1u) + 1] - 128;
-			o[i*4+0] = clamp8((298*c + 516*d + 128) >> 8);
-			o[i*4+1] = clamp8((298*c - 100*d - 208*e + 128) >> 8);
-			o[i*4+2] = clamp8((298*c + 409*e + 128) >> 8);
-			o[i*4+3] = 0xff;
-		}
-	}
+	nv12_to_bgra(rgb, nv12, w, h, g->y_stride, g->uv_stride, g->y_size);
 	sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
 	ioctl(dmafd, DMA_BUF_IOCTL_SYNC, &sync);
 	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -349,8 +356,41 @@ static void write_moov(int fd, uint32_t cw, uint32_t ch, int fps, int rot)
 	free(b.d);
 }
 
+/* converter mode for rocknix-cwb-screenshot: the debugfs NV12 single-shot
+ * frame.raw -> tight BGRA that ImageMagick can ingest (`convert bgra:`).
+ * The XRGB shot path stopped completing on the 7.1 DPU (WB done never fires
+ * without the CDM in the chain), so the shot now rides the proven NV12 path
+ * and converts here. */
+static int convert_mode(int argc, char **argv)
+{
+	if (argc != 9)
+		die("usage: --nv12-to-bgra <in> <out> <w> <h> <ystride> <uvstride> <ysize>\n");
+	const char *in = argv[2], *out = argv[3];
+	uint32_t w = atoi(argv[4]), h = atoi(argv[5]);
+	uint32_t ys = atoi(argv[6]), uvs = atoi(argv[7]), ysz = atoi(argv[8]);
+	size_t insz = (size_t)ysz + (size_t)uvs * (h / 2);
+	size_t outsz = (size_t)w * h * 4;
+	uint8_t *nv12 = malloc(insz), *rgb = malloc(outsz);
+	FILE *f;
+
+	if (!nv12 || !rgb) die("oom\n");
+	f = fopen(in, "rb");
+	if (!f || fread(nv12, 1, insz, f) != insz)
+		die("read %s\n", in);
+	fclose(f);
+	nv12_to_bgra(rgb, nv12, w, h, ys, uvs, ysz);
+	f = fopen(out, "wb");
+	if (!f || fwrite(rgb, 1, outsz, f) != outsz)
+		die("write %s\n", out);
+	fclose(f);
+	free(nv12); free(rgb);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
+	if (argc > 1 && !strcmp(argv[1], "--nv12-to-bgra"))
+		return convert_mode(argc, argv);
 	if (argc < 2) die("usage: %s <out.mp4> [seconds] [fps] [rotate]\n", argv[0]);
 	const char *outpath = argv[1];
 	double max_s = argc > 2 ? atof(argv[2]) : 0;
