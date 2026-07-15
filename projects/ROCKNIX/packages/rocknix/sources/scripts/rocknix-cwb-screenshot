@@ -61,6 +61,34 @@ cwb_recover() {
 mkdir -p "${SAVE_DIR}"
 OUT="${SAVE_DIR}/$(date +'%Y-%m-%d-%H%M%S').png"
 
+# A running recording owns the CWB engine (arming the debugfs single-shot while
+# the NV12 ring is live yields an empty frame.raw -- the "screenshot during a
+# record silently fails" trap). Ask the recorder for a frame instead: SIGUSR1
+# makes rocknix-cwb-record dump its next ring frame as tight BGRA.
+LIVE=/tmp/.cwb-live-shot.bgra
+if systemctl is-active --quiet rocknix-screenrecord.service 2>/dev/null; then
+  rm -f "${LIVE}"
+  systemctl kill --signal=USR1 rocknix-screenrecord.service 2>/dev/null
+  i=0
+  while [ ${i} -lt 40 ]; do    # ~2s: next ring frame + NV12->BGRA + write
+    [ -s "${LIVE}" ] && break
+    sleep 0.05; i=$((i + 1))
+  done
+  if [ -s "${LIVE}" ]; then
+    convert -size ${W}x${H} -depth 8 bgra:"${LIVE}" -rotate 270 "${OUT}" 2>/dev/null
+    RC=$?
+    rm -f "${LIVE}"
+    if [ ${RC} -eq 0 ] && [ -s "${OUT}" ]; then
+      /usr/bin/capture-feedback shot-ok >/dev/null 2>&1 &
+      echo "Screenshot saved (live ring): ${OUT}"
+      exit 0
+    fi
+  fi
+  /usr/bin/capture-feedback shot-fail >/dev/null 2>&1 &
+  echo "live-ring screenshot failed"
+  exit 1
+fi
+
 frames=$(arm_and_grab)
 if [ "${frames:-0}" -lt 2 ]; then
   # Wedged engine -> recover the display pipeline and retry once.
@@ -70,6 +98,7 @@ fi
 # frames<2 means nothing real latched (frame.raw is an 8 MB zero buffer, which
 # would otherwise convert to a black PNG) -> treat as failure.
 if [ "${frames:-0}" -lt 2 ] || [ ! -s "${RAW}" ]; then
+  /usr/bin/capture-feedback shot-fail >/dev/null 2>&1 &
   echo "capture produced no data (frames=${frames})"
   rm -f "${RAW}"
   exit 1
@@ -83,8 +112,11 @@ RC=$?
 rm -f "${RAW}"
 
 if [ ${RC} -eq 0 ] && [ -s "${OUT}" ]; then
+  # LED-ring feedback: the caller's toast is invisible under gamescope/Steam
+  /usr/bin/capture-feedback shot-ok >/dev/null 2>&1 &
   echo "Screenshot saved: ${OUT}"
   exit 0
 fi
+/usr/bin/capture-feedback shot-fail >/dev/null 2>&1 &
 echo "screenshot failed (convert rc=${RC})"
 exit 1
