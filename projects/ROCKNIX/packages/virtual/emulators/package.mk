@@ -774,6 +774,8 @@ makeinstall_target() {
       install_script "Install Steam.sh"
       install_script "Update Proton CachyOS.sh"
       install_script "Rollback Proton CachyOS.sh"
+      install_script "Update Proton GE.sh"
+      install_script "Rollback Proton GE.sh"
       install_script "Uninstall Steam.sh"
       add_es_system steam
       add_emu_core heroic heroic heroic true

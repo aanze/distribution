@@ -145,6 +145,30 @@
         <image>./images/cachyos.svg</image>
     </game>
     <game>
+        <path>./Update Proton GE.sh</path>
+        <name>Update Proton GE</name>
+        <desc>Updates the Proton-GE (ARM64) Steam compatibility tool in place, without re-running the full "Install Steam" routine. Fetches the newest release that ships an aarch64 build from github.com/GloriousEggroll/proton-ge-custom, verifies it against the official sha512 checksum, and patches it for ARM (removes the require_tool_appid line that otherwise makes Steam fail with "unable to launch the compatibility tool"), keeping the version you had as a one-press rollback copy. Idempotent: exits early if already at the latest release. Fully relaunch Steam afterwards.</desc>
+        <developer>GloriousEggroll</developer>
+        <publisher>GloriousEggroll</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/proton-ge.svg</image>
+    </game>
+    <game>
+        <path>./Rollback Proton GE.sh</path>
+        <name>Rollback Proton GE</name>
+        <desc>Switches Proton-GE (ARM64) back to the version kept by "Update Proton GE". If both a live and a saved previous version exist it swaps them, so you can toggle back and forth; if only the saved one exists it restores it. Use this if a freshly updated Proton-GE misbehaves. Fully relaunch Steam afterwards.</desc>
+        <developer>GloriousEggroll</developer>
+        <publisher>GloriousEggroll</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/proton-ge.svg</image>
+    </game>
+    <game>
         <path>./Uninstall Steam.sh</path>
         <name>Uninstall Steam</name>
         <desc>Removes the Steam client and runtime. Keeps installed games (steamapps), saves (userdata), and depot download cache.</desc>
