@@ -422,11 +422,15 @@ function Content() {
     (async () => {
       // Reflect the canonical active profile (Perf Control's "active", or the
       // live clocks as a fallback) before drawing, so the dropdown isn't stale.
-      // Epoch-guarded: if the user picks a preset while this read is in
-      // flight, the stale result must NOT snap the dropdown back.
+      // Guards, both needed (device-observed failure without them):
+      // - epoch: a pick made while this read is in flight invalidates it;
+      // - switching: picking a dropdown option REMOUNTS the QAM panel, so this
+      //   effect re-runs AFTER the pick (fresh epoch) but can read the store
+      //   BEFORE the pick's setActiveProfile write lands -> the stale name
+      //   snapped the dropdown back until a second pick.
       const epoch = selectionEpoch;
       const detected = await resolveActivePreset();
-      if (detected && epoch === selectionEpoch) {
+      if (detected && epoch === selectionEpoch && !switching) {
         state.activePreset = detected;
         setSelectedPreset(detected);
       }
@@ -498,10 +502,15 @@ function Content() {
       // change made mid-game is lost when the game quits) AND persist it as the
       // canonical global so Perf Control agrees and it survives reboots.
       state.preGamePreset = name;
+      // Persist the canonical store FIRST: picking a dropdown option remounts
+      // the QAM panel, whose mount effect re-reads the store; when this write
+      // landed after that read (it used to run last, after the hardware
+      // apply), the dropdown snapped back to the previous profile until a
+      // second pick (device-observed). Hardware apply comes after.
+      await setActiveProfile(name);
       await applyPreset(name);
       await Promise.all([
         state.runningAppId > 0 ? setGameProfile(String(state.runningAppId), name) : Promise.resolve(),
-        setActiveProfile(name),
         refreshHardware(),
         refreshFanCurve(),
       ]);
