@@ -1,0 +1,82 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026-present ROCKNIX/DUCKTALE
+#
+# Visual capture feedback on the analog-stick LED rings. mako toasts are
+# invisible under gamescope (they render on the sway layer), so screen-record /
+# screenshot triggered from inside Steam gave no feedback at all -- the user
+# can't tell a recording started, and stacked combos (record armed, then a
+# screenshot that fails against the busy engine) looked like "nothing works".
+# The stick rings are physical LEDs, visible under any compositor.
+#
+# usage: capture-feedback {record-start|record-stop|shot-ok|shot-fail}
+#
+# Patterns: record-start = 2x red blink   record-stop = 1x green
+#           shot-ok      = 1x white       shot-fail   = 3x fast red
+#
+# Best-effort by design: exits 0 silently when the device has no stick rings
+# (LED node layout is AYN Odin 3: l:/r: side prefix, r/g/b color, segment 1-4).
+
+LEDS=/sys/class/leds
+[ -e "${LEDS}/l:r1/brightness" ] || exit 0
+
+# One flasher at a time: a second instance restoring mid-flash would snapshot
+# the flash colors as the "original" state. Stale locks (killed flasher) expire
+# after 3s. Losing a flash beats corrupting the rings' resting state.
+LOCK=/tmp/.capture-feedback.lock
+if ! mkdir "${LOCK}" 2>/dev/null; then
+  AGE=$(( $(date +%s) - $(date -r "${LOCK}" +%s 2>/dev/null || echo 0) ))
+  [ "${AGE}" -lt 3 ] && exit 0
+  rm -rf "${LOCK}"
+  mkdir "${LOCK}" 2>/dev/null || exit 0
+fi
+trap 'rm -rf "${LOCK}"' EXIT
+
+SNAP=""
+for l in "${LEDS}"/l:?? "${LEDS}"/r:??; do
+  [ -e "${l}/brightness" ] && SNAP="${SNAP} ${l}=$(cat "${l}/brightness")"
+done
+
+all_off() {
+  for l in "${LEDS}"/l:?? "${LEDS}"/r:??; do
+    echo 0 > "${l}/brightness" 2>/dev/null
+  done
+}
+
+# $1 = color letter (r|g|b), or "w" for white (all three)
+rings_on() {
+  case "$1" in
+    w) set -- r g b ;;
+  esac
+  for c in "$@"; do
+    for s in 1 2 3 4; do
+      echo 255 > "${LEDS}/l:${c}${s}/brightness" 2>/dev/null
+      echo 255 > "${LEDS}/r:${c}${s}/brightness" 2>/dev/null
+    done
+  done
+}
+
+# $1 = color, $2 = repeat count, $3 = on-time (seconds)
+blink() {
+  n=0
+  while [ "${n}" -lt "$2" ]; do
+    all_off; rings_on "$1"
+    sleep "$3"
+    all_off
+    [ "${n}" -lt "$(($2 - 1))" ] && sleep 0.12
+    n=$((n + 1))
+  done
+}
+
+case "$1" in
+  record-start) blink r 2 0.18 ;;
+  record-stop)  blink g 1 0.35 ;;
+  shot-ok)      blink w 1 0.25 ;;
+  shot-fail)    blink r 3 0.12 ;;
+  *) exit 0 ;;
+esac
+
+for kv in ${SNAP}; do
+  echo "${kv##*=}" > "${kv%=*}/brightness" 2>/dev/null
+done
+exit 0
