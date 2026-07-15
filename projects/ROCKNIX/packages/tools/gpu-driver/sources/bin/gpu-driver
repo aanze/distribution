@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import platform
 import urllib.request
 import urllib.error
 import hashlib
@@ -572,7 +573,30 @@ COMMANDS = {
 }
 
 
+def _escape_fex_if_emulated():
+    """Decky's official PluginLoader is an x86-64 binary that ROCKNIX runs
+    under FEX. Anything it spawns (the plugin backend, then this CLI) lives in
+    the FEX world: /usr/bin/python3, vulkaninfo and the /usr/lib .so files all
+    resolve to the x86 rootfs overlay, so every arch-sensitive operation lies
+    -- vkCreateInstance rejects the aarch64 ICD with ERROR_INCOMPATIBLE_DRIVER
+    (verify), the dlopen-probe refuses perfectly good installs, and the stock
+    Mesa version reads garbage. Absolute paths cannot help: the whole
+    filesystem view is overlaid.
+
+    Escape: when we detect we are emulated (x86_64 interpreter on this ARM
+    device), re-exec ourselves on the NATIVE host through a transient systemd
+    unit. systemd-run talks to the native systemd over D-Bus regardless of the
+    caller's architecture; --pipe/--wait carry stdout/stderr and the exit
+    code back to the caller."""
+    if platform.machine() != "x86_64":
+        return
+    os.execvp("systemd-run",
+              ["systemd-run", "--quiet", "--pipe", "--wait", "--collect",
+               "/usr/bin/gpu-driver"] + sys.argv[1:])
+
+
 def main(argv):
+    _escape_fex_if_emulated()
     if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
         print("usage: gpu-driver <command> [args]")
         print("commands: " + ", ".join(sorted(COMMANDS)))
