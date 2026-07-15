@@ -37,7 +37,7 @@ Signed-off-by: Anze <aanzdev@gmail.com>
  	disp/dpu1/dpu_encoder.o \
 --- /dev/null
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_capture.c
-@@ -0,0 +1,1129 @@
+@@ -0,0 +1,1142 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ROCKNIX/DUCKTALE: out-of-band DPU Concurrent WriteBack (CWB) screen capture.
@@ -750,6 +750,19 @@ Signed-off-by: Anze <aanzdev@gmail.com>
 +
 +	if (c->mode != CAP_OFF)
 +		return -EBUSY;
++
++	/*
++	 * A stall auto-off (dpu_capture_kickoff, atomic context) turns the
++	 * mode OFF without unregistering the WB IRQ callback or freeing the
++	 * ring (it cannot -- both need process context). Reclaim leftovers
++	 * here, like the shot arm paths do, or the register below fails
++	 * -EBUSY on every attempt until reboot.
++	 */
++	if (c->irq_on) {
++		dpu_core_irq_unregister_callback(c->kms, c->wb_irq);
++		c->irq_on = false;
++	}
++	rec_free_ring(c);
 +
 +	ret = rec_alloc_ring(c);
 +	if (ret) {
