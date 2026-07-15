@@ -40,17 +40,39 @@ find_device_yaml() {
         grep -rl "value: ${model}" /usr/share/inputplumber/devices/ 2>/dev/null | head -1
 }
 
-# Map legacy / empty settings onto the two supported profiles. An empty
-# setting keeps the fork's historical user-facing default: xbox-elite.
+# Map legacy settings onto the two supported profiles.
 normalize() {
     case "${1}" in
         ds5|ds5-edge|dualsense)        echo "ds5" ;;
-        xbox-elite|xbox-series|"")     echo "xbox-elite" ;;
+        xbox-elite|xbox-series)        echo "xbox-elite" ;;
         *)                             echo "${1}" ;;
     esac
 }
 
-get_profile() { normalize "$(get_setting "${SETTING}")"; }
+# An EMPTY setting must not be guessed: a settings read can transiently come
+# back empty while the file is rewritten around a Steam session start, and
+# answering the historical default ("xbox-elite") here made the DUCKTALE QAM
+# dropdown show Elite while the pad actually ran ds5 (device-observed
+# 2026-07-15). Observe reality instead: the xbox-elite state IS the /run
+# override being active; no override = stock ds5-edge composite. Only a
+# genuinely fresh system (no setting AND no override applied yet) keeps the
+# historical xbox-elite default.
+get_profile() {
+    local s
+    s="$(get_setting "${SETTING}")"
+    if [ -z "${s}" ]; then
+        s="$(get_setting "${SETTING}")"   # one retry: rewrite windows are ms
+    fi
+    if [ -n "${s}" ]; then
+        normalize "${s}"
+    elif grep -qs "inputplumber" /proc/mounts && grep -qs "$(find_device_yaml)" /proc/mounts; then
+        echo "xbox-elite"                 # override bind-mount active
+    elif [ -e "${OVERRIDE_YAML}" ]; then
+        echo "xbox-elite"
+    else
+        echo "ds5"
+    fi
+}
 
 human_label() {
     case "$(get_profile)" in
