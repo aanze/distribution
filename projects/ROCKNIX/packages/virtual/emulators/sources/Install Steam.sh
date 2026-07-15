@@ -171,6 +171,15 @@ install_proton_variant() {
 }
 
 install_proton_cachyos() {
+  # A build managed by "Update Proton CachyOS" may be NEWER than the pin this
+  # installer bundles; the cleanup+reinstall would silently downgrade it. Only
+  # install when the bundled line has no live version — updates/repairs belong
+  # to the "Update Proton CachyOS" / "Rollback Proton CachyOS" tools.
+  local bundled_major="${PROTON_CACHYOS_VERSION_FULL%%.*}"
+  if compgen -G "${STEAM}/compatibilitytools.d/proton-cachyos-${bundled_major}.*-arm64" > /dev/null 2>&1; then
+    log_info "Proton-CachyOS ${bundled_major}.x already present (possibly newer, via \"Update Proton CachyOS\"). Skipping."
+    return 0
+  fi
   # Cleanup glob scoped to the SAME release line this bundles: other lines
   # (e.g. a proton-10 the user keeps via "Update Proton CachyOS") are managed
   # side by side and must never be removed by an install/reinstall.
@@ -179,10 +188,18 @@ install_proton_cachyos() {
     "${PROTON_CACHYOS_URL}" \
     "${PROTON_CACHYOS_TAR}" \
     "${PROTON_CACHYOS_DIR}" \
-    "proton-cachyos-${PROTON_CACHYOS_VERSION_FULL%%.*}.*-arm64"
+    "proton-cachyos-${bundled_major}.*-arm64"
 }
 
 install_proton_ge() {
+  # A GE build managed by "Update Proton GE" may be NEWER than the pin this
+  # installer bundles; the generic cleanup+reinstall would silently downgrade
+  # it. Only install GE when none is present — updates/repairs of an existing
+  # GE belong to the "Update Proton GE" / "Rollback Proton GE" tools.
+  if compgen -G "${STEAM}/compatibilitytools.d/GE-Proton*-aarch64" > /dev/null 2>&1; then
+    log_info "Proton-GE already present (possibly newer, via \"Update Proton GE\"). Skipping."
+    return 0
+  fi
   install_proton_variant \
     "Proton-GE" \
     "${PROTON_GE_URL}" \
