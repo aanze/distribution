@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Anze <aanzdev@gmail.com>
+Date: Wed, 15 Jul 2026 15:14:19 +0200
+Subject: [PATCH] input: no connect/disconnect toasts for auxiliary devices
+
+Paddle GPIOs, power keys, InputPlumber's virtual keyboard, headset
+jacks and sensor bridges register as SDL joysticks and spammed
+'<name> connected' notifications on every InputPlumber profile switch.
+Filter them by name; only real controllers notify.
+
+--- a/es-core/src/InputManager.cpp
++++ b/es-core/src/InputManager.cpp
+@@ -520,6 +520,21 @@
+ } SDL_JoyBatteryEventX;
+ #endif
+ 
++// ROCKNIX/DUCKTALE: auxiliary input devices (paddle GPIOs, power keys,
++// InputPlumber's virtual keyboard, headset jacks, sensor bridges) register as
++// SDL joysticks and spammed "<name> connected" toasts on every InputPlumber
++// profile switch. Only the actual controller is worth a notification.
++static bool isAuxiliaryInputName(const std::string& name)
++{
++	std::string n = Utils::String::toLower(name);
++	static const char* frags[] = { "gpio", "pmic", "keyboard", "headset", "jack",
++	                               "touchscreen", "ft5x06", "sns_", "imu", "gyro", "accel" };
++	for (const char* frag : frags)
++		if (n.find(frag) != std::string::npos)
++			return true;
++	return false;
++}
++
+ bool InputManager::parseEvent(const SDL_Event& ev, Window* window)
+ {
+ 	bool causedEvent = false;
+@@ -704,7 +719,7 @@
+ #else
+ 			rebuildAllJoysticks();
+ #endif
+-			if (Settings::getInstance()->getBool("ShowControllerNotifications") && !addedDeviceName.empty()) {
++			if (Settings::getInstance()->getBool("ShowControllerNotifications") && !addedDeviceName.empty() && !isAuxiliaryInputName(addedDeviceName)) {
+ 			  if(isWheel) {
+ 			    window->displayNotificationMessage(_U("\uF1B9 ") + Utils::String::format(_("%s connected").c_str(), Utils::String::trim(addedDeviceName).c_str()));
+ 			  } else {
+@@ -717,7 +732,7 @@
+ 	case SDL_JOYDEVICEREMOVED:
+ 		{
+ 			auto it = mInputConfigs.find(ev.jdevice.which);
+-			if (Settings::getInstance()->getBool("ShowControllerNotifications") && it != mInputConfigs.cend() && it->second != nullptr) {
++			if (Settings::getInstance()->getBool("ShowControllerNotifications") && it != mInputConfigs.cend() && it->second != nullptr && !isAuxiliaryInputName(it->second->getDeviceName())) {
+ 			  if(it->second->isWheel()) {
+ 			    window->displayNotificationMessage(_U("\uF1B9 ") + Utils::String::format(_("%s disconnected").c_str(), Utils::String::trim(it->second->getDeviceName()).c_str()));
+ 			  } else {
