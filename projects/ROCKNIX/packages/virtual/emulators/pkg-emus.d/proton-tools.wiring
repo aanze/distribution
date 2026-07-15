@@ -6,5 +6,7 @@
     SM8250|SM8550|SM8650|SM8750)
       install_script "Update Proton CachyOS.sh"
       install_script "Rollback Proton CachyOS.sh"
+      install_script "Update Proton GE.sh"
+      install_script "Rollback Proton GE.sh"
       ;;
   esac
