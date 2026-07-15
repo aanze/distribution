@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Proton-GE Tools-menu icon for ROCKNIX (lightning bolt = "GE/juiced").
+     Dark filled background + white mark, matching the decky / cachyos /
+     perf-control tool icons so it reads cleanly on the steamlike cover-card
+     generator (which samples the dominant opaque colour). Paths only (no
+     <text>, no nested rotate transforms): nanosvg + ImageMagick safe. -->
+<svg width="100%" height="100%" viewBox="0 0 1200 1080" version="1.1"
+     xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="1200" height="1080" rx="96" fill="#2e2e2e"/>
+  <!-- outer ring -->
+  <path fill="#ffffff" d="M600 150
+    C 353 150 152 328 152 540 C 152 752 353 930 600 930 C 847 930 1048 752 1048 540 C 1048 328 847 150 600 150 Z
+    M600 222 C 806 222 976 366 976 540 C 976 714 806 858 600 858 C 394 858 224 714 224 540 C 224 366 394 222 600 222 Z"/>
+  <!-- lightning bolt -->
+  <path fill="#ffffff" d="M672 285 L 430 585 L 570 585 L 528 795 L 770 495 L 630 495 Z"/>
+</svg>
