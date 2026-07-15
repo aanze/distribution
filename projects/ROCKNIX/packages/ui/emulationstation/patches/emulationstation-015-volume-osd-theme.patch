@@ -107,7 +107,7 @@ unchanged.
  
  	bool mNormalizeNextUpdate;
 --- a/es-core/src/Window.cpp	2026-07-15 11:44:08.613567050 +0200
-+++ b/es-core/src/Window.cpp	2026-07-15 11:45:04.400224144 +0200
++++ b/es-core/src/Window.cpp	2026-07-15 14:05:38.536403451 +0200
 @@ -162,7 +162,10 @@
  		mBatteryIndicator = std::make_shared<BatteryIndicatorComponent>(this);
  	
@@ -131,6 +131,19 @@ unchanged.
  	for (auto extra : mScreenExtras)
  		delete extra;
  
+@@ -1311,7 +1319,12 @@
+ 	if (mBatteryIndicator)
+ 		mBatteryIndicator->applyTheme(theme, "screen", "batteryIndicator", ThemeFlags::ALL);
+ 	
++	// The popup is recreated on every theme change (menu palette may differ);
++	// the NEW instance must get the screen-view colors, else it falls back to
++	// the grey menu defaults. (This second creation site is why theming only
++	// the lazy-init instance was not enough - device-debugged 2026-07-15.)
+ 	mVolumeInfo = std::make_shared<VolumeInfoComponent>(this);
++	mVolumeInfo->applyScreenTheme(theme);
+ }
+ 
+ void Window::setGunCalibrationState(bool isCalibrating)
 --- a/es-core/src/ThemeData.cpp	2026-07-15 11:44:08.623771850 +0200
 +++ b/es-core/src/ThemeData.cpp	2026-07-15 11:45:04.400411344 +0200
 @@ -458,6 +458,9 @@
