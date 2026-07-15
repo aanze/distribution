@@ -47,6 +47,12 @@
    -->
    <view name="screen">
       <controllerActivity name="controllerActivity"><visible>false</visible></controllerActivity>
+      <!-- volume OSD (ES patch 015): gauge follows the theme accent; faint
+           white track instead of the grey-on-grey menu defaults -->
+      <volumeInfo name="volumeInfo">
+         <color>${colAccent}</color>
+         <backColor>FFFFFF40</backColor>
+      </volumeInfo>
    </view>
 
    <!--
