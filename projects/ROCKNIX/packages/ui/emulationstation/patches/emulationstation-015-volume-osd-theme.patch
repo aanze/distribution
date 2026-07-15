@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Anze <aanzdev@gmail.com>
+Date: Wed, 15 Jul 2026 11:46:53 +0200
+Subject: [PATCH] volume OSD: themable colors via the screen view
+
+The volume popup drew its gauge with the menu theme's Text/TextSmall
+colors - grey-on-grey with the steamlike dark menu palette. Register a
+'volumeInfo' element on the unified screen view (color = gauge fill,
+backColor = track) so a theme can restyle it; unthemed behavior is
+unchanged.
+
+--- a/es-core/src/components/VolumeInfoComponent.h	2026-07-15 11:44:08.603271850 +0200
++++ b/es-core/src/components/VolumeInfoComponent.h	2026-07-15 11:45:04.399839344 +0200
+@@ -4,6 +4,7 @@
+ #include "GuiComponent.h"
+ 
+ class ComponentGrid;
++class ThemeData;
+ class NinePatchComponent;
+ class TextComponent;
+ class Window;
+@@ -19,6 +20,10 @@
+ 
+ 	void reset() { mVolume = -1; }
+ 
++	// Optional colors from the current theme's screen view ("volumeInfo"
++	// element, color/backColor); falls back to the menu-theme greys.
++	void applyScreenTheme(const std::shared_ptr<ThemeData>& theme);
++
+ private:
+ 	NinePatchComponent* mFrame;
+ 	TextComponent*		mLabel;
+@@ -27,4 +32,8 @@
+ 
+ 	int mCheckTime;
+ 	int mDisplayTime;
++
++	unsigned int mBarColor;
++	unsigned int mTrackColor;
++	bool mThemedColors;
+ };
+\ No newline at end of file
+--- a/es-core/src/components/VolumeInfoComponent.cpp	2026-07-15 11:44:08.608544850 +0200
++++ b/es-core/src/components/VolumeInfoComponent.cpp	2026-07-15 11:45:04.399974744 +0200
+@@ -21,6 +21,9 @@
+ 	mDisplayTime = -1;
+ 	mVolume = -1;
+ 	mCheckTime = 0;
++	mBarColor = 0xFFFFFFFF;
++	mTrackColor = 0xFFFFFFFF;
++	mThemedColors = false;
+ 
+ 	auto theme = ThemeData::getMenuTheme();	
+ 
+@@ -115,6 +118,29 @@
+ 	}
+ }
+ 
++void VolumeInfoComponent::applyScreenTheme(const std::shared_ptr<ThemeData>& theme)
++{
++	mThemedColors = false;
++	if (theme == nullptr)
++		return;
++
++	const ThemeData::ThemeElement* elem = theme->getElement("screen", "volumeInfo", "volumeInfo");
++	if (elem == nullptr)
++		return;
++
++	if (elem->has("color"))
++	{
++		mBarColor = elem->get<unsigned int>("color");
++		mTrackColor = mBarColor;
++		mThemedColors = true;
++	}
++	if (elem->has("backColor"))
++	{
++		mTrackColor = elem->get<unsigned int>("backColor");
++		mThemedColors = true;
++	}
++}
++
+ void VolumeInfoComponent::render(const Transform4x4f& parentTrans)
+ {
+ 	if (!mVisible || mDisplayTime < 0)
+@@ -136,8 +162,11 @@
+ 	float w = getSize().x() - 2 * PADDING_PX - 2 * PADDING_BAR;
+ 	float h = getSize().y() - mLabel->getSize().y() - PADDING_PX - PADDING_PX;
+ 	
+-	Renderer::drawRect(x, y, w, h, (theme->Text.color & 0xFFFFFF00) | (opacity / 2));
++	unsigned int track = mThemedColors ? mTrackColor : theme->Text.color;
++	unsigned int bar = mThemedColors ? mBarColor : theme->TextSmall.color;
++
++	Renderer::drawRect(x, y, w, h, (track & 0xFFFFFF00) | (opacity / 2));
+ 
+ 	float px = (h*mVolume) / 100;
+-	Renderer::drawRect(x, y + h - px, w, px, (theme->TextSmall.color & 0xFFFFFF00) | opacity);
++	Renderer::drawRect(x, y + h - px, w, px, (bar & 0xFFFFFF00) | opacity);
+ }
+--- a/es-core/src/Window.h	2026-07-15 11:44:08.618683750 +0200
++++ b/es-core/src/Window.h	2026-07-15 11:45:04.400064944 +0200
+@@ -164,6 +164,7 @@
+ 	std::shared_ptr<TextComponent>	mClock;
+ 	std::shared_ptr<ControllerActivityComponent>	mControllerActivity;
+ 	std::shared_ptr<VolumeInfoComponent> mVolumeInfo;
++	std::shared_ptr<ThemeData> mScreenTheme;
+ 	std::shared_ptr<BatteryIndicatorComponent>	mBatteryIndicator;	
+ 
+ 	bool mNormalizeNextUpdate;
+--- a/es-core/src/Window.cpp	2026-07-15 11:44:08.613567050 +0200
++++ b/es-core/src/Window.cpp	2026-07-15 11:45:04.400224144 +0200
+@@ -162,7 +162,10 @@
+ 		mBatteryIndicator = std::make_shared<BatteryIndicatorComponent>(this);
+ 	
+ 	if (mVolumeInfo == nullptr)
++	{
+ 		mVolumeInfo = std::make_shared<VolumeInfoComponent>(this);
++		mVolumeInfo->applyScreenTheme(mScreenTheme);
++	}
+ 	else
+ 		mVolumeInfo->reset();
+ 
+@@ -1265,6 +1268,11 @@
+ 
+ void Window::onThemeChanged(const std::shared_ptr<ThemeData>& theme)
+ {
++	mScreenTheme = theme;
++
++	if (mVolumeInfo)
++		mVolumeInfo->applyScreenTheme(theme);
++
+ 	for (auto extra : mScreenExtras)
+ 		delete extra;
+ 
+--- a/es-core/src/ThemeData.cpp	2026-07-15 11:44:08.623771850 +0200
++++ b/es-core/src/ThemeData.cpp	2026-07-15 11:45:04.400411344 +0200
+@@ -458,6 +458,9 @@
+ 
+ 		{ "visible", BOOLEAN },
+ 		{ "zIndex", FLOAT } } },
++	{ "volumeInfo", {
++		{ "color", COLOR },
++		{ "backColor", COLOR } } },
+ 	{ "batteryIndicator", {
+ 		{ "pos", NORMALIZED_PAIR },
+ 		{ "size", NORMALIZED_PAIR },	
