@@ -36,6 +36,7 @@ case "$1" in
   start)
     if [ ! -e /dev/dpu_capture0 ]; then
       /usr/bin/mako-notify "Recording unavailable" -no-ra 2>/dev/null
+      /usr/bin/capture-feedback shot-fail >/dev/null 2>&1 &
       echo "no /dev/dpu_capture0"; exit 1
     fi
     is_running && { echo "already recording"; exit 0; }
@@ -46,6 +47,7 @@ case "$1" in
     # own unit -> survives input.service/sway/gamescope restarts across the switch
     systemd-run --collect --quiet --unit="$UNIT" "$REC" "$OUT" 0 "$FPS" "$ROT" || {
       /usr/bin/mako-notify "Recording failed to start" -no-ra 2>/dev/null
+      /usr/bin/capture-feedback shot-fail >/dev/null 2>&1 &
       echo "systemd-run failed"; exit 1
     }
     # resume watcher: re-arms capture after a Steam/gamescope session, but only
@@ -53,6 +55,8 @@ case "$1" in
     # churn) so we never arm into an unstable display.
     systemd-run --collect --quiet --unit="$WATCH" "$0" __resumewatch 2>/dev/null
     /usr/bin/mako-notify "Recording started" -no-ra 2>/dev/null
+    # LED-ring feedback: the toast above is invisible under gamescope/Steam
+    /usr/bin/capture-feedback record-start >/dev/null 2>&1 &
     echo "recording -> $OUT"
     ;;
   stop)
@@ -60,6 +64,7 @@ case "$1" in
     is_running || { rm -f "$OUTF"; exit 0; }
     systemctl stop "${UNIT}.service" 2>/dev/null   # SIGTERM -> encoder drains -> exit
     /usr/bin/mako-notify "Recording saved" -no-ra 2>/dev/null
+    /usr/bin/capture-feedback record-stop >/dev/null 2>&1 &
     [ -f "$OUTF" ] && echo "saved $(cat "$OUTF")"
     rm -f "$OUTF"
     ;;
