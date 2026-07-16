@@ -1,0 +1,32 @@
+From: ROCKNIX/DUCKTALE
+Subject: [PATCH] arm64: dts: ayn-odin3: disable DP altmode (VBUS-in-suspend wedge)
+
+The 7.1 bump brought the SM8750 display graph and with it USB-C
+DisplayPort altmode (mdss_dp0 wired to the QMP combo phy, enabled in the
+AYN dt). Since then, ANY charger plug/unplug while the device sits in
+deep suspend wedges the SoC hard (forced reset only): the cable event
+propagates through pmic_glink altmode -> typec mode-switch -> the DP
+controller whose MDSS GDSC/dispcc domain is still gated during early
+resume, and the register access hangs the NoC (no kernel crumbs
+possible - DPM-watchdog/SDAM instrumentation stays empty).
+
+7.0.11 with identical firmware had no mdss_dp0 node at all and never
+wedged. Disable the DP controller until the altmode resume ordering is
+fixed properly; USB-C video-out is lost, USB3 data is unaffected.
+
+--- a/arch/arm64/boot/dts/qcom/cq8725s-ayn-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/cq8725s-ayn-common.dtsi
+@@ -905,7 +905,12 @@
+ };
+ 
+ &mdss_dp0 {
+-	status = "okay";
++	/*
++	 * DP altmode: a cable event in deep suspend reaches the DP
++	 * controller before its power domain resumes -> NoC hang.
++	 * Keep disabled until the resume ordering is fixed.
++	 */
++	status = "disabled";
+ };
+ 
+ &mdss_dsi0 {
