@@ -1,0 +1,30 @@
+From: ROCKNIX/DUCKTALE
+Subject: [PATCH] ufs-qcom: let VCC settle before the reference clock (SM8750)
+
+A USB-C attach/detach while the SM8750 is in deep suspend wedges the SoC
+hard (screen dead, 20s forced reset). The cable event wakes the AP right
+while the PMIC is renegotiating its rails; UFS resume then powers VCC back
+up and immediately starts the reference clock on a still-ramping supply.
+Quiet suspends (no cable events) resume fine, and every resume already logs
+ufshcd_set_timestamp_attr/Query RSP anomalies on linux 7.1.
+
+7.1 introduced UFSHCD_QUIRK_VCC_ON_DELAY (a 1ms settle after VCC on in
+ufshcd_vreg_set_hpm) for exactly this class of platform, but no host sets
+it yet. Advertise it on qcom hosts.
+
+--- a/drivers/ufs/host/ufs-qcom.c
++++ b/drivers/ufs/host/ufs-qcom.c
+@@ -1305,6 +1305,13 @@ static void ufs_qcom_advertise_quirks(struct ufs_hba *hba)
+ 	if (host->hw_ver.major > 0x3)
+ 		hba->quirks |= UFSHCD_QUIRK_REINIT_AFTER_MAX_GEAR_SWITCH;
+
++	/*
++	 * Give VCC time to settle before the reference clock starts: a resume
++	 * triggered by a USB-C attach/detach races the PMIC rail renegotiation
++	 * and an unstable VCC at refclk-on wedges the UFS device (SM8750).
++	 */
++	hba->quirks |= UFSHCD_QUIRK_VCC_ON_DELAY;
++
+ 	if (drvdata && drvdata->quirks)
+ 		hba->quirks |= drvdata->quirks;
+ }
