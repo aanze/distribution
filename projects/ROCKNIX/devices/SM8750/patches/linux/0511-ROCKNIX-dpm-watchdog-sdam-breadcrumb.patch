@@ -70,7 +70,7 @@ Write the hung device's driver+name into a spare pmk8550 SDAM window
 +}
 +
 +#define ROCKNIX_PANIC_OFF	0x50
-+#define ROCKNIX_PANIC_LEN	0x68
++#define ROCKNIX_PANIC_LEN	0x20	/* stops before the RTC offset cell @0x70 (upstream PR #3033) */
 +
 +static int rocknix_panic_notify(struct notifier_block *nb,
 +				unsigned long event, void *data)
