@@ -1,0 +1,39 @@
+From: ROCKNIX/DUCKTALE
+Subject: [PATCH] soc: qcom: smp2p: pin protocol v1 (SM8750 ADSP contract)
+
+Linux 7.1 introduced SMP2P v2 support and the AP now self-advertises v2
+when the remote has not published a version yet. The SM8750 vendor ADSP
+firmware (which owns the charger stack) was never validated against v2
+negotiation. Two symptoms appeared with the 7.1 bump, both absent on
+7.0.11 with identical firmware:
+
+ - a permanent smp2p-adsp interrupt storm at runtime, and
+ - a hard SoC wedge (forced-reset only) whenever a USB-C VBUS event
+   (charger plug/unplug) arrives while the AP is in deep suspend: smp2p
+   also carries the sleepstate signal that tells the ADSP the AP is
+   asleep, and a broken contract leaves the fw handling the charger
+   event against a wrong AP state. DPM-watchdog/SDAM forensics show the
+   kernel never reaches a stuck device: the death is below the kernel.
+
+Pin the negotiated version to 1, restoring the exact 7.0 semantics on
+this platform.
+
+--- a/drivers/soc/qcom/smp2p.c
++++ b/drivers/soc/qcom/smp2p.c
+@@ -579,10 +579,12 @@ static int qcom_smp2p_alloc_outbound_item(struct qcom_smp2p *smp2p)
+ 	 * item by writing a valid version number.
+ 	 */
+ 	wmb();
+-	if (in_version && in_version <= 2)
+-		out->version = in_version;
+-	else
+-		out->version = 2;
++	/*
++	 * ROCKNIX: the SM8750 vendor ADSP was never validated against v2
++	 * negotiation (runtime irq storm + fw death on VBUS-in-suspend).
++	 * Keep the pre-7.1 contract.
++	 */
++	out->version = 1;
+ 
+ 	qcom_smp2p_kick(smp2p);
+ 
