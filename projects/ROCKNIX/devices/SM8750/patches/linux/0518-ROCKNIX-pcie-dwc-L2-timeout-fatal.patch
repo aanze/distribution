@@ -1,0 +1,29 @@
+From: ROCKNIX/DUCKTALE
+Subject: [PATCH] PCI: dwc: restore fatal L2-entry timeout on suspend (7.0 behavior)
+
+7.1 made PCIe L2-entry timeout non-fatal (warn + proceed to power-off)
+vs 7.0 (err + return). On the Odin 3 the WLAN endpoint intermittently
+misses the 10ms L2 ack at system suspend; 7.1 then tears the controller
+down in an inconsistent L2 state and a USB-C VBUS event during that sleep
+hangs the NoC via the half-collapsed PCIe controller -> hard wedge. 7.0
+(identical fw/DT) never wedges. Restore the 7.0 fatal-on-timeout path.
+
+--- a/drivers/pci/controller/dwc/pcie-designware-host.c
++++ b/drivers/pci/controller/dwc/pcie-designware-host.c
+@@ -1256,13 +1256,9 @@
+ 				PCIE_PME_TO_L2_TIMEOUT_US/10,
+ 				PCIE_PME_TO_L2_TIMEOUT_US, false, pci);
+ 	if (ret) {
+-		/*
+-		 * Failure is non-fatal since spec r7.0, sec 5.3.3.2.1,
+-		 * recommends proceeding with L2/L3 sequence even if one or more
+-		 * devices do not respond with PME_TO_Ack after 10ms timeout.
+-		 */
+-		dev_warn(pci->dev, "Timeout waiting for L2 entry! LTSSM: 0x%x\n", val);
+-		ret = 0;
++		/* Only log message when LTSSM isn't in DETECT or POLL */
++		dev_err(pci->dev, "Timeout waiting for L2 entry! LTSSM: 0x%x\n", val);
++		return ret;
+ 	}
+ 
+ 	/*
