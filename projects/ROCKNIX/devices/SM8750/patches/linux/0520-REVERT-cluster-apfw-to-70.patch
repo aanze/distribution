@@ -1,0 +1,201 @@
+From: ROCKNIX/DUCKTALE
+Subject: [REVERT-BISECT cut 1] mailbox core refactor to v7.0 (IPCC doorbell to ADSP)
+
+The 7.1 merge window refactored the generic mailbox core (active_req
+NULL -> MBOX_NO_MSG sentinel, TXDONE_* renames) and DELETED the private
+mailbox.h. All qcom AP<->ADSP signalling (smp2p, glink, rpmh) rings the
+IPCC doorbell through this core. Revert mailbox.c to v7.0 and restore
+the deleted mailbox.h. Safe: the only new-API consumer (tegra-hsp) is
+not built for sm8750. TEST-ONLY revert-bisect of the VBUS-in-suspend
+wedge.
+
+--- a/drivers/mailbox/mailbox.c
++++ b/drivers/mailbox/mailbox.c
+@@ -18,6 +18,8 @@
+ #include <linux/property.h>
+ #include <linux/spinlock.h>
+ 
++#include "mailbox.h"
++
+ static LIST_HEAD(mbox_cons);
+ static DEFINE_MUTEX(con_mutex);
+ 
+@@ -50,7 +52,7 @@
+ 	int err = -EBUSY;
+ 
+ 	scoped_guard(spinlock_irqsave, &chan->lock) {
+-		if (!chan->msg_count || chan->active_req != MBOX_NO_MSG)
++		if (!chan->msg_count || chan->active_req)
+ 			break;
+ 
+ 		count = chan->msg_count;
+@@ -72,7 +74,7 @@
+ 		}
+ 	}
+ 
+-	if (!err && (chan->txdone_method & MBOX_TXDONE_BY_POLL)) {
++	if (!err && (chan->txdone_method & TXDONE_BY_POLL)) {
+ 		/* kick start the timer immediately to avoid delays */
+ 		scoped_guard(spinlock_irqsave, &chan->mbox->poll_hrt_lock)
+ 			hrtimer_start(&chan->mbox->poll_hrt, 0, HRTIMER_MODE_REL);
+@@ -85,13 +87,13 @@
+ 
+ 	scoped_guard(spinlock_irqsave, &chan->lock) {
+ 		mssg = chan->active_req;
+-		chan->active_req = MBOX_NO_MSG;
++		chan->active_req = NULL;
+ 	}
+ 
+ 	/* Submit next message */
+ 	msg_submit(chan);
+ 
+-	if (mssg == MBOX_NO_MSG)
++	if (!mssg)
+ 		return;
+ 
+ 	/* Notify the client */
+@@ -112,7 +114,7 @@
+ 	for (i = 0; i < mbox->num_chans; i++) {
+ 		struct mbox_chan *chan = &mbox->chans[i];
+ 
+-		if (chan->active_req != MBOX_NO_MSG && chan->cl) {
++		if (chan->active_req && chan->cl) {
+ 			txdone = chan->mbox->ops->last_tx_done(chan);
+ 			if (txdone)
+ 				tx_tick(chan, 0);
+@@ -162,7 +164,7 @@
+  */
+ void mbox_chan_txdone(struct mbox_chan *chan, int r)
+ {
+-	if (unlikely(!(chan->txdone_method & MBOX_TXDONE_BY_IRQ))) {
++	if (unlikely(!(chan->txdone_method & TXDONE_BY_IRQ))) {
+ 		dev_err(chan->mbox->dev,
+ 		       "Controller can't run the TX ticker\n");
+ 		return;
+@@ -183,7 +185,7 @@
+  */
+ void mbox_client_txdone(struct mbox_chan *chan, int r)
+ {
+-	if (unlikely(!(chan->txdone_method & MBOX_TXDONE_BY_ACK))) {
++	if (unlikely(!(chan->txdone_method & TXDONE_BY_ACK))) {
+ 		dev_err(chan->mbox->dev, "Client can't run the TX ticker\n");
+ 		return;
+ 	}
+@@ -217,29 +219,6 @@
+ EXPORT_SYMBOL_GPL(mbox_client_peek_data);
+ 
+ /**
+- * mbox_chan_tx_slots_available - Query the number of available TX queue slots.
+- * @chan: Mailbox channel to query.
+- *
+- * Clients may call this to check how many messages can be queued via
+- * mbox_send_message() before the channel's TX queue is full. This helps
+- * clients avoid the -ENOBUFS error without needing to increase
+- * MBOX_TX_QUEUE_LEN.
+- * This can be called from atomic context.
+- *
+- * Return: Number of available slots in the channel's TX queue.
+- */
+-unsigned int mbox_chan_tx_slots_available(struct mbox_chan *chan)
+-{
+-	unsigned int ret;
+-
+-	guard(spinlock_irqsave)(&chan->lock);
+-	ret = MBOX_TX_QUEUE_LEN - chan->msg_count;
+-
+-	return ret;
+-}
+-EXPORT_SYMBOL_GPL(mbox_chan_tx_slots_available);
+-
+-/**
+  * mbox_send_message -	For client to submit a message to be
+  *				sent to the remote.
+  * @chan: Mailbox channel assigned to this client.
+@@ -267,7 +246,7 @@
+ {
+ 	int t;
+ 
+-	if (!chan || !chan->cl || mssg == MBOX_NO_MSG)
++	if (!chan || !chan->cl)
+ 		return -EINVAL;
+ 
+ 	t = add_to_rbuf(chan, mssg);
+@@ -340,12 +319,12 @@
+ 	scoped_guard(spinlock_irqsave, &chan->lock) {
+ 		chan->msg_free = 0;
+ 		chan->msg_count = 0;
+-		chan->active_req = MBOX_NO_MSG;
++		chan->active_req = NULL;
+ 		chan->cl = cl;
+ 		init_completion(&chan->tx_complete);
+ 
+-		if (chan->txdone_method	== MBOX_TXDONE_BY_POLL && cl->knows_txdone)
+-			chan->txdone_method = MBOX_TXDONE_BY_ACK;
++		if (chan->txdone_method	== TXDONE_BY_POLL && cl->knows_txdone)
++			chan->txdone_method = TXDONE_BY_ACK;
+ 	}
+ 
+ 	if (chan->mbox->ops->startup) {
+@@ -362,7 +341,7 @@
+ }
+ 
+ /**
+- * mbox_bind_client - Bind client to a mailbox channel.
++ * mbox_bind_client - Request a mailbox channel.
+  * @chan: The mailbox channel to bind the client to.
+  * @cl: Identity of the client requesting the channel.
+  *
+@@ -498,9 +477,9 @@
+ 	/* The queued TX requests are simply aborted, no callbacks are made */
+ 	scoped_guard(spinlock_irqsave, &chan->lock) {
+ 		chan->cl = NULL;
+-		chan->active_req = MBOX_NO_MSG;
+-		if (chan->txdone_method == MBOX_TXDONE_BY_ACK)
+-			chan->txdone_method = MBOX_TXDONE_BY_POLL;
++		chan->active_req = NULL;
++		if (chan->txdone_method == TXDONE_BY_ACK)
++			chan->txdone_method = TXDONE_BY_POLL;
+ 	}
+ 
+ 	module_put(chan->mbox->dev->driver->owner);
+@@ -530,13 +509,13 @@
+ 		return -EINVAL;
+ 
+ 	if (mbox->txdone_irq)
+-		txdone = MBOX_TXDONE_BY_IRQ;
++		txdone = TXDONE_BY_IRQ;
+ 	else if (mbox->txdone_poll)
+-		txdone = MBOX_TXDONE_BY_POLL;
++		txdone = TXDONE_BY_POLL;
+ 	else /* It has to be ACK then */
+-		txdone = MBOX_TXDONE_BY_ACK;
++		txdone = TXDONE_BY_ACK;
+ 
+-	if (txdone == MBOX_TXDONE_BY_POLL) {
++	if (txdone == TXDONE_BY_POLL) {
+ 
+ 		if (!mbox->ops->last_tx_done) {
+ 			dev_err(mbox->dev, "last_tx_done method is absent\n");
+@@ -552,7 +531,6 @@
+ 
+ 		chan->cl = NULL;
+ 		chan->mbox = mbox;
+-		chan->active_req = MBOX_NO_MSG;
+ 		chan->txdone_method = txdone;
+ 		spin_lock_init(&chan->lock);
+ 	}
+--- /dev/null
++++ b/drivers/mailbox/mailbox.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++
++#ifndef __MAILBOX_H
++#define __MAILBOX_H
++
++#include <linux/bits.h>
++
++#define TXDONE_BY_IRQ	BIT(0) /* controller has remote RTR irq */
++#define TXDONE_BY_POLL	BIT(1) /* controller can read status of last TX */
++#define TXDONE_BY_ACK	BIT(2) /* S/W ACK received by Client ticks the TX */
++
++#endif /* __MAILBOX_H */
