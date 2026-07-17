@@ -1,0 +1,72 @@
+From: ROCKNIX/DUCKTALE
+Subject: [PATCH] thermal: restore pre-7.1 PM-notifier suspend ordering (test)
+
+See branch commit message: bisect shows the SM8750 VBUS-in-suspend fw
+wedge entered with the 7.1 merge window; qcom tsens/LMh are unchanged,
+the thermal core moved zone suspension from the PM notifier (before all
+device suspends) into dpm_prepare/dpm_complete. TSENS hw is fw-shared
+(LMh). Restore the 7.0 ordering as a diagnostic.
+
+--- a/drivers/base/power/main.c
++++ b/drivers/base/power/main.c
+@@ -1283,8 +1283,6 @@
+ 	list_splice(&list, &dpm_list);
+ 	mutex_unlock(&dpm_list_mtx);
+ 
+-	/* Start resuming thermal control */
+-	thermal_pm_complete();
+ 	/* Allow device probing and trigger re-probing of deferred devices */
+ 	device_unblock_probing();
+ 	trace_suspend_resume(TPS("dpm_complete"), state.event, false);
+@@ -2228,8 +2226,6 @@
+ 	 * instead. The normal behavior will be restored in dpm_complete().
+ 	 */
+ 	device_block_probing();
+-	/* Suspend thermal control. */
+-	thermal_pm_prepare();
+ 
+ 	mutex_lock(&dpm_list_mtx);
+ 	while (!list_empty(&dpm_list) && !error) {
+--- a/drivers/thermal/thermal_core.c
++++ b/drivers/thermal/thermal_core.c
+@@ -1879,6 +1879,31 @@
+ 		thermal_zone_pm_complete(tz);
+ }
+ 
++static int thermal_pm_notify(struct notifier_block *nb,
++			     unsigned long mode, void *_unused)
++{
++	switch (mode) {
++	case PM_HIBERNATION_PREPARE:
++	case PM_RESTORE_PREPARE:
++	case PM_SUSPEND_PREPARE:
++		thermal_pm_prepare();
++		break;
++	case PM_POST_HIBERNATION:
++	case PM_POST_RESTORE:
++	case PM_POST_SUSPEND:
++		thermal_pm_complete();
++		break;
++	default:
++		break;
++	}
++	return 0;
++}
++
++static struct notifier_block thermal_pm_nb = {
++	.notifier_call = thermal_pm_notify,
++	.priority = INT_MIN,
++};
++
+ static int __init thermal_init(void)
+ {
+ 	int result;
+@@ -1905,6 +1930,8 @@
+ 
+ 	thermal_class_unavailable = false;
+ 
++	register_pm_notifier(&thermal_pm_nb);
++
+ 	return 0;
+ 
+ unregister_governors:
