@@ -32,7 +32,7 @@ case ${DEVICE} in
     PKG_PATCH_DIRS+=" 7.0"
     ;;
   SM8750)
-    PKG_VERSION="7.1-rc2"
+    PKG_VERSION="7.1-rc1"
     PKG_URL="https://github.com/torvalds/linux/archive/refs/tags/v${PKG_VERSION}.tar.gz"
     PKG_SOURCE_NAME="linux-${PKG_VERSION}.tar.gz"
     PKG_PATCH_DIRS+=" 7.0"
