@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- First-run Kodi settings seed for the Plex (PM4K) client session.
+     ES/oledsaver owns idle handling, so Kodi's own screensaver and display
+     power management stay off. Copied once by kodi-setup ensure; user
+     changes are never overwritten afterwards. -->
+<settings version="2">
+	<setting id="screensaver.mode"></setting>
+	<setting id="powermanagement.displaysoff">0</setting>
+	<!-- never let Kodi touch the display mode: the Odin 3 DSI pipeline wedges
+	     hard on external mode-switch attempts (known device failure class) -->
+	<setting id="videoplayer.adjustrefreshrate">0</setting>
+	<setting id="videoscreen.whitelist"></setting>
+</settings>
