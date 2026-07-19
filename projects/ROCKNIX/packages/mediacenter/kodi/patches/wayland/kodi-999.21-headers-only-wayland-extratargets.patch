@@ -1,0 +1,16 @@
+The HEADERS_ONLY=ON configure (kodi:host, used to install the addon-dev
+headers for binary addons) has no libkodi target, but the wayland platform's
+ExtraTargets unconditionally adds a dependency on it. Guard it. LibreELEC
+never hits this because it pairs headers-only with the GBM platform.
+
+--- a/cmake/scripts/linux/ExtraTargets.cmake
++++ b/cmake/scripts/linux/ExtraTargets.cmake
+@@ -36,5 +36,7 @@
+   add_custom_target(generate-wayland-extra-protocols DEPENDS wayland-extra-protocols.hpp)
+   # ToDo: turn this into a TARGET OBJECT. For now, a custum target doesnt play nice with
+   # our PLATFORM_GLOBAL_TARGET_DEPS usage in macros
+-  add_dependencies(lib${APP_NAME_LC} generate-wayland-extra-protocols)
++  if(TARGET lib${APP_NAME_LC})
++    add_dependencies(lib${APP_NAME_LC} generate-wayland-extra-protocols)
++  endif()
+ endif()

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Gamepad quit path for the Plex (Kodi/PM4K) session: hold Back/Select 2s
+     to quit Kodi cleanly and return to EmulationStation. The global
+     L1+START+SELECT combo (set_kill -> killall kodi.bin) stays the hard
+     fallback. -->
+<keymap>
+	<global>
+		<joystick profile="game.controller.default">
+			<back holdtime="2000">Quit</back>
+		</joystick>
+	</global>
+</keymap>
