@@ -1,0 +1,24 @@
+    <game>
+        <path>./Install Kodi.sh</path>
+        <name>Install Kodi</name>
+        <desc>Enables the Kodi section (Kodi 21 media center, bundled in the image - no download needed). Gamepad-ready, with the PM4K Plex client preinstalled: Direct Plays your library including HEVC, so your Plex server never transcodes (sign in with a plex.tv/link code, no on-device keyboard needed). Install any other addon from the official Kodi repository. EmulationStation restarts automatically after enabling. Exit Kodi from the power menu, a 2s hold on Back, or L1+START+SELECT.</desc>
+        <developer>XBMC Foundation</developer>
+        <publisher>ROCKNIX</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/kodi.svg</image>
+    </game>
+    <game>
+        <path>./Uninstall Kodi.sh</path>
+        <name>Uninstall Kodi</name>
+        <desc>Hides the Kodi section by removing its launcher. The bundled media center stays in the image and your Kodi/Plex data under /storage/.kodi is kept. EmulationStation restarts automatically.</desc>
+        <developer>ROCKNIX</developer>
+        <publisher>ROCKNIX</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/kodi.svg</image>
+    </game>
