@@ -1,0 +1,13 @@
+crossguid (2019 snapshot) uses uint64_t without including <cstdint>, which
+newer libstdc++ (gcc >= 13) no longer pulls in transitively.
+
+--- a/include/crossguid/guid.hpp
++++ b/include/crossguid/guid.hpp
+@@ -30,6 +30,7 @@
+ #include <jni.h>
+ #endif
+ 
++#include <cstdint>
+ #include <functional>
+ #include <iostream>
+ #include <array>
