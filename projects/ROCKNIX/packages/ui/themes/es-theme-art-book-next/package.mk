@@ -18,4 +18,6 @@ makeinstall_target() {
     # upstream. The theme resolves carousel logos by convention
     # (logos/${system.theme}.svg).
     cp -f ${PKG_DIR}/sources/geforcenow.svg ${INSTALL}/usr/share/themes/${PKG_NAME}/_inc/systems/logos/geforcenow.svg
+    # ROCKNIX add-on: system logo for the Kodi section (kodi-app).
+    cp -f ${PKG_DIR}/sources/kodi.svg ${INSTALL}/usr/share/themes/${PKG_NAME}/_inc/systems/logos/kodi.svg
 }
