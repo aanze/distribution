@@ -174,6 +174,11 @@
         <desc>Enables GeForce NOW (gfn-electron), a native-arm64 GeForce NOW client bundled in the image - no download needed. After enabling, restart EmulationStation and launch it from the GeForce NOW section in the main menu. First login: use your NVIDIA account or Discord (Google sign-in is blocked inside Electron). On-screen keyboard: hold the left Home button + tap the screen.</desc>
         <developer>hmlendea</developer>
         <publisher>hmlendea</publisher>
+        <path>./Install Kodi.sh</path>
+        <name>Install Kodi</name>
+        <desc>Enables the Kodi section (Kodi 21 media center, bundled in the image - no download needed). Gamepad-ready, with the PM4K Plex client preinstalled: Direct Plays your library including HEVC, so your Plex server never transcodes (sign in with a plex.tv/link code, no on-device keyboard needed). Install any other addon from the official Kodi repository. EmulationStation restarts automatically after enabling. Exit Kodi from the power menu, a 2s hold on Back, or L1+START+SELECT.</desc>
+        <developer>XBMC Foundation</developer>
+        <publisher>ROCKNIX</publisher>
         <rating>5.0</rating>
         <releasedate>2026</releasedate>
         <genre>Tool</genre>
@@ -184,6 +189,12 @@
         <path>./Uninstall GeForce NOW.sh</path>
         <name>Uninstall GeForce NOW</name>
         <desc>Hides the GeForce NOW (gfn-electron) section by removing its launcher. The bundled client stays in the image and your NVIDIA login under /storage/.config/gfn-electron is kept. The section disappears after restarting EmulationStation.</desc>
+        <image>./images/kodi.svg</image>
+    </game>
+    <game>
+        <path>./Uninstall Kodi.sh</path>
+        <name>Uninstall Kodi</name>
+        <desc>Hides the Kodi section by removing its launcher. The bundled media center stays in the image and your Kodi/Plex data under /storage/.kodi is kept. EmulationStation restarts automatically.</desc>
         <developer>ROCKNIX</developer>
         <publisher>ROCKNIX</publisher>
         <rating>5.0</rating>
@@ -191,6 +202,7 @@
         <genre>Tool</genre>
         <players>1</players>
         <image>./images/geforcenow.png</image>
+        <image>./images/kodi.svg</image>
     </game>
     <game>
         <path>./Start AetherSX2.sh</path>
