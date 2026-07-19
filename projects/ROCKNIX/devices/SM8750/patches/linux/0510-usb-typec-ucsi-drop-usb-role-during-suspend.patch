@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Anze <aanzdev@gmail.com>
+Date: Sun, 19 Jul 2026 12:30:00 +0200
+Subject: [PATCH] usb: typec: ucsi: drop USB data role during system suspend
+
+The charger-unplug wedge fix (0509) only clears the USB data role for
+partners that advertise no USB data. A dock DOES advertise USB data, so
+the role stays attached across suspend, the USB power island stays up,
+and the SM8750 firmware power-collapse hard-hangs on cable events while
+asleep, exactly like the charger case.
+
+Force USB_ROLE_NONE on every UCSI connector at suspend entry and
+restore the saved role at resume. If the partner vanished while asleep
+the post-resume UCSI connector-change event corrects the role anyway.
+
+Device-tested on AYN Odin 3: dock attached -> suspend -> dock unplugged
+while asleep -> clean resume (previously a hard wedge).
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+--- a/drivers/usb/typec/ucsi/ucsi.c
++++ b/drivers/usb/typec/ucsi/ucsi.c
+@@ -14,11 +14,74 @@
+ #include <linux/slab.h>
+ #include <linux/usb/typec_dp.h>
+ #include <linux/usb/typec_tbt.h>
++#include <linux/suspend.h>
+ 
+ #include "ucsi.h"
+ #include "trace.h"
+ 
+ /*
++ * ROCKNIX/aanze dock-suspend experiment: the charger-unplug wedge fix
++ * (u_role gating revert) only drops the USB data role for partners that
++ * advertise no USB data. A dock DOES advertise USB data, so the role stays
++ * attached across suspend, the USB power island stays up, and the firmware
++ * power-collapse wedges on cable events just like the charger case.
++ * Force USB_ROLE_NONE on every connector at suspend entry and restore the
++ * saved role at resume (a post-resume UCSI connector-change event corrects
++ * it anyway if the partner vanished while asleep).
++ */
++static struct ucsi *rck_pm_ucsi;
++static enum usb_role rck_saved_role[8];
++
++static int rck_ucsi_pm_notify(struct notifier_block *nb, unsigned long action,
++			      void *data)
++{
++	struct ucsi *ucsi = rck_pm_ucsi;
++	int i, n;
++
++	if (!ucsi || !ucsi->connector)
++		return NOTIFY_DONE;
++
++	n = min_t(int, ucsi->cap.num_connectors, ARRAY_SIZE(rck_saved_role));
++
++	switch (action) {
++	case PM_SUSPEND_PREPARE:
++		for (i = 0; i < n; i++) {
++			struct ucsi_connector *con = &ucsi->connector[i];
++
++			if (!con->usb_role_sw)
++				continue;
++			rck_saved_role[i] =
++				usb_role_switch_get_role(con->usb_role_sw);
++			usb_role_switch_set_role(con->usb_role_sw,
++						 USB_ROLE_NONE);
++			dev_info(ucsi->dev,
++				 "rck: con%d role %d -> NONE for suspend\n",
++				 i + 1, rck_saved_role[i]);
++		}
++		break;
++	case PM_POST_SUSPEND:
++		for (i = 0; i < n; i++) {
++			struct ucsi_connector *con = &ucsi->connector[i];
++
++			if (!con->usb_role_sw)
++				continue;
++			usb_role_switch_set_role(con->usb_role_sw,
++						 rck_saved_role[i]);
++			dev_info(ucsi->dev,
++				 "rck: con%d role restored to %d\n",
++				 i + 1, rck_saved_role[i]);
++		}
++		break;
++	}
++
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block rck_ucsi_pm_nb = {
++	.notifier_call = rck_ucsi_pm_notify,
++};
++
++/*
+  * UCSI_TIMEOUT_MS - PPM communication timeout
+  *
+  * Ideally we could use MIN_TIME_TO_RESPOND_WITH_BUSY (which is defined in UCSI
+@@ -1919,6 +1982,12 @@
+ 	ucsi->connector = connector;
+ 	ucsi->ntfy = ntfy;
+ 
++	/* ROCKNIX/aanze dock-suspend experiment (see rck_ucsi_pm_notify) */
++	if (!rck_pm_ucsi) {
++		rck_pm_ucsi = ucsi;
++		register_pm_notifier(&rck_ucsi_pm_nb);
++	}
++
+ 	mutex_lock(&ucsi->ppm_lock);
+ 	ret = ucsi->ops->read_cci(ucsi, &cci);
+ 	mutex_unlock(&ucsi->ppm_lock);
