@@ -13,7 +13,8 @@ PKG_DEPENDS_TARGET="toolchain"
 PKG_LONGDESC="A high-speed version of libjpeg for x86 and x86-64 processors which uses SIMD."
 PKG_BUILD_FLAGS="+pic +pic:host"
 
-PKG_CMAKE_OPTS_HOST="-DENABLE_STATIC=ON \
+PKG_CMAKE_OPTS_HOST="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+                     -DENABLE_STATIC=ON \
                      -DENABLE_SHARED=OFF \
                      -DWITH_JPEG8=ON \
                      -DWITH_SIMD=OFF"
