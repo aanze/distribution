@@ -1,0 +1,7 @@
+<advancedsettings version="1.0">
+  <gputempcommand>/usr/bin/gputemp</gputempcommand>
+
+  <!-- ROCKNIX: unlike LE, quitting Kodi is THE clean exit (back to ES) -->
+  <showexitbutton>true</showexitbutton>
+  <remotedelay>1</remotedelay>
+</advancedsettings>
