@@ -160,6 +160,7 @@ configure_target() {
               --disable-static \
               --enable-shared \
               --enable-version3 \
+              --enable-gpl \
               --enable-logging \
               --disable-doc \
               ${PKG_FFMPEG_DEBUG} \
