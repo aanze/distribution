@@ -45,6 +45,17 @@ case "${DEVICE}" in
     ;;
 esac
 
+# kodi-app (Kodi 21 media center + PM4K Plex client, bundled; opt-in ES
+# section created by Tools > "Install Kodi"). Its own device-gated statement
+# so this personal feature cherry-picks cleanly over upstream emulator-list
+# churn. Its launchers/ES wiring live in the makeinstall_target Steam block
+# further down.
+case "${DEVICE}" in
+  SM8250|SM8550|SM8650|SM8750)
+    PKG_EMUS+=" kodi-app"
+    ;;
+esac
+
 ### Emulators or cores for specific devices
 case "${DEVICE}" in
   H700|RK3326)
@@ -751,6 +762,11 @@ makeinstall_target() {
       install_script "Install GeForce NOW.sh"
       install_script "Uninstall GeForce NOW.sh"
       add_es_system geforcenow
+      ## kodi-app (Kodi 21 + PM4K Plex client, bundled; opt-in section)
+      add_emu_core kodi kodi kodi true
+      install_script "Install Kodi.sh"
+      install_script "Uninstall Kodi.sh"
+      add_es_system kodi
       ;;
   esac
 
