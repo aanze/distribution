@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Re-create the opt-in Plex ES section at boot for users who installed it
+# (a fresh flash stays hidden until Tools > "Install Kodi"). Idempotent,
+# respects the .installed marker - see kodi-setup.
+
+/usr/bin/kodi-setup boot
