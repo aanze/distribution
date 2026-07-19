@@ -404,6 +404,7 @@ function Content() {
             await refreshPresets();
             await refreshFanCurve();
         })();
+        let canonTick = 0;
         const interval = setInterval(() => {
             if (switching)
                 return; // skip entire tick during profile switch to avoid RPC queue buildup
@@ -411,6 +412,21 @@ function Content() {
                 setRunningAppId(state.runningAppId);
             if (state.runningGameName !== gameNameRef.current)
                 setGameName(state.runningGameName);
+            // Re-read Perf Control's canonical "active" every 3rd tick. The mount
+            // effect only resolves ONCE, but Steam keeps the QAM panel mounted
+            // across openings — so a profile switched in the Perf Control Tools app
+            // (ES) was never picked up and the dropdown showed a stale name until a
+            // full Steam restart. Cheap RPC (single JSON read), guarded like the
+            // mount path so an in-flight user pick can't be clobbered.
+            if (++canonTick % 3 === 0 && state.runningAppId === 0) {
+                const epoch = selectionEpoch;
+                getActiveProfile().then((a) => {
+                    if (a && epoch === selectionEpoch && !switching && a !== state.activePreset) {
+                        state.activePreset = a;
+                        setSelectedPreset(a);
+                    }
+                }).catch(() => { });
+            }
             getTemps().then((t) => {
                 setTemps((prev) => (prev.cpu === t.cpu && prev.gpu === t.gpu) ? prev : t);
             });
