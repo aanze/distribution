@@ -1,0 +1,131 @@
+#!/bin/bash
+
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Create/remove the opt-in "Kodi" ES section and seed Kodi/PM4K userdata.
+# Modes:
+#   install    Tools > "Install Kodi": create the section + mark installed
+#   uninstall  Tools > "Uninstall Kodi": remove the section (keeps /storage/.kodi)
+#   boot       autostart hook: re-create the section only if installed before
+#   ensure     idempotent first-run userdata seed (called by start_kodi.sh)
+#
+# The client itself (Kodi + PM4K) is baked in the image; "install" only
+# creates /storage/roms/kodi. An empty/missing roms dir keeps the system off
+# the ES carousel entirely (ES only lists systems with >=1 game), which is
+# what makes the section opt-in. The seed gamelist.xml also makes the
+# Steamlike Theme Manager discover the section (it enumerates by gamelist).
+
+CONF_DIR="/storage/.config/kodi-app"
+INSTALLED_MARK="${CONF_DIR}/.installed"
+SEEDED_MARK="${CONF_DIR}/.seeded"
+ROMS_DIR="/storage/roms/kodi"
+LAUNCHER="${ROMS_DIR}/Kodi.sh"
+SEED_DIR="/usr/share/kodi-app/seed"
+KODI_USERDATA="/storage/.kodi/userdata"
+
+create_section() {
+  mkdir -p "${ROMS_DIR}"
+  cat > "${LAUNCHER}" <<'EOF'
+#!/bin/bash
+exec /usr/bin/start_kodi.sh
+EOF
+  chmod 0755 "${LAUNCHER}"
+
+  if [ ! -f "${ROMS_DIR}/gamelist.xml" ]; then
+    cat > "${ROMS_DIR}/gamelist.xml" <<'EOF'
+<?xml version="1.0"?>
+<gameList>
+	<game>
+		<path>./Kodi.sh</path>
+		<name>Kodi</name>
+		<desc>Kodi 21 media center, gamepad-ready, with the PM4K Plex client preinstalled (Add-ons row; sign in with a plex.tv/link code). Direct Plays everything - HEVC included. Install any addon from the official Kodi repository. Exit: quit from the power menu, hold Back 2s, or L1+START+SELECT.</desc>
+		<genre>Media</genre>
+		<players>1</players>
+	</game>
+</gameList>
+EOF
+  fi
+}
+
+seed_userdata() {
+  # PM4K renders its skin templates INTO its own addon directory, which is
+  # read-only squashfs for the baked system copy -> it needs a writable
+  # working copy under /storage/.kodi/addons (the home copy shadows the
+  # system one at equal/higher version). Refresh it when the image ships a
+  # newer bundle; PM4K's own repo updates land in the home copy and are
+  # never clobbered (stamp tracks the BUNDLED version, not the home one).
+  # NB: addon.xml spreads attributes over several lines - parse it properly
+  BUNDLE_VER="$(python3 -c 'import xml.etree.ElementTree as ET; \
+print(ET.parse("/usr/share/kodi/addons/script.plexmod/addon.xml").getroot().get("version") or "")' 2>/dev/null)"
+  VER_STAMP="${CONF_DIR}/.bundled-plexmod-version"
+  if [ ! -d /storage/.kodi/addons/script.plexmod ] || \
+     [ "$(cat "${VER_STAMP}" 2>/dev/null)" != "${BUNDLE_VER}" ]; then
+    mkdir -p /storage/.kodi/addons
+    rm -rf /storage/.kodi/addons/script.plexmod.new
+    cp -r /usr/share/kodi/addons/script.plexmod /storage/.kodi/addons/script.plexmod.new
+    rm -rf /storage/.kodi/addons/script.plexmod
+    mv /storage/.kodi/addons/script.plexmod.new /storage/.kodi/addons/script.plexmod
+    mkdir -p "${CONF_DIR}"
+    echo "${BUNDLE_VER}" > "${VER_STAMP}"
+  fi
+
+  # gamepad buttonmap for the InputPlumber virtual pad (peripheral.joystick
+  # detects the pad but ships no map for it); never clobber a user remap
+  BMAP_DIR="${KODI_USERDATA}/addon_data/peripheral.joystick/resources/buttonmaps/xml/linux"
+  if [ ! -f "${BMAP_DIR}/Microsoft_X-Box_One_Elite_2_pad_19b_8a.xml" ]; then
+    mkdir -p "${BMAP_DIR}"
+    cp "${SEED_DIR}/joystick-buttonmap-elite2.xml" \
+       "${BMAP_DIR}/Microsoft_X-Box_One_Elite_2_pad_19b_8a.xml"
+  fi
+
+  [ -f "${SEEDED_MARK}" ] && return 0
+  mkdir -p "${KODI_USERDATA}/keymaps" "${KODI_USERDATA}/addon_data/script.plexmod"
+  # never clobber an existing userdata (reinstall keeps login + settings)
+  [ -f "${KODI_USERDATA}/guisettings.xml" ] || \
+    cp "${SEED_DIR}/guisettings.xml" "${KODI_USERDATA}/guisettings.xml"
+  cp "${SEED_DIR}/kodi-gamepad.xml" "${KODI_USERDATA}/keymaps/kodi-gamepad.xml"
+  mkdir -p "${CONF_DIR}"
+  touch "${SEEDED_MARK}"
+}
+
+case "${1}" in
+  install)
+    mkdir -p "${CONF_DIR}"
+    create_section
+    touch "${INSTALLED_MARK}"
+    seed_userdata
+    echo "Kodi installed - EmulationStation will now restart to show the"
+    echo "new Kodi section."
+    echo ""
+    echo "The PM4K Plex client is preinstalled (Add-ons row): first run shows a"
+    echo "plex.tv/link sign-in code - enter it on your phone or PC."
+    sleep 6
+    # restart ES from OUTSIDE its own cgroup (this script is an ES child);
+    # a transient timer survives the service restart
+    systemd-run --quiet --on-active=2 systemctl restart essway 2>/dev/null || true
+    ;;
+  uninstall)
+    rm -f "${LAUNCHER}" "${ROMS_DIR}/gamelist.xml"
+    rmdir "${ROMS_DIR}" 2>/dev/null || true
+    rm -f "${INSTALLED_MARK}"
+    echo "Kodi section removed - EmulationStation will now restart."
+    echo ""
+    echo "Your Kodi/Plex data in /storage/.kodi was kept;"
+    echo "delete that folder manually for a full wipe."
+    sleep 6
+    systemd-run --quiet --on-active=2 systemctl restart essway 2>/dev/null || true
+    ;;
+  boot)
+    [ -f "${INSTALLED_MARK}" ] || exit 0
+    [ -x "${LAUNCHER}" ] && exit 0
+    create_section
+    ;;
+  ensure)
+    seed_userdata
+    ;;
+  *)
+    echo "usage: $(basename "${0}") install|uninstall|boot|ensure" >&2
+    exit 1
+    ;;
+esac
