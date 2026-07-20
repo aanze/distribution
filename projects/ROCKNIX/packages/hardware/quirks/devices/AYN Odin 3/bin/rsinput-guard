@@ -1,0 +1,56 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX/DUCKTALE
+#
+# Health check for the AYN Odin 3 MCU gamepad (rsinput, serdev). The MCU
+# link is flaky: the serial probe can fail at boot ("Checksum mismatch"),
+# and an InputPlumber restart can kill the input device -- seen live
+# 2026-07-20 as a /proc/bus/input entry whose /dev/input node was gone.
+# When that happens the pad is simply dead until a manual modprobe cycle.
+#
+# Run periodically (transient timer installed by 052-stick-calibration).
+# Two consecutive unhealthy checks -> reload the module (the udev rule
+# re-applies the calibration on module add), then make sure InputPlumber
+# picked the pad back up. No-op while the module is unloaded (suspend).
+
+MISS=/run/rsinput/guard-miss
+
+if [ ! -d /sys/module/rsinput ]; then
+  rm -f "${MISS}"
+  exit 0
+fi
+
+ev=$(grep -A6 'Name="AYN Odin3 Gamepad"' /proc/bus/input/devices 2>/dev/null \
+     | sed -n 's/.*\(event[0-9]\+\).*/\1/p' | head -n1)
+if [ -n "${ev}" ] && [ -e "/dev/input/${ev}" ]; then
+  rm -f "${MISS}"
+  exit 0
+fi
+
+m=$(( $(cat "${MISS}" 2>/dev/null || echo 0) + 1 ))
+if [ ${m} -lt 2 ]; then
+  echo ${m} > "${MISS}"
+  exit 0
+fi
+rm -f "${MISS}"
+
+logger -t rsinput-guard "gamepad dead (proc='${ev:-none}'), reloading rsinput"
+modprobe -r rsinput 2>/dev/null
+sleep 1
+modprobe rsinput
+sleep 3
+
+if ! grep -q "Odin3 Gamepad" /proc/bus/input/devices 2>/dev/null; then
+  logger -t rsinput-guard "gamepad still absent after reload (MCU probe failed)"
+  exit 1
+fi
+
+# The virtual pad should follow via InputPlumber hotplug; restart it only if
+# it lost the device (restarting IP is disruptive, do not do it blindly).
+# Name depends on the active profile: Elite (X-Box) or DualSense.
+sleep 2
+if ! grep -qiE "x-box|dualsense" /proc/bus/input/devices 2>/dev/null; then
+  logger -t rsinput-guard "virtual pad absent, restarting inputplumber"
+  systemctl restart inputplumber
+fi
+logger -t rsinput-guard "gamepad recovered"
