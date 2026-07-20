@@ -5,19 +5,36 @@
 # Re-apply the user's stick calibration whenever the rsinput module
 # (re)appears. Module parameters reset to driver defaults on every reload,
 # and rsinput reloads a lot on this device: at boot, at every suspend/resume
-# (the modules.bad suspend workaround unloads/reloads it), and on the manual
-# modprobe cycle that recovers a frozen MCU stick. Without this, the
-# calibration silently reverts to defaults on the first suspend.
+# (the modules.bad suspend workaround unloads/reloads it), and on the
+# modprobe cycle that recovers a frozen MCU stick (rsinput-guard). Without
+# this, the calibration silently reverts to defaults on the first suspend.
 #
-# Value store: /storage/.config/autostart/GPcal.sh -- the file the GPcal tool
-# and the "Fix Right Stick" tool both write, so all three stay in sync.
+# Value store: /storage/.config/autostart/GPcal.sh -- the file the GPcal
+# tool, the "Fix Sticks" Tool and rsinput-cal-default all write, so they
+# stay in sync.
+
 F=/storage/.config/autostart/GPcal.sh
 P=/sys/module/rsinput/parameters
+
 [ -f "${F}" ] || exit 0
+
 i=0
 while [ ! -e "${P}/update_params" ] && [ ${i} -lt 50 ]; do sleep 0.1; i=$((i+1)); done
 [ -e "${P}/update_params" ] || exit 0
-grep -E "^echo .+ > /sys/module/rsinput/parameters/axis_" "${F}" | sh
+
+apply() {
+  grep -E "^echo .+ > /sys/module/rsinput/parameters/(axis|trigger)_" "${F}" | sh
+}
+apply
+
+# Verify a sentinel actually took -- a module reload racing us can eat the
+# writes -- and replay once if not.
+want=$(sed -n 's|^echo \(.*\) > .*/axis_leftx_max$|\1|p' "${F}" | head -n1)
+if [ -n "${want}" ] && [ "$(cat ${P}/axis_leftx_max 2>/dev/null)" != "${want}" ]; then
+  sleep 1
+  apply
+fi
+
 # only kick a device re-register once the gamepad has probed
 if grep -q "Odin3 Gamepad" /proc/bus/input/devices 2>/dev/null; then
   echo 1 > "${P}/update_params"
