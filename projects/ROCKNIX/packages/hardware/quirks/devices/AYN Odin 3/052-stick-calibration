@@ -2,14 +2,55 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026-present ROCKNIX/DUCKTALE
 #
-# Stick calibration lifecycle (see /usr/bin/rsinput-cal-apply): install a udev
-# rule so the calibration re-applies on EVERY rsinput module load (suspend/
-# resume reloads it via modules.bad; a manual modprobe cycle recovers a frozen
-# stick), and apply once now to beat the autostart-vs-module-probe boot race.
+# Stick calibration lifecycle. The quirks package installs our helpers under
+# /usr/lib/autostart/quirks/devices/... (a path with spaces, useless in a
+# udev RUN key), so stage them into /run/rsinput first, then:
+#  - seed the value store on a fresh /storage (rsinput-cal-default);
+#  - install a udev rule so the calibration re-applies on EVERY rsinput
+#    module load (suspend/resume reloads it via modules.bad, and the guard's
+#    recovery cycle reloads it too);
+#  - start a transient timer running rsinput-guard, which reloads the module
+#    when the MCU pad drops dead (flaky serial probe / vanished /dev node);
+#  - apply once now to beat the autostart-vs-module-probe boot race.
+
+QB="/usr/lib/autostart/quirks/devices/AYN Odin 3/bin"
+RD="/run/rsinput"
+
+mkdir -p "${RD}"
+for f in rsinput-cal-apply rsinput-cal-default rsinput-guard; do
+  cp "${QB}/${f}" "${RD}/${f}"
+  chmod 0755 "${RD}/${f}"
+done
+
+# Fresh flash / wiped /storage: seed the store so the sticks never run on
+# the driver's unreachable +/-1024 defaults.
+"${RD}/rsinput-cal-default"
 
 mkdir -p /run/udev/rules.d
 cat > /run/udev/rules.d/98-rsinput-cal.rules <<RULES
-ACTION=="add", SUBSYSTEM=="module", KERNEL=="rsinput", RUN+="/usr/bin/rsinput-cal-apply"
+ACTION=="add", SUBSYSTEM=="module", KERNEL=="rsinput", RUN+="${RD}/rsinput-cal-apply"
 RULES
 udevadm control --reload 2>/dev/null
-/usr/bin/rsinput-cal-apply &
+
+mkdir -p /run/systemd/system
+cat > /run/systemd/system/rsinput-guard.service <<UNIT
+[Unit]
+Description=Recover a dead AYN Odin 3 MCU gamepad (rsinput)
+
+[Service]
+Type=oneshot
+ExecStart=${RD}/rsinput-guard
+UNIT
+cat > /run/systemd/system/rsinput-guard.timer <<UNIT
+[Unit]
+Description=Periodic AYN Odin 3 MCU gamepad health check
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=45
+AccuracySec=10
+UNIT
+systemctl daemon-reload 2>/dev/null
+systemctl start rsinput-guard.timer 2>/dev/null
+
+"${RD}/rsinput-cal-apply" &
