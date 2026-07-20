@@ -45,12 +45,10 @@ if ! grep -q "Odin3 Gamepad" /proc/bus/input/devices 2>/dev/null; then
   exit 1
 fi
 
-# The virtual pad should follow via InputPlumber hotplug; restart it only if
-# it lost the device (restarting IP is disruptive, do not do it blindly).
-# Name depends on the active profile: Elite (X-Box) or DualSense.
+# ALWAYS rebuild the InputPlumber chain after a recovery. A surviving
+# virtual pad is NOT proof of health: it can be orphaned from the recreated
+# physical device (seen live 2026-07-20 - virtual pad present in /proc,
+# zero input everywhere until IP was restarted).
 sleep 2
-if ! grep -qiE "x-box|dualsense" /proc/bus/input/devices 2>/dev/null; then
-  logger -t rsinput-guard "virtual pad absent, restarting inputplumber"
-  systemctl restart inputplumber
-fi
-logger -t rsinput-guard "gamepad recovered"
+systemctl restart inputplumber
+logger -t rsinput-guard "gamepad recovered (inputplumber restarted)"
