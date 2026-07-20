@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <settings version="1">
 
+  <!-- NOTE: the DRM PRIME decoder toggles stay hidden (upstream default on
+       linux/wayland) ON PURPOSE: tested live 2026-07-20 on the Odin 3, the
+       Kodi DRMPRIME path + ffmpeg hevc_v4l2m2m fails against the qcom iris
+       decoder (send packet EOF / receive frame EAGAIN loop -> audio only,
+       frozen video). Software decode is the shipping baseline (~0.8 core
+       for 1080p HEVC 10-bit). Re-expose only if a future ffmpeg/iris
+       investigation makes the hw path actually work. -->
+
   <section id="games">
     <category id="gamesgeneral">
       <group id="1">
