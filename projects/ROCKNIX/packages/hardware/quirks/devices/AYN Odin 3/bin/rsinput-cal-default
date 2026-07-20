@@ -56,9 +56,9 @@ echo 0 > /sys/module/rsinput/parameters/axis_rightx_center
 echo -910 > /sys/module/rsinput/parameters/axis_rightx_min
 echo 0 > /sys/module/rsinput/parameters/axis_righty_antideadzone
 echo 70 > /sys/module/rsinput/parameters/axis_righty_deadzone
-echo 915 > /sys/module/rsinput/parameters/axis_righty_max
+echo 870 > /sys/module/rsinput/parameters/axis_righty_max
 echo 0 > /sys/module/rsinput/parameters/axis_righty_center
-echo -915 > /sys/module/rsinput/parameters/axis_righty_min
+echo -870 > /sys/module/rsinput/parameters/axis_righty_min
 echo 0 > /sys/module/rsinput/parameters/trigger_left_antideadzone
 echo 0 > /sys/module/rsinput/parameters/trigger_left_deadzone
 echo 1552 > /sys/module/rsinput/parameters/trigger_left_max
