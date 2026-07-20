@@ -104,48 +104,148 @@ WantedBy=multi-user.target
 EOF
 }
 
-# Steam-launch re-inject watcher (Decky starts at boot, before Steam; its first
-# frontend injection into Steam's CEF UI often silently fails until plugin_loader
-# is restarted with Steam up). Lives in /storage so it persists across updates.
+# Steam-launch re-inject watcher v3 + positive verifier. The boot-started
+# loader's injection RACES Steam's UI bring-up and can fail silently; a
+# loader restarted with the CEF already up injects deterministically. So the
+# watcher restarts plugin_loader the moment Steam's CEF appears (during the
+# splash, invisible), then POSITIVELY verifies via DevTools that
+# window.DeckyPluginLoader exists, retrying if needed + periodic re-checks.
+# (v1 only knew one failure log-line and blessed every other silent failure
+# - live incident 2026-07-20.) Lives in /storage, persists across updates.
+VERIFIER="/storage/.config/decky-verify-inject.py"
+
 write_watcher() {
   mkdir -p "${AUTOSTART_DIR}"
+  cat > "${VERIFIER}" <<'VERIFY_EOF'
+#!/usr/bin/env python3
+"""Vérification POSITIVE de l injection Decky : évalue
+typeof window.DeckyPluginLoader dans le SharedJSContext de Steam via le
+protocole DevTools (ws, stdlib pure). Exit 0 = injecté, 1 = absent, 2 = CEF injoignable."""
+import json, socket, base64, os, sys, urllib.request
+
+def ws_evaluate(wsurl, expression, timeout=5):
+    # wsurl: ws://127.0.0.1:8080/devtools/page/XXXX
+    hostport, path = wsurl[5:].split("/", 1)
+    host, port = hostport.split(":")
+    s = socket.create_connection((host, int(port)), timeout=timeout)
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall((f"GET /{path} HTTP/1.1\r\nHost: {hostport}\r\nUpgrade: websocket\r\n"
+               f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+               f"Sec-WebSocket-Version: 13\r\n\r\n").encode())
+    resp = b""
+    while b"\r\n\r\n" not in resp:
+        resp += s.recv(4096)
+    if b"101" not in resp.split(b"\r\n")[0]:
+        raise RuntimeError("handshake")
+    payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
+                          "params": {"expression": expression, "returnByValue": True}}).encode()
+    mask = os.urandom(4)
+    frame = bytearray([0x81])
+    L = len(payload)
+    if L < 126: frame.append(0x80 | L)
+    elif L < 65536: frame += bytes([0x80 | 126]) + L.to_bytes(2, "big")
+    else: frame += bytes([0x80 | 127]) + L.to_bytes(8, "big")
+    frame += mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    s.sendall(frame)
+    buf = b""
+    s.settimeout(timeout)
+    while True:
+        data = s.recv(65536)
+        if not data: break
+        buf += data
+        # parse frames server->client (non masquees)
+        i = 0
+        while i + 2 <= len(buf):
+            ln = buf[i+1] & 0x7F; off = i + 2
+            if ln == 126:
+                if off + 2 > len(buf): break
+                ln = int.from_bytes(buf[off:off+2], "big"); off += 2
+            elif ln == 127:
+                if off + 8 > len(buf): break
+                ln = int.from_bytes(buf[off:off+8], "big"); off += 8
+            if off + ln > len(buf): break
+            txt = buf[i+2 if off==i+2 else off: off+ln]
+            try:
+                m = json.loads(txt)
+                if m.get("id") == 1:
+                    s.close()
+                    return m["result"]["result"].get("value")
+            except Exception:
+                pass
+            i = off + ln
+        buf = buf[i:] if i else buf
+
+try:
+    tabs = json.load(urllib.request.urlopen("http://127.0.0.1:8080/json", timeout=3))
+except Exception:
+    sys.exit(2)
+target = next((t for t in tabs if t.get("title") == "SharedJSContext"), None)
+if not target:
+    sys.exit(2)
+try:
+    v = ws_evaluate(target["webSocketDebuggerUrl"], "typeof window.DeckyPluginLoader")
+except Exception:
+    sys.exit(2)
+print(v)
+sys.exit(0 if v == "object" else 1)
+VERIFY_EOF
+  chmod 0755 "${VERIFIER}"
   cat > "${WATCHER}" <<'WATCHER_EOF'
 #!/bin/bash
-# Decky frontend re-inject on Steam launch — minimal-intrusion edition.
-# Waits for Steam's CEF debug port, gives Decky time to inject on its own, and
-# ONLY restarts plugin_loader if that injection failed. Never touches Steam or
-# gamescope. Installed by decky-update; runs at every boot.
+# Decky re-inject watcher v3 — deterministic-first edition.
+# Injection from a boot-started loader RACES Steam's UI bring-up and fails
+# silently (often). A loader (re)started with Steam's CEF already up takes
+# the deterministic branch and injects reliably. So: on every Steam launch,
+# restart plugin_loader IMMEDIATELY when the CEF port appears - during the
+# splash screen, before the UI exists for the user (invisible). Then a
+# POSITIVE verification (DevTools: window.DeckyPluginLoader) with a retry
+# ladder guards the (near-impossible) leftovers, and a periodic re-check
+# self-heals mid-session losses.
 
 SERVICE="plugin_loader.service"
-CEF_PORT="8080"
-CEF_URL="http://127.0.0.1:${CEF_PORT}/json/version"
-SETTLE=10
-POLL=3
+CEF_URL="http://127.0.0.1:8080/json/version"
+VERIFY="/storage/.config/decky-verify-inject.py"
+POLL=2
+SETTLE=12
+RECHECK_POLLS=60   # ~120s
+MAX_TRIES=2
 
 cef_up() { curl -sf --max-time 2 "${CEF_URL}" >/dev/null 2>&1; }
+injected() { python3 "${VERIFY}" >/dev/null 2>&1; }   # 0=oui 1=non 2=CEF down
 
-inject_failed_since() {
-  local log
-  log="$(journalctl -u "${SERVICE}" --since "${1}" --no-pager 2>/dev/null)"
-  echo "${log}" | grep -q "Loading Decky frontend"               || return 1
-  echo "${log}" | grep -q "Failed to execute get_loader_version" && return 0
+verify_ladder() {
+  local why="${1}" n=1
+  while [ ${n} -le ${MAX_TRIES} ]; do
+    injected; rc=$?
+    [ ${rc} = 0 ] && return 0
+    [ ${rc} = 2 ] && return 0   # Steam parti
+    logger -t decky-steam-fix "Decky absent (${why}, essai ${n}) -> restart ${SERVICE}"
+    systemctl restart "${SERVICE}"
+    sleep "${SETTLE}"
+    n=$((n+1))
+  done
+  injected && return 0
+  logger -t decky-steam-fix "ECHEC: Decky absent apres ${MAX_TRIES} relances (${why})"
   return 1
 }
 
 watch_loop() {
-  local seen=0 mark edge
+  local seen=0 ticks=0
   while true; do
-    mark="$(date '+%Y-%m-%d %H:%M:%S')"
     if cef_up; then
       if [ "${seen}" = "0" ]; then
-        seen=1
-        if systemctl is-active --quiet "${SERVICE}"; then
-          edge="${mark}"
-          sleep "${SETTLE}"
-          if cef_up && inject_failed_since "${edge}"; then
-            logger -t decky-steam-fix "injection failed -> restarting ${SERVICE}"
-            systemctl restart "${SERVICE}"
-          fi
+        seen=1; ticks=0
+        # CEF vient d apparaitre: Steam est sur son splash. Restart DETERMINISTE
+        # du loader maintenant = injection fiable, invisible pour l utilisateur.
+        logger -t decky-steam-fix "Steam CEF up -> restart deterministe du loader (pendant le splash)"
+        systemctl restart "${SERVICE}"
+        sleep "${SETTLE}"
+        verify_ladder "lancement Steam"
+      else
+        ticks=$((ticks+1))
+        if [ ${ticks} -ge ${RECHECK_POLLS} ]; then
+          ticks=0
+          verify_ladder "controle periodique"
         fi
       fi
     else
