@@ -1,0 +1,34 @@
+ROCKNIX/kodi-app: Kodi runs as root inside the ES session - logind block
+inhibitors cannot stop its power menu (live incident 2026-07-19: accidental
+full poweroff from Kodi). Powerdown / Reboot / Hibernate report unavailable
+so Kodi hides them: quitting is the only way out of the app, and Suspend
+stays NATIVE (the session survives sleep, Steam-like resume - the user's
+chosen semantics).
+
+--- a/xbmc/platform/linux/powermanagement/LogindUPowerSyscall.cpp
++++ b/xbmc/platform/linux/powermanagement/LogindUPowerSyscall.cpp
+@@ -100,21 +100,21 @@
+ bool CLogindUPowerSyscall::CanPowerdown()
+ {
+-  return m_canPowerdown;
++  return false; // ROCKNIX: hidden - quitting Kodi is the only way out
+ }
+ 
+ bool CLogindUPowerSyscall::CanSuspend()
+ {
+   return m_canSuspend;
+ }
+ 
+ bool CLogindUPowerSyscall::CanHibernate()
+ {
+-  return m_canHibernate;
++  return false; // ROCKNIX: hidden
+ }
+ 
+ bool CLogindUPowerSyscall::CanReboot()
+ {
+-  return m_canReboot;
++  return false; // ROCKNIX: hidden
+ }
+ 
+ bool CLogindUPowerSyscall::HasLogind()
