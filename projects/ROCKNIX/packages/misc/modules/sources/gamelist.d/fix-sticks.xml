@@ -1,7 +1,7 @@
     <game>
-        <path>./Fix Right Stick.sh</path>
-        <name>Fix Right Stick</name>
-        <desc>Restore the measured right-stick calibration (full edge reach) if it ever reverts to bad values - e.g. after a GPcal re-run, whose rotation sweep records unreachable diagonal peaks as the axis maxima. Applies instantly and persists across reboots.</desc>
+        <path>./Fix Sticks.sh</path>
+        <name>Fix Sticks</name>
+        <desc>Restore the measured calibration of BOTH sticks (full edge reach, centered rest position) if it ever reverts to bad values - e.g. after a GPcal re-run (records unreachable rotation peaks) or an Android recalibration (changes what the MCU outputs). Applies instantly and persists across reboots.</desc>
         <developer>DUCKTALE</developer>
         <publisher>DUCKTALE</publisher>
         <rating>5.0</rating>
