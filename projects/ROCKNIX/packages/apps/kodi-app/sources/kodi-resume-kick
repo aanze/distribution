@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Kodi's wayland client loop deadlocks waiting for a frame callback across
+# suspend/resume (proven live 2026-07-20: compositor, output and backlight
+# all healthy, Kodi never submits another frame; a window kick fully
+# revives it). Kick its window after resume so the session survives sleep,
+# Steam-like. The joystick side is handled in peripheral.joystick (stale-fd
+# self-heal patch).
+# systemd-sleep calls us with $1=pre|post $2=suspend; act only after resume.
+[ "${1}" = "post" ] || exit 0
+pgrep -f "/usr/lib/kodi/kodi.bin" >/dev/null 2>&1 || exit 0
+SOCK=$(ls /run/0-runtime-dir/sway-ipc.*.sock /run/user/*/sway-ipc.*.sock 2>/dev/null | head -n1)
+[ -n "${SOCK}" ] || exit 0
+sleep 1
+SWAYSOCK="${SOCK}" swaymsg '[app_id="Kodi"] fullscreen toggle' >/dev/null 2>&1
+sleep 0.5
+SWAYSOCK="${SOCK}" swaymsg '[app_id="Kodi"] fullscreen toggle' >/dev/null 2>&1
+logger -t kodi-resume-kick "kicked Kodi window after resume"
