@@ -75,7 +75,8 @@ configure_package() {
     KODI_PLATFORM="-DCORE_PLATFORM_NAME=wayland \
                    -DAPP_RENDER_SYSTEM=gles \
                    -DWAYLANDPP_SCANNER=${TOOLCHAIN}/bin/wayland-scanner++ \
-                   -DWAYLANDPP_PROTOCOLS_DIR=${SYSROOT_PREFIX}/usr/share/waylandpp/protocols"
+                   -DWAYLANDPP_PROTOCOLS_DIR=${SYSROOT_PREFIX}/usr/share/waylandpp/protocols \
+                   -DWAYLAND_PROTOCOLS_DIR=${SYSROOT_PREFIX}/usr/share/wayland-protocols"
   fi
 
   if [ ! "${OPENGL}" = "no" ]; then
