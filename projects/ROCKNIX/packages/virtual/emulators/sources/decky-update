@@ -104,14 +104,14 @@ WantedBy=multi-user.target
 EOF
 }
 
-# Steam-launch re-inject watcher v3 + positive verifier. The boot-started
-# loader's injection RACES Steam's UI bring-up and can fail silently; a
-# loader restarted with the CEF already up injects deterministically. So the
-# watcher restarts plugin_loader the moment Steam's CEF appears (during the
-# splash, invisible), then POSITIVELY verifies via DevTools that
-# window.DeckyPluginLoader exists, retrying if needed + periodic re-checks.
-# (v1 only knew one failure log-line and blessed every other silent failure
-# - live incident 2026-07-20.) Lives in /storage, persists across updates.
+# Steam-launch watcher v4 (verify-only) + positive verifier. v3 restarted
+# plugin_loader at every CEF appearance for a deterministic injection, but
+# the injection reloads Steam's UI: the user saw a DOUBLE boot splash at
+# every Steam launch - unacceptable. v4 never restarts by default: it
+# POSITIVELY verifies via DevTools that window.DeckyPluginLoader exists
+# after the UI settles, repairs (loader restart) ONLY when Decky is really
+# absent - the one case where a reload is unavoidable - and re-checks
+# periodically in-session. Lives in /storage, persists across updates.
 VERIFIER="/storage/.config/decky-verify-inject.py"
 
 write_watcher() {
@@ -192,15 +192,12 @@ VERIFY_EOF
   chmod 0755 "${VERIFIER}"
   cat > "${WATCHER}" <<'WATCHER_EOF'
 #!/bin/bash
-# Decky re-inject watcher v3 — deterministic-first edition.
-# Injection from a boot-started loader RACES Steam's UI bring-up and fails
-# silently (often). A loader (re)started with Steam's CEF already up takes
-# the deterministic branch and injects reliably. So: on every Steam launch,
-# restart plugin_loader IMMEDIATELY when the CEF port appears - during the
-# splash screen, before the UI exists for the user (invisible). Then a
-# POSITIVE verification (DevTools: window.DeckyPluginLoader) with a retry
-# ladder guards the (near-impossible) leftovers, and a periodic re-check
-# self-heals mid-session losses.
+# Decky re-inject watcher v4 — verify-only edition (v3 forcait un restart a
+# chaque lancement -> l injection recharge l UI -> DOUBLE splash Steam a
+# chaque fois: inacceptable). v4: aucun restart par defaut; verification
+# POSITIVE (DevTools: window.DeckyPluginLoader) apres stabilisation, et
+# reparation UNIQUEMENT si Decky est reellement absent (cas rare prouve),
+# + re-controle periodique en session.
 
 SERVICE="plugin_loader.service"
 CEF_URL="http://127.0.0.1:8080/json/version"
@@ -235,10 +232,9 @@ watch_loop() {
     if cef_up; then
       if [ "${seen}" = "0" ]; then
         seen=1; ticks=0
-        # CEF vient d apparaitre: Steam est sur son splash. Restart DETERMINISTE
-        # du loader maintenant = injection fiable, invisible pour l utilisateur.
-        logger -t decky-steam-fix "Steam CEF up -> restart deterministe du loader (pendant le splash)"
-        systemctl restart "${SERVICE}"
+        # On laisse Decky injecter SEUL (un restart rejouerait le splash Steam:
+        # interdit). On VERIFIE ensuite, et on ne repare QUE si Decky est
+        # reellement absent - le seul cas ou un reload est inevitable.
         sleep "${SETTLE}"
         verify_ladder "lancement Steam"
       else
