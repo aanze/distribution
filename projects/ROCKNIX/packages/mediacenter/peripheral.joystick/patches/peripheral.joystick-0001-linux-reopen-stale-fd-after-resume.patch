@@ -1,0 +1,30 @@
+--- a/src/api/linux/JoystickLinux.cpp	2026-07-20 16:04:42.338981059 +0200
++++ b/src/api/linux/JoystickLinux.cpp	2026-07-20 16:04:42.353682535 +0200
+@@ -73,6 +73,27 @@
+       {
+         esyslog("%s: failed to read joystick \"%s\" on %s - %d (%s)",
+             __FUNCTION__, Name().c_str(), m_strFilename.c_str(), errno, strerror(errno));
++        // ROCKNIX: self-heal across suspend/resume. The virtual pad is torn
++        // down and re-registered at the SAME path (InputPlumber re-attach),
++        // so the stale fd returns ENODEV forever and the periodic scan keeps
++        // this object ("already known" by filename). Re-open the path in
++        // place once the device comes back; until then read() on the closed
++        // fd yields EBADF and we simply retry on the next scan.
++        if (errno == ENODEV || errno == EBADF)
++        {
++          if (m_fd != INVALID_FD)
++          {
++            close(m_fd);
++            m_fd = INVALID_FD;
++          }
++          int newFd = open(m_strFilename.c_str(), O_RDONLY | O_NONBLOCK);
++          if (newFd >= 0)
++          {
++            m_fd = newFd;
++            esyslog("%s: re-opened joystick \"%s\" on %s after device re-registration",
++                __FUNCTION__, Name().c_str(), m_strFilename.c_str());
++          }
++        }
+         break;
+       }
+     }

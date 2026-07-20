@@ -39,6 +39,11 @@ makeinstall_target() {
   mkdir -p ${INSTALL}/usr/lib/autostart/common
     install -m 0755 ${PKG_DIR}/sources/031-kodi-preinstall ${INSTALL}/usr/lib/autostart/common/031-kodi-preinstall
 
+  # resume kick: revive Kodi's frozen wayland client after suspend (frame
+  # callback deadlock; see sources/kodi-resume-kick)
+  mkdir -p ${INSTALL}/usr/lib/systemd/system-sleep
+    install -m 0755 ${PKG_DIR}/sources/kodi-resume-kick ${INSTALL}/usr/lib/systemd/system-sleep/kodi-resume-kick
+
   # first-run userdata seeds (consumed by kodi-setup ensure)
   mkdir -p ${INSTALL}/usr/share/kodi-app/seed
     cp ${PKG_DIR}/sources/seed/*.xml ${INSTALL}/usr/share/kodi-app/seed/
