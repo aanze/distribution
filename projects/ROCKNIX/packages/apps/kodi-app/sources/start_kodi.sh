@@ -67,13 +67,13 @@ if command -v timedatectl >/dev/null 2>&1; then
   done
 fi
 
-# Inhibit suspend/idle for the whole session: video playback has long
-# stretches with no local input, and an auto-suspend re-enumerates the
-# gamepad and wedges input on resume. "shutdown" also blocks Kodi's own
-# power menu from powering off/rebooting the console (logind refuses the
-# request while the inhibitor is held) - quitting Kodi is the only exit.
-exec systemd-inhibit \
-  --what=shutdown:sleep:idle:handle-suspend-key:handle-lid-switch \
+# Inhibit AUTO-suspend/idle for the session: playback has long stretches
+# with no input and an idle-suspend mid-video is never wanted. Deliberate
+# suspends still pass (Kodi runs as root and its power-menu Suspend is
+# NATIVE by design - the session survives sleep, Steam-like resume).
+# Poweroff/Reboot are hidden from Kodi's menu by patch 100.12.
+systemd-inhibit \
+  --what=idle:handle-lid-switch \
   --who="kodi-app" --why="Kodi/Plex playback" \
   "${KODI_BIN}" --standalone ${KODI_AUDIO_ARGS} \
-  2>&1 | tee "${LOG}"
+  > "${LOG}" 2>&1
