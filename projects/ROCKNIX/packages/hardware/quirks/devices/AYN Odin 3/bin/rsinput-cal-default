@@ -1,0 +1,73 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX/DUCKTALE
+#
+# Canonical AYN Odin 3 stick calibration store writer.
+#
+# Seeds /storage/.config/autostart/GPcal.sh (the single value store shared by
+# the GPcal tool, the "Fix Sticks" ES Tool and rsinput-cal-apply) when it is
+# missing -- fresh flash, wiped /storage -- so the sticks never run on the
+# driver's ±1024 defaults, which the hardware cannot reach (unreachable edges,
+# slow camera). With --force it overwrites the store with the known-good
+# values, which is what the "Fix Sticks" Tool does.
+#
+# Values: round-3 sustained-cardinal measurement, 2026-07-20, on this unit:
+#   raw reach LX -725..+953  LY -870..+992  RX -948..+994  RY -990..+1017
+# Declared SYMMETRIC around 0 at ~96% of the WEAKEST side of each axis:
+#  - consumers (InputPlumber/SDL/Steam) place the center at (min+max)/2, so
+#    an asymmetric declared range shifts the rest position off-center (seen
+#    live: -700..+915 put the Steam dot visibly up-left of the deadzone);
+#  - the left-stick sensor drifts between sessions (-839 on 07/18 vs -725 on
+#    07/20), the margin guarantees full deflection every session at a small
+#    resolution cost. Diagonals plotting outside Steam's test circle is this
+#    margin working (round gate saturates the axes early), not a bug.
+
+F=/storage/.config/autostart/GPcal.sh
+
+if [ "${1}" != "--force" ] && [ -f "${F}" ]; then
+  exit 0
+fi
+
+mkdir -p "$(dirname "${F}")"
+cat > "${F}" <<'EOF'
+#!/usr/bin/env bash
+#
+# Retroid Pocket 5/Mini gamepad calibration
+# Made with the Kdog GPcal tool
+# SPDX-License-Identifier: MIT
+#
+# DUCKTALE canonical values -- written by rsinput-cal-default (see that
+# script for the measurement + symmetric-range rationale). Symmetric around
+# 0 or the rest position drifts off-center downstream.
+echo 0 > /sys/module/rsinput/parameters/axis_leftx_antideadzone
+echo 70 > /sys/module/rsinput/parameters/axis_leftx_deadzone
+echo 700 > /sys/module/rsinput/parameters/axis_leftx_max
+echo 0 > /sys/module/rsinput/parameters/axis_leftx_center
+echo -700 > /sys/module/rsinput/parameters/axis_leftx_min
+echo 0 > /sys/module/rsinput/parameters/axis_lefty_antideadzone
+echo 70 > /sys/module/rsinput/parameters/axis_lefty_deadzone
+echo 835 > /sys/module/rsinput/parameters/axis_lefty_max
+echo 0 > /sys/module/rsinput/parameters/axis_lefty_center
+echo -835 > /sys/module/rsinput/parameters/axis_lefty_min
+echo 0 > /sys/module/rsinput/parameters/axis_rightx_antideadzone
+echo 70 > /sys/module/rsinput/parameters/axis_rightx_deadzone
+echo 910 > /sys/module/rsinput/parameters/axis_rightx_max
+echo 0 > /sys/module/rsinput/parameters/axis_rightx_center
+echo -910 > /sys/module/rsinput/parameters/axis_rightx_min
+echo 0 > /sys/module/rsinput/parameters/axis_righty_antideadzone
+echo 70 > /sys/module/rsinput/parameters/axis_righty_deadzone
+echo 950 > /sys/module/rsinput/parameters/axis_righty_max
+echo 0 > /sys/module/rsinput/parameters/axis_righty_center
+echo -950 > /sys/module/rsinput/parameters/axis_righty_min
+echo 0 > /sys/module/rsinput/parameters/trigger_left_antideadzone
+echo 0 > /sys/module/rsinput/parameters/trigger_left_deadzone
+echo 1552 > /sys/module/rsinput/parameters/trigger_left_max
+echo 0 > /sys/module/rsinput/parameters/trigger_right_antideadzone
+echo 0 > /sys/module/rsinput/parameters/trigger_right_deadzone
+echo 1552 > /sys/module/rsinput/parameters/trigger_right_max
+echo 1 > /sys/module/rsinput/parameters/update_params
+sleep 0.5
+# Restart InputPlumber
+systemctl restart inputplumber
+EOF
+chmod 0755 "${F}"
