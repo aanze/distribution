@@ -79,5 +79,13 @@ newer versions installed under `/storage/.kodi/addons`).
 - All LE 12.0 kodi patches apply on 21.2 (offsets only). LE branding patches
   (RSS, LE repo, settings icon) dropped; LE systemd units / sleep.d NOT
   shipped (would interfere with the Odin 3 suspend path).
-- HEVC hw decode (DRMPRIME/v4l2 on qcom iris) = parked stretch goal; ffmpeg
-  software decode is the shipping baseline (8 Oryon cores).
+- HEVC hw decode via Kodi's DRMPRIME decoder = **tested live 2026-07-20 and
+  BROKEN on iris**: `CDVDVideoCodecDRMPRIME` engages ffmpeg's
+  `hevc_v4l2m2m` wrapper but the decoder loops on `send packet failed (EOF)`
+  / `receive frame failed (EAGAIN)` -> audio only, frozen video. The PRIME
+  toggles therefore STAY HIDDEN (upstream default, see the appliance.xml
+  note). mpv's plain NV12 v4l2m2m probe DID decode, so the failure is in
+  the drmprime/dmabuf output path - a future ffmpeg(v4l2-drmprime)/iris
+  investigation could revive it. Software decode is the shipping baseline
+  (~0.8 core for 1080p HEVC 10-bit; verified Direct Play, zero server
+  transcode).
