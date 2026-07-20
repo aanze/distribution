@@ -3,15 +3,21 @@
 # Copyright (C) 2026-present ROCKNIX/DUCKTALE
 #
 # Health check for the AYN Odin 3 MCU gamepad (rsinput, serdev). The MCU
-# link is flaky: the serial probe can fail at boot ("Checksum mismatch"),
-# and an InputPlumber restart can kill the input device -- seen live
-# 2026-07-20 as a /proc/bus/input entry whose /dev/input node was gone.
-# When that happens the pad is simply dead until a manual modprobe cycle.
+# serial link can fail at probe ("Checksum mismatch") leaving the module
+# loaded but NO input device registered - the pad is then dead until a
+# modprobe cycle.
+#
+# Death signature = "AYN Odin3 Gamepad" ABSENT from /proc/bus/input/devices
+# while the module is loaded. NEVER use /dev/input node presence as a
+# health signal: InputPlumber HIDES the physical node while attached, so a
+# missing node is the NORMAL healthy state (first guard version used it and
+# modprobe-cycled a healthy pad mid-game every ~90s - live 2026-07-20).
 #
 # Run periodically (transient timer installed by 052-stick-calibration).
-# Two consecutive unhealthy checks -> reload the module (the udev rule
-# re-applies the calibration on module add), then make sure InputPlumber
-# picked the pad back up. No-op while the module is unloaded (suspend).
+# Two consecutive dead checks -> reload the module (the udev rule re-applies
+# the calibration on module add) and ALWAYS restart InputPlumber: a
+# surviving virtual pad can be orphaned from the recreated physical device.
+# No-op while the module is unloaded (suspend).
 
 MISS=/run/rsinput/guard-miss
 
@@ -20,9 +26,7 @@ if [ ! -d /sys/module/rsinput ]; then
   exit 0
 fi
 
-ev=$(grep -A6 'Name="AYN Odin3 Gamepad"' /proc/bus/input/devices 2>/dev/null \
-     | sed -n 's/.*\(event[0-9]\+\).*/\1/p' | head -n1)
-if [ -n "${ev}" ] && [ -e "/dev/input/${ev}" ]; then
+if grep -q 'N: Name="AYN Odin3 Gamepad"' /proc/bus/input/devices 2>/dev/null; then
   rm -f "${MISS}"
   exit 0
 fi
@@ -34,21 +38,16 @@ if [ ${m} -lt 2 ]; then
 fi
 rm -f "${MISS}"
 
-logger -t rsinput-guard "gamepad dead (proc='${ev:-none}'), reloading rsinput"
+logger -t rsinput-guard "gamepad unregistered (module loaded), reloading rsinput"
 modprobe -r rsinput 2>/dev/null
 sleep 1
 modprobe rsinput
 sleep 3
 
-if ! grep -q "Odin3 Gamepad" /proc/bus/input/devices 2>/dev/null; then
+if ! grep -q 'N: Name="AYN Odin3 Gamepad"' /proc/bus/input/devices 2>/dev/null; then
   logger -t rsinput-guard "gamepad still absent after reload (MCU probe failed)"
   exit 1
 fi
 
-# ALWAYS rebuild the InputPlumber chain after a recovery. A surviving
-# virtual pad is NOT proof of health: it can be orphaned from the recreated
-# physical device (seen live 2026-07-20 - virtual pad present in /proc,
-# zero input everywhere until IP was restarted).
-sleep 2
 systemctl restart inputplumber
 logger -t rsinput-guard "gamepad recovered (inputplumber restarted)"
