@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 ROCKNIX/DUCKTALE
+#
+# Silent-drain watchdog (SM8750 / AYN Odin 3): detects "plugged on AC but the
+# battery is actually discharging" (PD contract lost after an ADSP incident,
+# or a too-weak charger) and alerts via the stick LED rings + journal, since
+# the only proven recovery is a physical replug. See /usr/bin/charge-guard.
+
+[Unit]
+Description=ROCKNIX silent-drain charge watchdog (SM8750)
+ConditionPathExists=/sys/class/power_supply/battery/current_now
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/charge-guard
+Restart=on-failure
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
