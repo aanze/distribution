@@ -1,0 +1,30 @@
+--- a/xbmc/dialogs/GUIDialogProgress.cpp	2026-07-21 12:52:24.613683234 +0200
++++ b/xbmc/dialogs/GUIDialogProgress.cpp	2026-07-21 12:52:24.638150216 +0200
+@@ -8,6 +8,9 @@
+ 
+ #include "GUIDialogProgress.h"
+ 
++#include "ServiceBroker.h"
++#include "messaging/ApplicationMessenger.h"
++
+ #include "guilib/GUIProgressControl.h"
+ #include "guilib/GUIWindowManager.h"
+ #include "guilib/LocalizeStrings.h"
+@@ -74,6 +77,17 @@
+ 
+   CGUIDialog::Open(false, param);
+ 
++  // ROCKNIX backport of upstream PR #28008 (open, fixes issue #27733):
++  // when Open() is called from a background thread (CGUIDialogCache), the
++  // animation wait loop below busy-spins - ProcessRenderLoop() is a no-op
++  // off the main thread but each pass still constructs/destroys the
++  // AppMessenger shared_ptr, millions of atomic ops/s = one core pegged and
++  // the GUI frozen in a lock convoy (seen live 2026-07-21 opening a PM4K
++  // stream while its resume prompt loaded). Background threads cannot drive
++  // the render loop, so waiting here is pointless: return early.
++  if (!CServiceBroker::GetAppMessenger()->IsProcessThread())
++    return;
++
+   while (m_active && IsAnimating(ANIM_TYPE_WINDOW_OPEN))
+   {
+     Progress();
