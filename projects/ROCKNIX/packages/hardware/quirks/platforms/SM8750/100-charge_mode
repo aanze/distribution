@@ -10,3 +10,7 @@
 . /etc/profile
 
 /usr/bin/charge-mode apply &
+
+# Silent-drain watchdog: always on while the system runs (detects "plugged
+# but discharging" after an ADSP/PD incident and alerts via the LED rings).
+systemctl start charge-guard.service 2>/dev/null &
