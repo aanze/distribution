@@ -14,4 +14,11 @@ makeinstall_target() {
     cp -rf * ${INSTALL}/usr/share/themes/${PKG_NAME}
     rm -rf ${INSTALL}/usr/share/themes/${PKG_NAME}/_inc/systems/{artwork-circuit,artwork-classic,artwork-nintendont,artwork-noir,artwork-outline}
     sed -i '/<include name="\(noir\|nintendont\|circuit\|outline\)"/d' ${INSTALL}/usr/share/themes/${PKG_NAME}/theme.xml
+    # DUCKTALE drop-in system logos: each feature branch ships its own
+    # sources/logos/<system>.svg (the theme resolves carousel logos by
+    # convention, logos/${system.theme}.svg) -- file-adds only, so feature
+    # branches never edit this upstream file.
+    if ls ${PKG_DIR}/sources/logos/*.svg >/dev/null 2>&1; then
+      cp -f ${PKG_DIR}/sources/logos/*.svg ${INSTALL}/usr/share/themes/${PKG_NAME}/_inc/systems/logos/
+    fi
 }
