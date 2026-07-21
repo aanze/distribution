@@ -46,6 +46,10 @@ static void on_sig(int s) { (void)s; stop = 1; }
 static volatile sig_atomic_t want_shot;
 static void on_usr1(int s) { (void)s; want_shot = 1; }
 
+/* Absolute CLOCK_MONOTONIC ns of the first muxed sample, exported at finalize
+ * so rocknix-screenrecord can align a separately captured audio stream. */
+#define VT0_FILE "/tmp/.screenrecord.vt0"
+
 static inline uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
 /* NV12 (strided) -> tight BGRA, BT.601 limited range, BGRA byte order
@@ -151,19 +155,27 @@ static void box_end(struct buf *b, size_t at)
 /* sample table state */
 static uint32_t *samp_sz;	/* per-sample byte size in mdat */
 static uint8_t  *samp_key;	/* per-sample keyframe flag */
+static uint64_t *samp_ts;	/* per-sample capture time, CLOCK_MONOTONIC ns */
 static uint32_t  nsamp, samp_cap;
+static uint64_t  nominal_ns;	/* 1e9/fps, samp_add fallback spacing */
 static uint8_t   sps[512], pps[512];
 static int       spslen, ppslen;
 
-static void samp_add(uint32_t sz, int key)
+static void samp_add(uint32_t sz, int key, uint64_t ts)
 {
 	if (nsamp == samp_cap) {
 		samp_cap = samp_cap ? samp_cap * 2 : 4096;
 		samp_sz  = realloc(samp_sz, samp_cap * sizeof(*samp_sz));
 		samp_key = realloc(samp_key, samp_cap * sizeof(*samp_key));
-		if (!samp_sz || !samp_key) die("oom\n");
+		samp_ts  = realloc(samp_ts, samp_cap * sizeof(*samp_ts));
+		if (!samp_sz || !samp_key || !samp_ts) die("oom\n");
 	}
-	samp_sz[nsamp] = sz; samp_key[nsamp] = key; nsamp++;
+	/* The encoder copies the OUTPUT (capture-time) timestamp onto the matching
+	 * CAPTURE buffer; if it didn't (ts=0) or went non-monotonic, fall back to
+	 * nominal spacing -- exactly the pre-timestamp behavior. */
+	if (ts == 0 || (nsamp && ts <= samp_ts[nsamp - 1]))
+		ts = nsamp ? samp_ts[nsamp - 1] + nominal_ns : now_ns();
+	samp_sz[nsamp] = sz; samp_key[nsamp] = key; samp_ts[nsamp] = ts; nsamp++;
 }
 
 static void write_ftyp(int fd)
@@ -247,9 +259,18 @@ static void write_moov(int fd, uint32_t cw, uint32_t ch, int fps, int rot)
 {
 	const uint32_t mts = 90000;		/* media timescale */
 	const uint32_t delta = fps > 0 ? mts / fps : 3000;
-	const uint32_t mdur = nsamp * delta;	/* media duration */
+	/*
+	 * Wall-clock-true timeline: sample i starts at cumulative tick
+	 * c_i = (samp_ts[i]-samp_ts[0]) * 9/100000 (ns -> 90 kHz, exact, no
+	 * per-frame rounding drift). The last sample -- nothing follows it --
+	 * gets the nominal duration. This keeps clips honest across pause
+	 * windows (Steam handoff) and static screens, which is what lets a
+	 * continuously captured audio track stay in sync.
+	 */
+	const uint64_t mdur = (nsamp > 1 ?
+		(samp_ts[nsamp - 1] - samp_ts[0]) * 9 / 100000 : 0) + delta;
 	const uint32_t vts = 1000;		/* movie timescale */
-	const uint32_t vdur = fps > 0 ? (uint32_t)((uint64_t)nsamp * 1000 / fps) : 0;
+	const uint32_t vdur = (uint32_t)(mdur / 90);
 	/* presentation size after rotation */
 	struct buf b = {0};
 	size_t moov, trak, mdia, minf, stbl, stsd, avc1, avcC, e;
@@ -283,7 +304,8 @@ static void write_moov(int fd, uint32_t cw, uint32_t ch, int fps, int rot)
 
 	mdia = box_start(&b, "mdia");
 	e = box_start(&b, "mdhd"); u32b(&b, 0); u32b(&b, 0); u32b(&b, 0);
-	u32b(&b, mts); u32b(&b, mdur); u16b(&b, 0x55c4); u16b(&b, 0); box_end(&b, e);
+	u32b(&b, mts); u32b(&b, (uint32_t)mdur); u16b(&b, 0x55c4); u16b(&b, 0);
+	box_end(&b, e);
 	e = box_start(&b, "hdlr"); u32b(&b, 0); u32b(&b, 0); put(&b, "vide", 4);
 	u32b(&b, 0); u32b(&b, 0); u32b(&b, 0); put(&b, "VideoHandler", 13);
 	box_end(&b, e);
@@ -324,9 +346,33 @@ static void write_moov(int fd, uint32_t cw, uint32_t ch, int fps, int rot)
 	box_end(&b, avc1);
 	box_end(&b, stsd);
 
-	/* stts: constant frame duration */
-	e = box_start(&b, "stts"); u32b(&b, 0); u32b(&b, 1);
-	u32b(&b, nsamp); u32b(&b, delta); box_end(&b, e);
+	/* stts: real per-frame durations, run-length encoded. Durations come
+	 * from consecutive cumulative ticks so rounding never accumulates. */
+	e = box_start(&b, "stts"); u32b(&b, 0);
+	{
+		size_t nent_at = b.len;		/* entry count, patched below */
+		uint32_t nent = 0, run = 0, rdelta = 0;
+		uint64_t c_prev = 0;
+		u32b(&b, 0);
+		for (uint32_t i = 0; i < nsamp; i++) {
+			uint64_t c_next = (i + 1 < nsamp) ?
+				(samp_ts[i + 1] - samp_ts[0]) * 9 / 100000 :
+				c_prev + delta;	/* last sample: nominal */
+			uint32_t d = (uint32_t)(c_next - c_prev);
+			if (d == 0) d = 1;
+			c_prev = c_next;
+			if (run && d == rdelta) {
+				run++;
+				continue;
+			}
+			if (run) { u32b(&b, run); u32b(&b, rdelta); nent++; }
+			run = 1; rdelta = d;
+		}
+		if (run) { u32b(&b, run); u32b(&b, rdelta); nent++; }
+		b.d[nent_at]   = nent >> 24; b.d[nent_at+1] = nent >> 16;
+		b.d[nent_at+2] = nent >> 8;  b.d[nent_at+3] = nent;
+	}
+	box_end(&b, e);
 
 	/* stss: sync samples */
 	{ uint32_t nk = 0; for (uint32_t i = 0; i < nsamp; i++) nk += samp_key[i];
@@ -398,6 +444,7 @@ int main(int argc, char **argv)
 	int rot = argc > 4 ? atoi(argv[4]) : 270;
 	if (rot != 0 && rot != 90 && rot != 180 && rot != 270) rot = 90;
 	uint64_t frame_interval = fps > 0 ? 1000000000ull / fps : 0;
+	nominal_ns = fps > 0 ? 1000000000ull / fps : 33333333ull;
 
 	signal(SIGINT, on_sig);
 	signal(SIGTERM, on_sig);
@@ -586,7 +633,9 @@ int main(int argc, char **argv)
 				if (had_vcl && au.len) {
 					write(outfd, au.d, au.len);
 					mdat_bytes += au.len;
-					samp_add((uint32_t)au.len, key);
+					samp_add((uint32_t)au.len, key,
+						 (uint64_t)b.timestamp.tv_sec * 1000000000ull +
+						 (uint64_t)b.timestamp.tv_usec * 1000ull);
 					nframes++;
 				}
 				free(au.d);
@@ -614,7 +663,9 @@ int main(int argc, char **argv)
 			if (had_vcl && au.len) {
 				write(outfd, au.d, au.len);
 				mdat_bytes += au.len;
-				samp_add((uint32_t)au.len, key);
+				samp_add((uint32_t)au.len, key,
+					 (uint64_t)b.timestamp.tv_sec * 1000000000ull +
+					 (uint64_t)b.timestamp.tv_usec * 1000ull);
 				nframes++;
 			}
 			free(au.d);
@@ -634,6 +685,16 @@ int main(int argc, char **argv)
 		write(outfd, szb, 4);
 		lseek(outfd, 0, SEEK_END);
 		write_moov(outfd, g.width, g.height, fps, rot);
+		/* export the video t=0 anchor for A/V alignment at mux time */
+		FILE *vf = fopen(VT0_FILE, "w");
+		if (vf) {
+			fprintf(vf, "%llu\n", (unsigned long long)samp_ts[0]);
+			fclose(vf);
+		}
+		fprintf(stderr, "timeline: %u samples, %llu ms wall-clock\n",
+			nsamp, (unsigned long long)
+			(((nsamp > 1 ? (samp_ts[nsamp-1] - samp_ts[0]) : 0) / 1000000)
+			 + (fps > 0 ? 1000 / fps : 33)));
 	} else {
 		fprintf(stderr, "no samples/SPS/PPS; mp4 not finalized\n");
 	}
