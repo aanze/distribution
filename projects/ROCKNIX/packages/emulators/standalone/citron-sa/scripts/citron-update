@@ -9,7 +9,7 @@
 # Linux builds (incl. arm64) under a rolling tag:
 #   https://github.com/citron-neo/CI/releases  (tag: nightly-linux)
 # The arm64 asset is named:
-#   citron_nightly-<hash>-linux-aarch64.AppImage   (+ a .zsync we ignore)
+#   citron_nightly-<hash>-linux-aarch64[-variant].AppImage (+ .zsync we ignore)
 # Because the tag is rolling, the embedded <hash> in the asset filename is what
 # we record as the installed version for idempotency.
 #
@@ -119,7 +119,7 @@ META="$(curl -fsSL "${RELEASES_API}")" || fail "could not reach the GitHub API. 
 ASSET_URL="$(echo "${META}" \
   | grep -oE '"browser_download_url": *"[^"]*"' \
   | sed -E 's/.*"(https[^"]+)".*/\1/' \
-  | grep -iE 'linux-aarch64\.AppImage$' \
+  | grep -iE 'linux-aarch64[^/]*\.AppImage$' \
   | head -n1)"
 [ -n "${ASSET_URL}" ] || fail "no linux-aarch64 .AppImage found in the nightly-linux release."
 
