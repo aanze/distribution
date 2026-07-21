@@ -1,0 +1,63 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] remoteproc: qcom_q6v5: disable handover IRQ once handover is done
+
+Handover is a one-shot lifecycle event: qcom_q6v5_prepare() arms the
+interrupt, the first (and only meaningful) firing releases the proxy
+votes, and qcom_q6v5_unprepare() disarms it. The SM8750 ADSP firmware
+however re-latches its ready/handover smp2p bits on every sensor-island
+wakeup, so with a sensor client streaming (SSC accel+gyro) the handover
+interrupt re-fires ~5 times per second for the whole uptime and floods
+the kernel log with "Handover signaled, but it already happened"
+(observed: >1000 messages in 4 minutes, wrapping the dmesg ring).
+
+Disable the interrupt from the handler once the handover has been
+performed; qcom_q6v5_prepare() re-arms it for the next boot cycle of the
+remote processor. Keep qcom_q6v5_unprepare() balanced by only disabling
+the interrupt when the handover never fired, and turn the leftover
+re-fire message into a ratelimited one as a safety net.
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5.c
++++ b/drivers/remoteproc/qcom_q6v5.c
+@@ -78,7 +78,12 @@
+  */
+ int qcom_q6v5_unprepare(struct qcom_q6v5 *q6v5)
+ {
+-	disable_irq(q6v5->handover_irq);
++	/*
++	 * Balanced with the enable_irq() in qcom_q6v5_prepare(): once the
++	 * handover fired, its handler already disabled the interrupt.
++	 */
++	if (!q6v5->handover_issued)
++		disable_irq(q6v5->handover_irq);
+ 	q6v5_load_state_toggle(q6v5, false);
+ 
+ 	/* Disable interconnect vote, in case handover never happened */
+@@ -165,7 +170,8 @@
+ 	struct qcom_q6v5 *q6v5 = data;
+ 
+ 	if (q6v5->handover_issued) {
+-		dev_err(q6v5->dev, "Handover signaled, but it already happened\n");
++		dev_err_ratelimited(q6v5->dev,
++				    "Handover signaled, but it already happened\n");
+ 		return IRQ_HANDLED;
+ 	}
+ 
+@@ -176,6 +182,16 @@
+ 
+ 	q6v5->handover_issued = true;
+ 
++	/*
++	 * Handover is a one-shot lifecycle event, but some firmware (the
++	 * SM8750 ADSP) re-latches its ready/handover smp2p bits on every
++	 * sensor-island wakeup, re-firing this interrupt several times per
++	 * second for the whole uptime when a sensor client is streaming.
++	 * Nothing is left to do here after the first handover, so disable
++	 * the interrupt until the next prepare() re-arms it.
++	 */
++	disable_irq_nosync(q6v5->handover_irq);
++
+ 	return IRQ_HANDLED;
+ }
+ 
