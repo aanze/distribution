@@ -1,0 +1,63 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 ROCKNIX/DUCKTALE
+#
+# ADSP incident black-box for SM8750 (AYN Odin 3).
+#
+# The ADSP owns audio (q6apm), the sensor core (SSC), battmgr and USB-PD.
+# Its crashes/restarts have been eating the platform from below (qsh boot
+# crash -> no sound; mid-session incident 2026-07-21 -> PD contract lost ->
+# battery silently drained while plugged) and by the time anyone looks, the
+# evidence has rotated out of the dmesg ring. This watcher polls the kernel
+# log for remoteproc distress signatures and snapshots FULL context to
+# /storage the moment one appears, so the NEXT incident hands us the root
+# cause instead of a cold trail.
+#
+# Cheap by design: one dmesg scan every 10s, no clearing, dedup by last-seen
+# timestamp; snapshots are a few hundred KB, capped at 20.
+
+OUT=/storage/adsp-blackbox
+INTERVAL=10
+PATTERN='fatal error|err_qdi|Assertion|recovering remoteproc|remoteproc.*crash|watchdog bite|SMEM|rproc.*boot failed'
+MAX_SNAPSHOTS=20
+
+mkdir -p "${OUT}"
+last=""
+
+snapshot() {
+  ts="$(date '+%Y%m%d-%H%M%S')"
+  d="${OUT}/${ts}"
+  mkdir -p "${d}"
+  dmesg > "${d}/dmesg.txt" 2>/dev/null
+  {
+    date
+    echo "--- trigger line:"; echo "$1"
+    echo "--- remoteproc states:"
+    for r in /sys/class/remoteproc/remoteproc*; do
+      echo "$r: $(cat "$r/state" 2>/dev/null) ($(cat "$r/name" 2>/dev/null))"
+    done
+    echo "--- battery:"; cat /sys/class/power_supply/battery/uevent 2>/dev/null
+    echo "--- usb in:"; cat /sys/class/power_supply/qcom-battmgr-usb/uevent 2>/dev/null
+    echo "--- typec:"; cat /sys/class/typec/port0/power_operation_mode 2>/dev/null
+    echo "--- irqs:"; grep -E 'smp2p|q6v5|glink' /proc/interrupts 2>/dev/null
+    echo "--- audio cards:"; cat /proc/asound/cards 2>/dev/null
+    echo "--- services:"; for s in odin3-sensors charge-care charge-guard; do
+      echo "$s: $(systemctl is-active $s 2>/dev/null)"
+    done
+  } > "${d}/context.txt" 2>/dev/null
+  journalctl -b --no-pager > "${d}/journal.txt" 2>/dev/null
+  logger -t adsp-blackbox "ADSP incident captured -> ${d}"
+  # rotation: keep the newest MAX_SNAPSHOTS
+  ls -1d "${OUT}"/2* 2>/dev/null | head -n -"${MAX_SNAPSHOTS}" | while read -r old; do
+    rm -rf "${old}"
+  done
+}
+
+while :; do
+  hit="$(dmesg 2>/dev/null | grep -iE "${PATTERN}" | grep -v adsp-blackbox | tail -1)"
+  if [ -n "${hit}" ] && [ "${hit}" != "${last}" ]; then
+    snapshot "${hit}"
+    last="${hit}"
+  fi
+  sleep "${INTERVAL}"
+done
