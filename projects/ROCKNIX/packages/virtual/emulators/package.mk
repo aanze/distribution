@@ -35,6 +35,18 @@ if [ "${ARCH}" = "aarch64" ]; then
   PKG_EMUS+=" box64 portmaster"
 fi
 
+# DUCKTALE drop-in emulators: each feature branch ships its own snippet in
+# pkg-emus.d/*.emus (typically a device-gated PKG_EMUS+= block) instead of
+# appending case blocks to this upstream file -- file-adds only, so feature
+# branches can never conflict here on cherry-pick. Their ES wiring lives in
+# matching pkg-emus.d/*.wiring files, sourced at the top of makeinstall_target.
+for _dropin in ${PKG_DIR}/pkg-emus.d/*.emus; do
+  if [ -f "${_dropin}" ]; then
+    . "${_dropin}"
+  fi
+done
+unset _dropin
+
 ### Emulators or cores for specific devices
 case "${DEVICE}" in
   H700|RK3326)
@@ -136,6 +148,19 @@ makeinstall_target() {
   ### Flush cache from previous builds
   clean_es_cache
   clean_doc_cache
+
+  ### DUCKTALE drop-in ES wiring: per-feature add_emu_core/install_script/
+  ### add_es_system calls live in pkg-emus.d/*.wiring (one file per feature
+  ### branch, device-gated inside). Sourced here, far from the per-system
+  ### blocks below, so feature branches never edit this upstream file.
+  ### Section order in es_systems.cfg is irrelevant: ES sorts the menu
+  ### itself (SortSystems defaults to "manufacturer").
+  for _dropin in ${PKG_DIR}/pkg-emus.d/*.wiring; do
+    if [ -f "${_dropin}" ]; then
+      . "${_dropin}"
+    fi
+  done
+  unset _dropin
 
   ### Add bezels directory
   add_system_dir /storage/roms/bezels
