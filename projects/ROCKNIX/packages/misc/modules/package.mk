@@ -29,4 +29,27 @@ post_makeinstall_target() {
   if [[ "${INSTALLER_SUPPORT}" != "yes" || "${DISPLAYSERVER}" != "wl" ]]; then
     rm -f ${INSTALL}/usr/config/modules/Install*
   fi
+
+  # DUCKTALE drop-in Tools entries: each feature branch ships its own fragment
+  # (bare <game> blocks) in sources/gamelist.d/ instead of editing the shared
+  # gamelist.xml -- file-adds only, so feature branches can never conflict
+  # here on cherry-pick. Merged before </gameList>; ES sorts entries by name,
+  # so append order is irrelevant.
+  if ls ${PKG_DIR}/sources/gamelist.d/*.xml >/dev/null 2>&1; then
+    sed -i '/<\/gameList>/d' ${INSTALL}/usr/config/modules/gamelist.xml
+    cat ${PKG_DIR}/sources/gamelist.d/*.xml >> ${INSTALL}/usr/config/modules/gamelist.xml
+    echo '</gameList>' >> ${INSTALL}/usr/config/modules/gamelist.xml
+  fi
+  rm -rf ${INSTALL}/usr/config/modules/gamelist.d
 }
+
+# DUCKTALE drop-in dependencies: each feature branch ships its own snippet in
+# deps.d/ (typically a device-gated PKG_DEPENDS_TARGET+= block) instead of
+# appending case blocks to this upstream file -- file-adds only, so feature
+# branches can never conflict here on cherry-pick.
+for _dropin in ${PKG_DIR}/deps.d/*.deps; do
+  if [ -f "${_dropin}" ]; then
+    . "${_dropin}"
+  fi
+done
+unset _dropin
