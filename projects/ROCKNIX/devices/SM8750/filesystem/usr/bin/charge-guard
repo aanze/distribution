@@ -1,0 +1,113 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 ROCKNIX/DUCKTALE
+#
+# Silent-drain watchdog for SM8750 (AYN Odin 3).
+#
+# An ADSP incident mid-session (the DSP owns battmgr + USB-PD) can drop the
+# negotiated PD contract: the port silently falls back to default 5V USB
+# (~2.5W), the battery reports "Charging" but actually DISCHARGES under any
+# real load, and nothing tells the user (first seen 2026-07-21: 50%->35%
+# while plugged, watching Kodi). No software recovery is known on this
+# firmware (UCSI connector reset and charge_behaviour bounce are ignored;
+# a ucsi rebind reproduces the bug instead of fixing it) -- the one proven
+# recovery is a physical replug, so this daemon DETECTS the state and
+# ALERTS the user instead of pretending to self-heal:
+#
+#   - condition: charger online + charge_behaviour [auto] + battery current
+#     sustainedly negative (3 consecutive 20s samples < -300 mA)
+#   - alert: red double-blink on the stick LED rings (visible under any
+#     compositor, same channel as capture-feedback), repeated every 2 min
+#     while the condition persists + journal line + /storage breadcrumb
+#   - recovery detected (user replugged): green blink + journal line
+#
+# Legit inhibit states (battery-care hold at 80%, bypass mode) are excluded
+# by the [auto] check. A weak 5V-only charger under heavy game load also
+# triggers the alert -- that is a feature, not a bug: the user wants to know.
+
+BAT=/sys/class/power_supply/battery
+USB=/sys/class/power_supply/qcom-battmgr-usb
+LEDS=/sys/class/leds
+LOG=/storage/.config/charge-guard.log
+
+INTERVAL=20          # seconds between samples
+BAD_THRESHOLD=-300000  # µA; below this = really discharging
+BAD_SAMPLES=3        # consecutive bad samples before alerting
+REALERT_EVERY=6      # re-alert every N intervals while bad (6*20s = 2 min)
+
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "${LOG}"
+  logger -t charge-guard "$*"
+}
+
+# --- LED alert (self-contained; snapshot/restore like capture-feedback) ----
+rings() {  # $1 = brightness, $2.. = color letters
+  b="$1"; shift
+  for c in "$@"; do
+    for s in 1 2 3 4; do
+      echo "${b}" > "${LEDS}/l:${c}${s}/brightness" 2>/dev/null
+      echo "${b}" > "${LEDS}/r:${c}${s}/brightness" 2>/dev/null
+    done
+  done
+}
+
+flash() {  # $1 = color letter  $2 = blink count  $3 = on-time
+  [ -e "${LEDS}/l:r1/brightness" ] || return 0
+  SNAP=""
+  for l in "${LEDS}"/l:?? "${LEDS}"/r:??; do
+    [ -e "${l}/brightness" ] && SNAP="${SNAP} ${l}=$(cat "${l}/brightness")"
+  done
+  i=0
+  while [ "${i}" -lt "$2" ]; do
+    rings 0 r g b
+    rings 255 "$1"
+    sleep "$3"
+    rings 0 r g b
+    sleep 0.15
+    i=$((i + 1))
+  done
+  for kv in ${SNAP}; do
+    echo "${kv#*=}" > "${kv%%=*}/brightness" 2>/dev/null
+  done
+}
+
+# --------------------------------------------------------------------------
+[ -e "${BAT}/current_now" ] || exit 0
+
+bad=0
+alerted=0
+tick=0
+
+while :; do
+  online="$(cat "${USB}/online" 2>/dev/null)"
+  behaviour="$(cat "${BAT}/charge_behaviour" 2>/dev/null)"
+  curr="$(cat "${BAT}/current_now" 2>/dev/null)"
+  case "${curr}" in ''|*[!0-9-]*) curr=0 ;; esac
+
+  case "${behaviour}" in *"[auto]"*) auto=1 ;; *) auto=0 ;; esac
+
+  if [ "${online}" = "1" ] && [ "${auto}" = "1" ] && [ "${curr}" -lt "${BAD_THRESHOLD}" ]; then
+    bad=$((bad + 1))
+  else
+    if [ "${alerted}" = "1" ] && [ "${online}" = "1" ] && [ "${curr}" -gt 0 ]; then
+      log "recovered: charging again (current_now=${curr}uA)"
+      flash g 1 0.4 &
+    fi
+    bad=0
+    alerted=0
+    tick=0
+  fi
+
+  if [ "${bad}" -ge "${BAD_SAMPLES}" ]; then
+    if [ "${alerted}" = "0" ] || [ $((tick % REALERT_EVERY)) -eq 0 ]; then
+      cap="$(cat "${BAT}/capacity" 2>/dev/null)"
+      vin="$(cat "${USB}/voltage_now" 2>/dev/null)"
+      log "ALERT: plugged but discharging (cap=${cap}% current_now=${curr}uA usb_v=${vin}uV) -> REPLUG THE CABLE"
+      flash r 2 0.5 &
+      alerted=1
+    fi
+    tick=$((tick + 1))
+  fi
+
+  sleep "${INTERVAL}"
+done
