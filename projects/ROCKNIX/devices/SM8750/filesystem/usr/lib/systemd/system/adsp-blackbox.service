@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 ROCKNIX/DUCKTALE
+#
+# ADSP incident black-box (SM8750): snapshots full kernel/power/remoteproc
+# context to /storage/adsp-blackbox/ the moment a remoteproc distress
+# signature appears in dmesg. See /usr/bin/adsp-blackbox.
+
+[Unit]
+Description=ROCKNIX ADSP incident black-box (SM8750)
+ConditionPathExists=/sys/class/remoteproc/remoteproc0/state
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/adsp-blackbox
+Restart=on-failure
+RestartSec=30
+Nice=15
+
+[Install]
+WantedBy=multi-user.target
