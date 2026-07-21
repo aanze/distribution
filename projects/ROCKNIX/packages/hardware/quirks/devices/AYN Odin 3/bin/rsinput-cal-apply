@@ -40,12 +40,8 @@ if grep -q "Odin3 Gamepad" /proc/bus/input/devices 2>/dev/null; then
   echo 1 > "${P}/update_params"
 fi
 
-# InputPlumber caches the declared absinfo at ATTACH time. On a module
-# reload (suspend/resume, guard recovery) the pad re-registers with the
-# driver DEFAULTS and IP can re-attach before the lines above land - it
-# then normalizes against +/-1024 forever and every stick feels short
-# ("the calibration reset itself", seen live 2026-07-20 after a resume).
-# Restart IP so it always re-attaches against the corrected absinfo.
-if systemctl is-active --quiet inputplumber 2>/dev/null; then
-  systemctl restart inputplumber
-fi
+# NOTE: no InputPlumber restart here. Exactly ONE restart per event is owned
+# by the CALLERS: the sleep.d post hook (01-restart-inputplumber) at wake,
+# rsinput-guard after a recovery, GPcal.sh/Fix Sticks after a manual apply.
+# A second udev-driven restart at wake interrupted the first attach cycle
+# and made the controller take ~20 s to come back (seen live 2026-07-20).
