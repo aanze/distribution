@@ -22,4 +22,12 @@
 # Cost: a visible "controller disconnected → connected" toast at every wake.
 # This is the deliberate trade-off chosen by the user over the freeze.
 
+# Guarantee the stick calibration is in the module BEFORE this restart:
+# InputPlumber caches the declared absinfo at attach, so restarting against
+# the driver's default +/-1024 would leave every stick short until the next
+# restart. The udev module-add rule usually wins this race; make it certain.
+# (rsinput-cal-apply itself never restarts IP - this hook owns the wake
+# restart, exactly one per resume.)
+[ -x /run/rsinput/rsinput-cal-apply ] && /run/rsinput/rsinput-cal-apply
+
 systemctl restart inputplumber
