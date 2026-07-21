@@ -13,11 +13,23 @@
 . /etc/profile 2>/dev/null
 
 REC=/usr/bin/rocknix-cwb-record
+AVMUX=${AVMUX:-/usr/bin/rocknix-avmux}
 DIR=/storage/roms/screenshots/video
 UNIT=rocknix-screenrecord
 WATCH=rocknix-screenrecord-watch
+AUNIT=rocknix-screenrecord-audio
 OUTF=/tmp/.screenrecord.out
+VOUTF=/tmp/.screenrecord.vout
+AT0=/tmp/.screenrecord.at0     # audio start, CLOCK_MONOTONIC ns (avmux --now)
+VT0=/tmp/.screenrecord.vt0     # video first-sample ns (written by the recorder)
 FPS=30
+# System-audio companion capture (what the speakers/headset play), muxed into
+# the clip at stop. screenrecord.audio=0 disables; screenrecord.avoffset_ms
+# (signed) nudges A/V sync without a rebuild.
+AEN="$(get_setting screenrecord.audio 2>/dev/null)"
+[ -z "$AEN" ] && AEN=1
+AOFF="$(get_setting screenrecord.avoffset_ms 2>/dev/null)"
+[ -z "$AOFF" ] && AOFF=0
 # Display rotation baked into the .mp4 so it plays landscape on a PC. The panel
 # is portrait-native; 270 undoes the compositor rotation. Override with
 # `screenrecord.rotation` (0|90|180|270) if a clip comes out rotated wrong.
@@ -40,16 +52,43 @@ case "$1" in
       echo "no /dev/dpu_capture0"; exit 1
     fi
     is_running && { echo "already recording"; exit 0; }
-    systemctl reset-failed "${UNIT}.service" "${WATCH}.service" 2>/dev/null
+    systemctl reset-failed "${UNIT}.service" "${WATCH}.service" "${AUNIT}.service" 2>/dev/null
     mkdir -p "$DIR"
+    # leftovers from a hard crash/reboot mid-recording (temp video + PCM)
+    rm -f "$DIR"/.*.video.mp4 "$DIR"/.*.pcm "$AT0" "$VT0" 2>/dev/null
     OUT="$DIR/$(date +'%Y-%m-%d-%H%M%S').mp4"
+    # the recorder writes to a temp path; stop muxes audio in (or renames)
+    VOUT="$DIR/.$(basename "$OUT" .mp4).video.mp4"
     echo "$OUT" > "$OUTF"
+    echo "$VOUT" > "$VOUTF"
     # own unit -> survives input.service/sway/gamescope restarts across the switch
-    systemd-run --collect --quiet --unit="$UNIT" "$REC" "$OUT" 0 "$FPS" "$ROT" || {
+    systemd-run --collect --quiet --unit="$UNIT" "$REC" "$VOUT" 0 "$FPS" "$ROT" || {
       /usr/bin/mako-notify "Recording failed to start" -no-ra 2>/dev/null
       /usr/bin/capture-feedback shot-fail >/dev/null 2>&1 &
+      rm -f "$OUTF" "$VOUTF"
       echo "systemd-run failed"; exit 1
     }
+    # system-audio companion capture: monitor of the DEFAULT sink (follows a
+    # headset plug/unplug server-side). PipeWire runs as system services that
+    # the ES<->Steam handoff never touches, so this unit spans the session
+    # like the video one. Best-effort: failure -> video-only recording.
+    # A/V anchor: AT0 is stamped when the FIRST PCM BYTE lands. With
+    # --latency-msec=50 the content provably starts at that instant (measured
+    # on device: implied content start == first-byte time to ~4ms) and at most
+    # ~50ms of tail can die in flight at stop. The default stream latency
+    # (~2s!) buffered that much audio and lost it all at SIGTERM.
+    if [ "$AEN" = "1" ] && [ -x "$AVMUX" ]; then
+      APCM="$DIR/.$(basename "$OUT" .mp4).pcm"
+      systemd-run --collect --quiet --unit="$AUNIT" \
+        --setenv=XDG_RUNTIME_DIR=/var/run/0-runtime-dir \
+        /bin/sh -c "/usr/bin/parec -d @DEFAULT_MONITOR@ --format=s16le --rate=48000 --channels=2 --latency-msec=50 --raw > '$APCM' &
+P=\$!
+n=0
+while [ ! -s '$APCM' ] && [ \$n -lt 500 ]; do usleep 20000; n=\$((n+1)); done
+'$AVMUX' --now > '$AT0'
+wait \$P" \
+        2>/dev/null || rm -f "$APCM" "$AT0"
+    fi
     # resume watcher: re-arms capture after a Steam/gamescope session, but only
     # once the compositor is solidly back (rides out the post-Steam restart
     # churn) so we never arm into an unstable display.
@@ -61,12 +100,43 @@ case "$1" in
     ;;
   stop)
     systemctl stop "${WATCH}.service" 2>/dev/null
-    is_running || { rm -f "$OUTF"; exit 0; }
-    systemctl stop "${UNIT}.service" 2>/dev/null   # SIGTERM -> encoder drains -> exit
-    /usr/bin/mako-notify "Recording saved" -no-ra 2>/dev/null
+    is_running || {
+      systemctl stop "${AUNIT}.service" 2>/dev/null
+      rm -f "$OUTF" "$VOUTF" "$AT0" "$VT0"
+      exit 0
+    }
+    # LED feedback right away -- the mux below may take a few seconds
     /usr/bin/capture-feedback record-stop >/dev/null 2>&1 &
-    [ -f "$OUTF" ] && echo "saved $(cat "$OUTF")"
-    rm -f "$OUTF"
+    systemctl stop "${UNIT}.service" 2>/dev/null   # SIGTERM -> encoder drains -> exit
+    systemctl stop "${AUNIT}.service" 2>/dev/null  # parec exits; PCM complete
+    AEND="$("$AVMUX" --now 2>/dev/null)"
+    OUT="$(cat "$OUTF" 2>/dev/null)"
+    VOUT="$(cat "$VOUTF" 2>/dev/null)"
+    if [ -n "$OUT" ] && [ -f "$VOUT" ]; then
+      APCM="$DIR/.$(basename "$OUT" .mp4).pcm"
+      # A/V alignment: trim = video_t0 - audio_first_byte (+ user sync knob);
+      # with --latency-msec=50 the first-byte stamp IS the content start.
+      # Any missing piece or avmux failure falls back to the untouched
+      # video-only clip -- never lose a recording.
+      if [ -s "$APCM" ] && [ -s "$VT0" ] && [ -s "$AT0" ]; then
+        PCMMS=$(( $(stat -c %s "$APCM") / 192 ))
+        TRIM=$(( ( $(cat "$VT0") - $(cat "$AT0") ) / 1000000 + AOFF ))
+        echo "stop: pcm=${PCMMS}ms trim=${TRIM}ms (tail-in-flight ~$(( ( AEND - $(cat "$AT0") ) / 1000000 - PCMMS ))ms)" >>/tmp/screenrecord-avmux.log
+        if "$AVMUX" "$VOUT" "$APCM" "$OUT.part" "$TRIM" \
+             >>/tmp/screenrecord-avmux.log 2>&1; then
+          mv "$OUT.part" "$OUT" && rm -f "$VOUT" "$APCM"
+        else
+          mv "$VOUT" "$OUT"
+          rm -f "$OUT.part" "$APCM"
+        fi
+      else
+        mv "$VOUT" "$OUT"
+        rm -f "$APCM"
+      fi
+    fi
+    /usr/bin/mako-notify "Recording saved" -no-ra 2>/dev/null
+    [ -n "$OUT" ] && echo "saved $OUT"
+    rm -f "$OUTF" "$VOUTF" "$AT0" "$VT0"
     ;;
   toggle)
     if is_running; then "$0" stop; else "$0" start; fi
