@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 ROCKNIX/DUCKTALE
+#
+# Start the ADSP incident black-box at boot (own quirk file, file-add only:
+# cherry-pick hygiene per the aanze-dropin-hooks convention).
+
+systemctl start adsp-blackbox.service 2>/dev/null &
