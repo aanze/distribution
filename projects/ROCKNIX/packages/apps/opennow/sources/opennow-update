@@ -1,0 +1,232 @@
+#!/bin/bash
+
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Manage the on-demand OpenNOW (GeForce NOW client) AppImage install.
+#
+# OpenNOW is offered as an ALTERNATIVE client INSIDE the existing "GeForce NOW"
+# main-menu section (gfn-electron stays the default). So this tool does NOT
+# create its own ES section: it drops a launcher into the geforcenow ROM folder
+# and merges one <game> entry into that section's gamelist.xml.
+#
+#   AppImage : /storage/.local/share/opennow/OpenNOW.AppImage
+#   Launcher : /storage/roms/geforcenow/OpenNOW.sh   (-> /usr/bin/start_opennow.sh)
+#   Gamelist : /storage/roms/geforcenow/gamelist.xml (OpenNOW entry merged in)
+#
+# OpenNOW publishes arm64 AppImages under tagged GitHub releases:
+#   https://github.com/OpenCloudGaming/OpenNOW/releases  (we track /latest)
+# The latest tag is recorded for idempotency so re-running 'update' on an
+# already-current install skips the ~130 MB download.
+#
+# Modes:  install | update | uninstall     (install == update)
+#         install/update accept --force to redownload even if already current.
+#
+# Safety:
+#   - Atomic install (download to .part, rename only after sanity checks).
+#   - Integrity: minimum size + ELF magic bytes (AppImages are ELF).
+#   - Lock dir prevents concurrent runs.
+#   - Idempotent: skips the download if the latest tag is already installed.
+
+source /etc/profile
+
+MODE="${1:-update}"
+FORCE=0
+[ "${2:-}" = "--force" ] && FORCE=1
+
+OPENNOW_DIR="/storage/.local/share/opennow"
+APPIMAGE="${OPENNOW_DIR}/OpenNOW.AppImage"
+PART="${OPENNOW_DIR}/OpenNOW.AppImage.part"
+INSTALLED_TAG_FILE="${OPENNOW_DIR}/.installed_tag"
+
+GFN_DIR="/storage/roms/geforcenow"
+LAUNCHER="${GFN_DIR}/OpenNOW.sh"
+GAMELIST="${GFN_DIR}/gamelist.xml"
+
+LOG="/storage/.config/opennow/opennow.log"
+LOCK_DIR="/tmp/opennow-update.lock"
+RELEASES_API="https://api.github.com/repos/OpenCloudGaming/OpenNOW/releases/latest"
+
+BEGIN_MARK="<!-- opennow-entry-begin -->"
+END_MARK="<!-- opennow-entry-end -->"
+
+cleanup() {
+  rm -f "${PART}"
+  rmdir "${LOCK_DIR}" 2>/dev/null || true
+}
+
+fail() {
+  echo ""
+  echo "ERROR: $*"
+  echo ""
+  echo "The currently installed OpenNOW has NOT been modified."
+  cleanup
+  sleep 15
+  exit 1
+}
+
+# Ensure the geforcenow section (folder + a gamelist) exists. Prefer letting
+# gfn-electron-setup create it (so the GeForce NOW default launcher is there
+# too), but fall back to a minimal skeleton if gfn was explicitly uninstalled.
+ensure_section() {
+  [ -x /usr/bin/gfn-electron-setup ] && /usr/bin/gfn-electron-setup boot >/dev/null 2>&1 || true
+  mkdir -p "${GFN_DIR}"
+  if [ ! -f "${GAMELIST}" ]; then
+    cat > "${GAMELIST}" <<'EOF'
+<?xml version="1.0"?>
+<gameList>
+</gameList>
+EOF
+  fi
+}
+
+# Drop the single OpenNOW launcher into the geforcenow ROM folder. It runs the
+# shared /usr/bin/start_opennow.sh (which also drives the touch-mouse daemon).
+write_launcher() {
+  cat > "${LAUNCHER}" <<'EOF'
+#!/bin/bash
+exec /usr/bin/start_opennow.sh
+EOF
+  chmod +x "${LAUNCHER}"
+}
+
+# Remove any existing OpenNOW <game> block (between our markers), then insert a
+# fresh one just before </gameList>. Idempotent; never touches other entries
+# (e.g. the GeForce NOW default launcher).
+merge_gamelist_entry() {
+  ensure_section
+  # Strip a previously-inserted OpenNOW block.
+  awk -v b="${BEGIN_MARK}" -v e="${END_MARK}" '
+    index($0, b) { skip=1 }
+    !skip { print }
+    index($0, e) { skip=0 }
+  ' "${GAMELIST}" > "${GAMELIST}.tmp" && mv -f "${GAMELIST}.tmp" "${GAMELIST}"
+
+  # Insert the fresh block before the closing tag.
+  local block
+  block="${BEGIN_MARK}
+    <game>
+        <path>./OpenNOW.sh</path>
+        <name>OpenNOW</name>
+        <desc>OpenNOW - an open-source GeForce NOW client (alternative to the default GeForce NOW app in this section). Streams PC games from NVIDIA's cloud. First login: NVIDIA account or Discord. On-screen keyboard: hold the left Home button + tap the screen. The touchscreen also acts as a mouse for game screens the controller cannot navigate. Exit with L1 + START + SELECT.</desc>
+        <developer>OpenCloudGaming</developer>
+        <publisher>OpenCloudGaming</publisher>
+        <genre>Cloud Gaming</genre>
+        <players>1</players>
+    </game>
+    ${END_MARK}"
+  awk -v blk="${block}" '
+    /<\/gameList>/ && !done { print blk; done=1 }
+    { print }
+  ' "${GAMELIST}" > "${GAMELIST}.tmp" && mv -f "${GAMELIST}.tmp" "${GAMELIST}"
+}
+
+# Remove the OpenNOW launcher + its gamelist entry, leaving the rest of the
+# geforcenow section (the default GeForce NOW launcher) intact.
+remove_from_section() {
+  rm -f "${LAUNCHER}"
+  if [ -f "${GAMELIST}" ]; then
+    awk -v b="${BEGIN_MARK}" -v e="${END_MARK}" '
+      index($0, b) { skip=1 }
+      !skip { print }
+      index($0, e) { skip=0 }
+    ' "${GAMELIST}" > "${GAMELIST}.tmp" && mv -f "${GAMELIST}.tmp" "${GAMELIST}"
+  fi
+}
+
+mkdir -p "${OPENNOW_DIR}"
+mkdir -p "$(dirname "${LOG}")"
+
+### ---------------------------------------------------------------- uninstall
+if [ "${MODE}" = "uninstall" ]; then
+  echo "=== Uninstall OpenNOW ==="
+  rm -f "${APPIMAGE}" "${PART}" "${INSTALLED_TAG_FILE}"
+  remove_from_section
+  echo "Removed the OpenNOW AppImage and its launcher from the GeForce NOW section."
+  echo "The default GeForce NOW app is unaffected."
+  echo "Your OpenNOW login/config under /storage/.config/opennow-stable was kept."
+  echo "The entry disappears after restarting EmulationStation."
+  sleep 8
+  exit 0
+fi
+
+### ------------------------------------------------------------ install/update
+if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
+  echo "An OpenNOW install/update is already running. Retry in a few seconds."
+  sleep 5
+  exit 1
+fi
+trap cleanup EXIT
+
+echo "=== OpenNOW installer/updater ==="
+echo "Source: ${RELEASES_API}"
+echo ""
+
+if [ -f "${INSTALLED_TAG_FILE}" ]; then
+  echo "Currently installed: $(cat "${INSTALLED_TAG_FILE}")"
+else
+  echo "No managed install yet."
+fi
+echo ""
+
+echo "Querying the latest arm64 release..."
+META="$(curl -fsSL "${RELEASES_API}")" || fail "could not reach the GitHub API. Check your network."
+
+LATEST_TAG="$(printf '%s' "${META}" \
+  | grep -oE '"tag_name": *"[^"]+"' \
+  | head -n1 \
+  | sed -E 's/.*"([^"]+)".*/\1/')"
+ASSET_URL="$(printf '%s' "${META}" \
+  | grep -oE '"browser_download_url": *"[^"]*"' \
+  | sed -E 's/.*"(https[^"]+)".*/\1/' \
+  | grep -iE 'arm64|aarch64' \
+  | grep -iE '\.AppImage$' \
+  | head -n1)"
+[ -n "${ASSET_URL}" ] || fail "no arm64 .AppImage found in the latest OpenNOW release. Check https://github.com/OpenCloudGaming/OpenNOW/releases manually."
+
+echo "Latest available: ${LATEST_TAG:-unknown} (${ASSET_URL##*/})"
+echo ""
+
+# No-op short-circuit: if the AppImage is already at LATEST_TAG, skip the
+# ~130 MB download. We still (re)write the launcher + gamelist entry so the
+# section stays consistent even if the launcher was deleted.
+if [ "${FORCE}" != "1" ] && [ -x "${APPIMAGE}" ] && [ -n "${LATEST_TAG}" ] \
+   && [ -f "${INSTALLED_TAG_FILE}" ] \
+   && [ "$(cat "${INSTALLED_TAG_FILE}")" = "${LATEST_TAG}" ]; then
+  echo "OpenNOW is already up to date (${LATEST_TAG}). Nothing to do."
+  echo "Re-run from SSH with --force to redownload."
+  write_launcher
+  merge_gamelist_entry
+  sleep 5
+  exit 0
+fi
+
+echo "Downloading: ${ASSET_URL}"
+rm -f "${PART}"
+wget -c -t 5 -O "${PART}" "${ASSET_URL}" || fail "download failed."
+
+# Integrity: non-trivial size + ELF magic bytes. The arm64 build is ~130 MB, so
+# anything under 40 MB is a truncated download or an error page.
+SIZE="$(stat -c%s "${PART}" 2>/dev/null || echo 0)"
+if [ "${SIZE}" -lt 40000000 ]; then
+  fail "downloaded file is suspiciously small (${SIZE} bytes)."
+fi
+MAGIC="$(head -c4 "${PART}" | od -An -tx1 | tr -d ' \n')"
+if [ "${MAGIC}" != "7f454c46" ]; then
+  fail "downloaded file is not an ELF binary (magic=${MAGIC})."
+fi
+
+chmod +x "${PART}"
+mv -f "${PART}" "${APPIMAGE}"
+[ -n "${LATEST_TAG}" ] && printf '%s\n' "${LATEST_TAG}" > "${INSTALLED_TAG_FILE}"
+
+write_launcher
+merge_gamelist_entry
+
+echo ""
+echo "OpenNOW ${LATEST_TAG:-installed} successfully."
+echo "It appears as 'OpenNOW' inside the GeForce NOW main-menu section, next to"
+echo "the default GeForce NOW app."
+echo "Restart EmulationStation to see it."
+echo "First login: use your NVIDIA account or Discord."
+sleep 12
