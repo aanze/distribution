@@ -18,19 +18,29 @@
 
 OUT=/storage/adsp-blackbox
 INTERVAL=10
-PATTERN='fatal error|err_qdi|Assertion|recovering remoteproc|remoteproc.*crash|watchdog bite|SMEM|rproc.*boot failed'
+# Precise distress signatures only. NOT a bare "SMEM" (matched the benign
+# boot line "nomap non-reusable smem@81d00000" -> false captures every boot)
+# and NOT a bare "Assertion" (too generic). This device has no RTC, so an
+# early-boot capture gets a bogus wall-clock date; the trigger line is the
+# only reliable discriminator, hence the tight patterns. Real qsh boot crash
+# (no-sound bug) matches via "fatal error"/"err_qdi".
+PATTERN='remoteproc[0-9]*:.*fatal error|err_qdi|listener_hexagon.*Assertion|recovering remoteproc|remoteproc.*crash|watchdog bite|rproc.*boot failed|qcom_q6v5.*(fatal|watchdog)'
 MAX_SNAPSHOTS=20
 
 mkdir -p "${OUT}"
 last=""
 
 snapshot() {
-  ts="$(date '+%Y%m%d-%H%M%S')"
+  # This device has no RTC, so wall-clock is bogus until NTP sync (esp. at
+  # boot). Prefix the dir with monotonic uptime seconds so captures always
+  # sort correctly and an early-boot capture is recognisable as such.
+  up="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+  ts="up$(printf '%08d' "${up:-0}")s-$(date '+%Y%m%d-%H%M%S')"
   d="${OUT}/${ts}"
   mkdir -p "${d}"
   dmesg > "${d}/dmesg.txt" 2>/dev/null
   {
-    date
+    date; echo "uptime_s: ${up}"
     echo "--- trigger line:"; echo "$1"
     echo "--- remoteproc states:"
     for r in /sys/class/remoteproc/remoteproc*; do
@@ -47,8 +57,8 @@ snapshot() {
   } > "${d}/context.txt" 2>/dev/null
   journalctl -b --no-pager > "${d}/journal.txt" 2>/dev/null
   logger -t adsp-blackbox "ADSP incident captured -> ${d}"
-  # rotation: keep the newest MAX_SNAPSHOTS
-  ls -1d "${OUT}"/2* 2>/dev/null | head -n -"${MAX_SNAPSHOTS}" | while read -r old; do
+  # rotation: keep the newest MAX_SNAPSHOTS (name sorts by uptime prefix)
+  ls -1d "${OUT}"/up*s-* 2>/dev/null | head -n -"${MAX_SNAPSHOTS}" | while read -r old; do
     rm -rf "${old}"
   done
 }
