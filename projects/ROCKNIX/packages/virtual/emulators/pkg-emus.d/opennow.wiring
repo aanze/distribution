@@ -1,0 +1,12 @@
+  ## opennow (OpenNOW: alternative GeForce NOW client). Drop-in ES wiring (see
+  ## the pkg-emus.d loop at the top of makeinstall_target): file-add only, no
+  ## shared-file edits. OpenNOW does NOT add an ES system: it installs a launcher
+  ## into the geforcenow section's ROM folder at install time. So we only ship
+  ## the Tools entries that manage its on-demand AppImage.
+  case ${DEVICE} in
+    SM8250|SM8550|SM8650|SM8750)
+      install_script "Install OpenNOW.sh"
+      install_script "Update OpenNOW.sh"
+      install_script "Uninstall OpenNOW.sh"
+      ;;
+  esac
