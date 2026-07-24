@@ -1,0 +1,11 @@
+# opennow (OpenNOW: open-source GeForce NOW client, alternative to gfn-electron).
+# The AppImage is downloaded on demand by "Install OpenNOW"; this package only
+# ships the launcher + install/update/uninstall engine. Drop-in snippet (see the
+# pkg-emus.d loop in package.mk): file-add only, no shared-file edits. OpenNOW
+# does NOT create its own ES section -- it grafts into the geforcenow section --
+# so there is no matching .wiring add_es_system; only the Tools scripts wiring.
+case "${DEVICE}" in
+  SM8250|SM8550|SM8650|SM8750)
+    PKG_EMUS+=" opennow"
+    ;;
+esac

@@ -1,0 +1,36 @@
+    <game>
+        <path>./Install OpenNOW.sh</path>
+        <name>Install OpenNOW</name>
+        <desc>Downloads and installs OpenNOW, an open-source GeForce NOW client, as an alternative inside the GeForce NOW section (the default GeForce NOW app stays). After installing, restart EmulationStation and launch "OpenNOW" from the GeForce NOW section in the main menu. First login: NVIDIA account or Discord.</desc>
+        <developer>OpenCloudGaming</developer>
+        <publisher>OpenCloudGaming</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/opennow.svg</image>
+    </game>
+    <game>
+        <path>./Update OpenNOW.sh</path>
+        <name>Update OpenNOW</name>
+        <desc>Pulls the latest OpenNOW (GeForce NOW client) arm64 AppImage from github.com/OpenCloudGaming/OpenNOW. A size and ELF integrity check runs before the new build is activated. Idempotent: skips if you already have the latest release.</desc>
+        <developer>OpenCloudGaming</developer>
+        <publisher>OpenCloudGaming</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/opennow.svg</image>
+    </game>
+    <game>
+        <path>./Uninstall OpenNOW.sh</path>
+        <name>Uninstall OpenNOW</name>
+        <desc>Removes the OpenNOW AppImage and its launcher from the GeForce NOW section. The default GeForce NOW app is left untouched and your OpenNOW login/config is kept. The entry disappears after restarting EmulationStation.</desc>
+        <developer>ROCKNIX</developer>
+        <publisher>ROCKNIX</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>Tool</genre>
+        <players>1</players>
+        <image>./images/opennow.svg</image>
+    </game>
