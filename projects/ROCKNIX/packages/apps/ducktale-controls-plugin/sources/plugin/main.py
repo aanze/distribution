@@ -18,6 +18,54 @@ PERFCONTROL_STORE = "/storage/.config/perfcontrol/profiles.json"
 DEFAULT_FAN_CURVE = {"speeds": [51, 51, 153], "temps": [40000, 60000, 80000]}
 
 
+# --- shelling out to the system helpers ------------------------------------- #
+# Decky runs plugin backends from its OWN PyInstaller bundle, which on ROCKNIX
+# is an x86 build executed under FEX. The bundle exports PYTHONHOME/PYTHONPATH
+# and LD_LIBRARY_PATH=/tmp/_MEIxxxxxx, and that directory ships x86 copies of
+# libreadline/libtinfo. Anything we spawn inherits them, so:
+#   * a system python3 helper gets its stdlib hijacked (urllib then raises
+#     "unknown url type: https"), and
+#   * /bin/bash - resolved through FEX's x86 view - loads the BUNDLE's
+#     libreadline instead of the system one and dies before running a single
+#     line: "/bin/bash: symbol lookup error: undefined symbol:
+#     rl_trim_arg_from_keyseq" (device-observed 2026-07-25: every gamepad
+#     profile / charging mode switch was a silent no-op because of this).
+# So every helper we run gets a CLEANED environment. Never call subprocess
+# directly here - use _run().
+_DIRTY_ENV_KEYS = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONEXECUTABLE",
+                   "PYTHONNOUSERSITE", "LD_LIBRARY_PATH", "LD_PRELOAD")
+
+
+def _clean_env():
+    env = dict(os.environ)
+    for k in _DIRTY_ENV_KEYS:
+        env.pop(k, None)
+    # PyInstaller stashes the pre-bundle value here when there was one.
+    orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+    if orig:
+        env["LD_LIBRARY_PATH"] = orig
+    return env
+
+
+def _run(cmd, timeout=10, capture=True):
+    """Run a system helper with a clean environment; never raise.
+
+    Returns the CompletedProcess, or None if it could not be run. A non-zero
+    exit is LOGGED: the failures this fixes were invisible precisely because
+    the old call sites passed check=False and ignored the return code.
+    """
+    try:
+        cp = subprocess.run(cmd, env=_clean_env(), check=False, timeout=timeout,
+                            capture_output=capture, text=True)
+    except Exception as e:
+        decky.logger.error(f"{cmd[0]} {' '.join(cmd[1:])} failed: {e}")
+        return None
+    if cp.returncode != 0:
+        err = (cp.stderr or "").strip().replace("\n", " ")[:200] if capture else ""
+        decky.logger.error(f"{cmd[0]} {' '.join(cmd[1:])} exited {cp.returncode}: {err}")
+    return cp
+
+
 def _discover_cpu_policies():
     policies = []
     cpufreq_dir = "/sys/devices/system/cpu/cpufreq"
@@ -351,25 +399,18 @@ class Plugin:
         available = os.path.exists(node)
         mode = "preserve"
         if available:
-            try:
-                out = subprocess.run(["/usr/bin/charge-mode", "status"],
-                                     capture_output=True, text=True, timeout=10).stdout
-                for line in out.splitlines():
-                    if line.startswith("mode:"):
-                        m = line.split(":", 1)[1].strip()
-                        if m:
-                            mode = m
-            except Exception as e:
-                decky.logger.error(f"charge-mode status failed: {e}")
+            cp = await asyncio.to_thread(_run, ["/usr/bin/charge-mode", "status"], 10)
+            for line in ((cp.stdout if cp else "") or "").splitlines():
+                if line.startswith("mode:"):
+                    m = line.split(":", 1)[1].strip()
+                    if m:
+                        mode = m
         return {"available": available, "mode": mode}
 
     async def set_charge_mode(self, mode):
         if mode not in ("full", "preserve", "bypass"):
             mode = "preserve"
-        try:
-            subprocess.run(["/usr/bin/charge-mode", mode], check=False, timeout=10)
-        except Exception as e:
-            decky.logger.error(f"charge-mode set failed: {e}")
+        await asyncio.to_thread(_run, ["/usr/bin/charge-mode", mode], 10)
         return await self.get_charge_mode()
 
     # Mirrors the EmulationStation "Gamepad profile" selector so the controller
@@ -384,22 +425,18 @@ class Plugin:
         available = os.path.exists(node)
         profile = "xbox-elite"
         if available:
-            try:
-                out = subprocess.run(["/usr/bin/gamepad-profile", "get"],
-                                     capture_output=True, text=True, timeout=10).stdout.strip()
-                if out:
-                    profile = out
-            except Exception as e:
-                decky.logger.error(f"gamepad-profile get failed: {e}")
+            cp = await asyncio.to_thread(_run, ["/usr/bin/gamepad-profile", "get"], 10)
+            out = ((cp.stdout if cp else "") or "").strip()
+            if out:
+                profile = out
         return {"available": available, "profile": profile}
 
     async def set_gamepad_profile(self, profile):
         if profile not in ("xbox-elite", "ds5"):
             profile = "xbox-elite"
-        try:
-            subprocess.run(["/usr/bin/gamepad-profile", "set", profile], check=False, timeout=25)
-        except Exception as e:
-            decky.logger.error(f"gamepad-profile set failed: {e}")
+        # In a thread: the helper restarts InputPlumber and can take seconds -
+        # blocking Decky's asyncio loop that long freezes every other plugin.
+        await asyncio.to_thread(_run, ["/usr/bin/gamepad-profile", "set", profile], 25)
         return await self.get_gamepad_profile()
 
     # --- GPU Driver Manager (swappable Mesa Turnip / Vulkan) --------------- #
@@ -412,29 +449,12 @@ class Plugin:
     def _gpu_driver_available(self):
         return os.path.exists(self.GPU_DRIVER_BIN)
 
-    def _gpu_env(self):
-        # Decky runs plugin backends under its OWN bundled Python and exports
-        # PYTHONHOME/PYTHONPATH. If those leak into /usr/bin/gpu-driver (system
-        # python3) they hijack its stdlib -> urllib then raises "unknown url
-        # type: https" on catalogue fetch (and worse). Strip them (and LD_*) so
-        # the CLI always runs against the clean system environment.
-        env = dict(os.environ)
-        for k in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONEXECUTABLE",
-                  "PYTHONNOUSERSITE", "LD_LIBRARY_PATH", "LD_PRELOAD"):
-            env.pop(k, None)
-        return env
-
     async def _gpu_run(self, args, timeout=20):
-        # Run in a thread executor so a slow call (catalogue fetch / driver
-        # download) never blocks Decky's asyncio loop -> no plugin reload/freeze.
-        def run():
-            try:
-                return subprocess.run([self.GPU_DRIVER_BIN] + args, env=self._gpu_env(),
-                                      capture_output=True, text=True, timeout=timeout)
-            except Exception as e:
-                decky.logger.error(f"gpu-driver {args} failed: {e}")
-                return None
-        return await asyncio.get_event_loop().run_in_executor(None, run)
+        # In a thread so a slow call (catalogue fetch / driver download) never
+        # blocks Decky's asyncio loop -> no plugin reload/freeze. The clean
+        # environment comes from _run() (see _clean_env: the bundle's
+        # PYTHONHOME/PYTHONPATH used to hijack this CLI's stdlib).
+        return await asyncio.to_thread(_run, [self.GPU_DRIVER_BIN] + args, timeout)
 
     async def get_gpu_drivers(self):
         if not self._gpu_driver_available():
@@ -797,7 +817,7 @@ class Plugin:
         decky.logger.info(f"ROCKNIX Control loaded. Fan hwmon: {self.fan_hwmon}")
         decky.logger.info(f"Discovered CPU policies: {CPU_POLICIES}")
         decky.logger.info(f"Discovered GPU devfreq: {GPU_BASE}")
-        subprocess.run(["systemctl", "stop", "fancontrol"], capture_output=True, timeout=10)
+        _run(["systemctl", "stop", "fancontrol"], 10)
         decky.logger.info("fancontrol service stopped")
         profile = await _aget_system_setting("cooling.profile", "moderate")
         if profile == "custom":
@@ -810,5 +830,5 @@ class Plugin:
         await self._stop_curve_loop()
         if self.fan_hwmon:
             await _awrite(os.path.join(self.fan_hwmon, "pwm1_enable"), 2)
-        subprocess.run(["systemctl", "start", "fancontrol"], capture_output=True, timeout=10)
+        _run(["systemctl", "start", "fancontrol"], 10)
         decky.logger.info("ROCKNIX Control unloaded.")
