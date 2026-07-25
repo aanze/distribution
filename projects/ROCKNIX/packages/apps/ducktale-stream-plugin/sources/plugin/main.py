@@ -79,14 +79,41 @@ def _settings():
 
 
 def _moonlight_host():
-    """Host address from ROCKNIX's own Moonlight config, so the pairing that is
-    already set up is the one we use. 'address = x.y.z.w' in moonlight.conf."""
+    """Host address of the Moonlight pairing ROCKNIX already set up.
+
+    Two sources, in order. moonlight.conf CAN carry 'address = x.y.z.w' but
+    ships it commented out (device-checked), because ROCKNIX puts the address
+    on the command line of the launchers it generates when pairing a host:
+
+        moonlight stream -app "Steam Big Picture" -platform sdl 192.168.1.23
+
+    so those launchers are the reliable source.
+    """
     try:
         with open("/storage/.config/moonlight/moonlight.conf") as fh:
             for line in fh:
                 line = line.strip()
                 if line.startswith("address") and "=" in line:
-                    return line.split("=", 1)[1].strip()
+                    value = line.split("=", 1)[1].strip()
+                    if value:
+                        return value
+    except Exception:
+        pass
+
+    try:
+        roms = "/storage/roms/moonlight"
+        for name in sorted(os.listdir(roms)):
+            if not name.endswith(".sh"):
+                continue
+            with open(os.path.join(roms, name)) as fh:
+                for line in fh:
+                    if "moonlight stream" not in line:
+                        continue
+                    last = line.split()[-1].strip()
+                    # Only accept something that looks like an address, never a
+                    # trailing option value.
+                    if last and not last.startswith("-"):
+                        return last
     except Exception:
         pass
     return ""
