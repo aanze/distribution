@@ -2,7 +2,7 @@
 # Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
 
 PKG_NAME="ducktale-controls-plugin"
-PKG_VERSION="0.7.3-aanze"
+PKG_VERSION="0.7.5-aanze"
 PKG_LICENSE="custom"
 PKG_SITE="https://github.com/thefiqs/rocknix-control"
 PKG_URL=""
@@ -26,7 +26,16 @@ makeinstall_target() {
   cp -f "${SRC}/main.py"       "${OUT}/main.py"
   cp -f "${SRC}/dist/index.js" "${OUT}/dist/index.js"
   chmod 0755 "${OUT}/main.py"
-  echo "${PKG_VERSION}" > "${OUT}/.aanze-version"
+
+  # The boot deploy only copies when this marker differs from the deployed one,
+  # so it MUST track the payload. Deriving it from plugin.json (the version the
+  # bundle itself declares) instead of PKG_VERSION removes the desync that
+  # silently froze deploys: 0.7.4 shipped with PKG_VERSION left at 0.7.3, the
+  # marker matched what was on the device and the new bundle was never copied.
+  # Fall back to PKG_VERSION if the version line ever moves.
+  local PLUGIN_VER
+  PLUGIN_VER="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SRC}/plugin.json" | head -1)"
+  echo "${PLUGIN_VER:-${PKG_VERSION}}" > "${OUT}/.aanze-version"
 
   # deploy engine + boot hook
   mkdir -p "${INSTALL}/usr/bin"
