@@ -1,0 +1,24 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
+#
+# Deploy the vendored DUCKTALE-STREAM Decky plugin. Same shape as
+# ducktale-controls-deploy: no-op unless Decky is installed, version-gated on a
+# marker so it only copies when the shipped build differs from the deployed one.
+
+SRC="/usr/share/ducktale-stream"
+DST="/storage/homebrew/plugins/ducktale-stream"
+
+[ -f "${SRC}/plugin.json" ] || exit 0
+[ -d "/storage/homebrew/plugins" ] || exit 0
+
+OURS="$(cat "${SRC}/.aanze-version" 2>/dev/null)"
+HAVE="$(cat "${DST}/.aanze-version" 2>/dev/null)"
+[ -n "${OURS}" ] && [ "${OURS}" = "${HAVE}" ] && exit 0
+
+mkdir -p "${DST}"
+cp -rf "${SRC}/." "${DST}/"
+chmod 0755 "${DST}/main.py" "${DST}/runner/ducktale-stream-run.sh" 2>/dev/null || true
+
+systemctl restart plugin_loader >/dev/null 2>&1 || true
+exit 0

@@ -1,0 +1,11 @@
+{
+  "name": "DUCKTALE-STREAM",
+  "version": "0.1.0-aanze",
+  "author": "aanze",
+  "flags": ["root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["streaming", "moonlight", "sunshine"],
+    "description": "Launch a Steam game on the PC and stream it with the Moonlight already installed on ROCKNIX"
+  }
+}
