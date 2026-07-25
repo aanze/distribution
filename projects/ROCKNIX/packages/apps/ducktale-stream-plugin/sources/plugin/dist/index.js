@@ -87,40 +87,39 @@ const getSettings = callable("get_settings");
 const setSettings = callable("set_settings");
 const getHostStatus = callable("get_host_status");
 const prepareStream = callable("prepare_stream");
+// The plugin UI runs inside Steam's JS context, whose console cannot be read
+// from the build host, so the patch reports each step through the backend and
+// they land in the journal. This is what located every placement bug.
+const diag = callable("diag");
 const RUNNER = "/storage/homebrew/plugins/ducktale-stream/runner/ducktale-stream-run.sh";
 const SHORTCUT_NAME = "DUCKTALE Stream";
 /* --------------------------------------------------------------- Steam side */
-// The shortcut is created ONCE and is generic: it carries no per-game data.
-// Everything about the game being launched goes through the backend's launch
-// file. MoonDeck puts it in the shortcut's launch options as a "VAR=value
-// %command%" env prefix, and on this Steam build those variables never reach
-// the process - its runner dies on "Failed to parse runner type!" every time.
+// Created ONCE and generic: it carries no per-game data. Everything about the
+// game travels through the backend's launch file, because this Steam build
+// silently drops the "VAR=value %command%" env prefix of a shortcut's launch
+// options - the very thing that kills MoonDeck's runner on this device.
 async function ensureShortcut(current) {
     if (current) {
         const overview = window.appStore?.GetAppOverviewByAppID(current);
         if (overview)
-            return current; // still there, reuse it
+            return current;
     }
     const appid = await window.SteamClient.Apps.AddShortcut(SHORTCUT_NAME, RUNNER, "", "");
     if (!appid)
         throw new Error("AddShortcut returned nothing");
     await window.SteamClient.Apps.SetShortcutName(appid, SHORTCUT_NAME);
-    // Hidden from the library: it is plumbing, not a game the user browses to.
     await window.SteamClient.Apps.SetAppHidden?.(appid, true);
     await setSettings({ shortcut_appid: appid });
     return appid;
 }
-// A game qualifies when Steam itself reports it installed on another machine.
-// per_client_data lists every client of the account; clientid "0" is this
-// device. Device-checked: DayZ shows {clientid:"0", name:"This machine"} and
+// Steam itself knows which machines have the game installed: per_client_data
+// lists every client of the account, clientid "0" being this device. Verified
+// on device: DayZ reports {clientid:"0", name:"This machine"} alongside
 // {clientid:"6442...", name:"PC-MARC", installed:true}.
 function installedOnHost(appid) {
     try {
-        const overview = window.appStore?.GetAppOverviewByAppID(appid);
-        const remote = overview?.remote_per_client_data;
-        if (!remote)
-            return { yes: false, where: "" };
-        for (const client of Array.from(remote)) {
+        const remote = window.appStore?.GetAppOverviewByAppID(appid)?.remote_per_client_data;
+        for (const client of Array.from((remote ?? []))) {
             if (client?.installed)
                 return { yes: true, where: client?.client_name || "PC" };
         }
@@ -133,57 +132,88 @@ function installedOnHost(appid) {
 async function launchStream(appid, name) {
     const staged = await prepareStream(appid, name);
     if (!staged.ok) {
-        // Deliberately noisy: a silent no-op is exactly the failure mode that made
-        // MoonDeck impossible to diagnose from the couch.
+        // Loud on purpose: a silent no-op is exactly what made MoonDeck impossible
+        // to diagnose from the couch.
         window.SteamClient?.Toaster?.ToastNotification?.({
             title: "DUCKTALE Stream",
             body: `Échec (${staged.step}) : ${staged.error}`,
             duration: 8000,
         });
-        console.error("[ducktale-stream] prepare_stream failed", staged);
+        diag(`launch: prepare failed at ${staged.step}: ${staged.error}`);
         return;
     }
-    const settings = await getSettings();
-    const shortcut = await ensureShortcut(settings.shortcut_appid);
-    // Steam runs it -> gamescope focuses it. That indirection is the only way to
-    // get the Moonlight window in front: launched from the backend it streams
-    // fine but stays behind the Steam UI (verified on device, X11 and Wayland).
+    const shortcut = await ensureShortcut((await getSettings()).shortcut_appid);
+    diag(`launch: running shortcut ${shortcut} for ${name}`);
+    // Steam runs it, so gamescope focuses it. Launching moonlight from the
+    // backend streams correctly but stays behind the Steam UI - verified on
+    // device in X11 and as a native Wayland client on gamescope-0.
     window.SteamClient.Apps.RunGame(String(shortcut), "", -1, 100);
 }
 /* ------------------------------------------------- button on the game page */
-function StreamButton({ appid, name, where }) {
-    return (SP_JSX.jsxs("button", { className: "ducktale-stream-button", style: {
-            marginLeft: "8px", padding: "0 14px", minHeight: "40px",
-            borderRadius: "2px", border: "none", cursor: "pointer",
-            background: "rgba(255,255,255,.12)", color: "#fff",
-            display: "flex", alignItems: "center", gap: "6px",
-        }, onClick: () => launchStream(appid, name), title: `Streamer depuis ${where}`, children: [SP_JSX.jsx(FaCloudDownloadAlt, {}), " Stream"] }));
+// Placement, learned the hard way (three failures on device, 2026-07-25):
+//  * inserted in page flow it lands under the full-screen hero art, measured at
+//    y=1609 in an 844px-tall window - off-screen;
+//  * position:fixed is neutralised by a CSS transform on one of Steam's
+//    ancestors, which re-anchors it (measured at y=1441, also off-screen);
+//  * portalling it to the popup's <body> escapes both, but also escapes Steam's
+//    focus tree: the gamepad could no longer reach ANY button and the device
+//    went touch-only.
+// So: stay in the React tree (gamepad keeps working) and lift it over the
+// artwork with absolute CSS. This is MoonDeck's shape, and the only one that
+// satisfies all three constraints.
+const CONTAINER_CLASS = "ducktale-stream-container";
+function StreamButton({ appid, name }) {
+    const [busy, setBusy] = SP_REACT.useState(false);
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("style", { children: `.${CONTAINER_CLASS} {
+             position: absolute;
+             bottom: 2.8vw;
+             right: 56px;
+             z-index: 100;
+           }` }), SP_JSX.jsx(DFL.Focusable, { className: DFL.joinClassNames(DFL.basicAppDetailsSectionStylerClasses.AppButtons, CONTAINER_CLASS), children: SP_JSX.jsx(DFL.Button, { disabled: busy, className: DFL.playSectionClasses.MenuButton, onClick: () => { setBusy(true); launchStream(appid, name).finally(() => setBusy(false)); }, children: SP_JSX.jsxs("span", { style: { display: "flex", alignItems: "center", gap: "8px", whiteSpace: "nowrap" }, children: [SP_JSX.jsx(FaCloudDownloadAlt, {}), " Stream"] }) }) })] }));
 }
-// Steam's React tree is not a stable API, so this looks for the node holding
-// the game's action buttons and appends ours. Every failure path logs, so the
-// anchor can be re-found from DevTools instead of guessed at.
-function patchAppPage(props) {
-    DFL.afterPatch(props.children.props, "renderFunc", (_, ret) => {
-        const appid = Number(props.path?.split("/").pop());
-        if (!appid)
+// Structure taken from MoonDeck's own route patch, the only shape proven
+// against this Steam UI: addPatch hands over the TREE (reading the appid from
+// props.path yields the literal ":appid", which is why the first attempt
+// injected nothing), and the appid comes from the `overview` inside it.
+function patchAppPage(tree) {
+    const routeProps = DFL.findInReactTree(tree, (x) => x?.renderFunc);
+    if (!routeProps) {
+        diag("patch: renderFunc NOT found");
+        return tree;
+    }
+    let appid;
+    let name;
+    const handler = DFL.createReactTreePatcher([
+        (inner) => {
+            const children = DFL.findInReactTree(inner, (x) => x?.props?.children?.props?.overview)?.props?.children;
+            const overview = children?.props?.overview;
+            if (typeof overview?.appid !== "number") {
+                diag("stage1: overview NOT found");
+                return null;
+            }
+            appid = overview.appid;
+            name = typeof overview.display_name === "string" ? overview.display_name : String(appid);
+            return children;
+        },
+    ], (_, ret) => {
+        if (typeof appid !== "number")
             return ret;
-        const { yes, where } = installedOnHost(appid);
-        if (!yes)
-            return ret;
-        const overview = window.appStore?.GetAppOverviewByAppID(appid);
-        const name = overview?.display_name || String(appid);
-        const container = DFL.findInReactTree(ret, (node) => Array.isArray(node?.props?.children) &&
-            node.props.children.some((child) => child?.props?.childFocusDisabled !== undefined || child?.props?.onOKActionDescription));
-        if (!container) {
-            console.warn("[ducktale-stream] action-button container not found for", appid);
+        if (!installedOnHost(appid).yes)
+            return ret; // host-installed games only
+        const parent = DFL.findInReactTree(ret, (x) => Array.isArray(x?.props?.children) &&
+            x?.props?.className?.includes(DFL.appDetailsClasses.InnerContainer));
+        if (!parent) {
+            diag("render: InnerContainer NOT found");
             return ret;
         }
-        if (!container.props.children.some((c) => c?.props?.className === "ducktale-stream-button")) {
-            container.props.children.push(SP_JSX.jsx(StreamButton, { appid: appid, name: name, where: where }));
-        }
+        if (parent.props.children.some((c) => c?.props?.["data-ducktale-stream"]))
+            return ret;
+        parent.props.children.push(SP_JSX.jsx("div", { "data-ducktale-stream": "1", children: SP_JSX.jsx(StreamButton, { appid: appid, name: name ?? String(appid) }) }));
+        diag(`render: button injected for ${appid}`);
         return ret;
     });
-    return props;
+    DFL.afterPatch(routeProps, "renderFunc", handler);
+    return tree;
 }
 /* ----------------------------------------------------------------- QAM page */
 function Content() {
@@ -193,6 +223,9 @@ function Content() {
     const [pass, setPass] = SP_REACT.useState("");
     const [app, setApp] = SP_REACT.useState(SHORTCUT_NAME);
     const [host, setHost] = SP_REACT.useState("");
+    const refreshStatus = () => getHostStatus()
+        .then((h) => setStatus(h.ok ? `${h.hostname} — ${h.busy ? "occupé" : "prêt"}` : `injoignable (${h.reason})`))
+        .catch(() => setStatus("injoignable"));
     SP_REACT.useEffect(() => {
         getSettings().then((s) => {
             setLocal(s);
@@ -200,17 +233,12 @@ function Content() {
             setApp(s.sunshine_app || SHORTCUT_NAME);
             setHost(s.host || "");
         }).catch(() => { });
-        getHostStatus().then((h) => {
-            setStatus(h.ok ? `${h.hostname} — ${h.busy ? "occupé" : "prêt"}` : `injoignable (${h.reason})`);
-        }).catch(() => setStatus("injoignable"));
+        refreshStatus();
     }, []);
     const save = async () => {
-        const saved = await setSettings({
-            host, sunshine_user: user, sunshine_pass: pass, sunshine_app: app,
-        });
-        setLocal(saved);
+        setLocal(await setSettings({ host, sunshine_user: user, sunshine_pass: pass, sunshine_app: app }));
         setPass("");
-        getHostStatus().then((h) => setStatus(h.ok ? `${h.hostname} — ${h.busy ? "occupé" : "prêt"}` : `injoignable (${h.reason})`)).catch(() => { });
+        refreshStatus();
     };
     return (SP_JSX.jsxs(DFL.PanelSection, { title: "H\u00F4te de streaming", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", opacity: 0.8 }, children: ["\u00C9tat : ", status, settings && !settings.moonlight_installed && " — /usr/bin/moonlight absent !"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Adresse (vide = celle de Moonlight)", value: host, onChange: (e) => setHost(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Utilisateur Sunshine", value: user, onChange: (e) => setUser(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: settings?.has_password ? "Mot de passe (enregistré)" : "Mot de passe Sunshine", bIsPassword: true, value: pass, onChange: (e) => setPass(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Nom de l'app Sunshine", value: app, onChange: (e) => setApp(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: save, children: "Enregistrer" }) })] }));
 }
