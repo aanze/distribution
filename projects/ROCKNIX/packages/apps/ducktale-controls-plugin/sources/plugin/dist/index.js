@@ -52,11 +52,9 @@ function GenIcon(data) {
 }
 function IconBase(props) {
   var elem = conf => {
-    var {
-        attr,
-        size,
-        title
-      } = props,
+    var attr = props.attr,
+      size = props.size,
+      title = props.title,
       svgProps = _objectWithoutProperties(props, _excluded);
     var computedSize = size || conf.size || "1em";
     var className;
@@ -142,6 +140,30 @@ let switching = false;
 // the dropdown back to the previous profile while the hardware runs the new
 // one (fan audibly changes, display doesn't) until re-picked.
 let selectionEpoch = 0;
+// Same class of race as selectionEpoch, for the two selectors that read their
+// state back from a system helper (Charging mode, Gamepad profile).
+//
+// Picking a dropdown option REMOUNTS the QAM panel, and the mount effect reads
+// each state exactly once. So a pick races its own remount: the helper needs a
+// few hundred ms to persist the setting (systemd-run -> script -> systemctl),
+// the remount's read lands first and returns the PREVIOUS value, and since
+// nothing re-reads afterwards the dropdown stays stuck on it forever while the
+// hardware runs the value the user picked. Device-observed 2026-07-25 on
+// Charging mode: switched to Battery care, setting/daemon/thresholds all
+// correct on device, dropdown still showing Bypass.
+//
+// Module scope on purpose: component state does NOT survive the remount, these
+// guards must. inFlight > 0 means a user pick is still resolving -> its value
+// wins over any read that resolves meanwhile.
+const picks = {
+    charge: { value: "", inFlight: 0 },
+    gamepad: { value: "", inFlight: 0 },
+};
+// Value a state read should display: the in-flight pick if there is one.
+function pickOr(key, fresh) {
+    const p = picks[key];
+    return p.inFlight > 0 && p.value ? p.value : fresh;
+}
 // Detect which saved preset matches the live hardware clocks (per-policy CPU max
 // + GPU max). Lets the panel reflect a profile applied OUTSIDE the plugin (e.g.
 // the ROCKNIX "Perf Control" Tools app) instead of always defaulting the label
@@ -303,8 +325,14 @@ function Content() {
     const [showUnderclock, setShowUnderclock] = SP_REACT.useState(false);
     const [showFanCurve, setShowFanCurve] = SP_REACT.useState(false);
     SP_REACT.useEffect(() => {
-        getChargeMode().then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => { });
-        getGamepadProfile().then((s) => { setGpAvail(s.available); setGpProfile(s.profile); }).catch(() => { });
+        getChargeMode().then((s) => {
+            setChargeAvail(s.available);
+            setChargeMode(pickOr("charge", s.mode));
+        }).catch(() => { });
+        getGamepadProfile().then((s) => {
+            setGpAvail(s.available);
+            setGpProfile(pickOr("gamepad", s.profile));
+        }).catch(() => { });
         getGpuDrivers().then((d) => {
             setGpuDrvAvail(d.available);
             setGpuDefaultState(d.default || "stock");
@@ -344,12 +372,22 @@ function Content() {
         installGpuDriver(id).then((r) => { setGpuMsg(r.message); refreshGpu(); }).catch(() => setGpuMsg("install failed"));
     };
     const handleChargeMode = (mode) => {
+        picks.charge.value = mode;
+        picks.charge.inFlight++;
         setChargeMode(mode); // optimistic
-        applyChargeMode(mode).then((s) => { setChargeAvail(s.available); setChargeMode(s.mode); }).catch(() => { });
+        applyChargeMode(mode)
+            .then((s) => { setChargeAvail(s.available); picks.charge.value = s.mode; setChargeMode(s.mode); })
+            .catch(() => { })
+            .finally(() => { picks.charge.inFlight--; });
     };
     const handleGamepadProfile = (profile) => {
+        picks.gamepad.value = profile;
+        picks.gamepad.inFlight++;
         setGpProfile(profile); // optimistic
-        applyGamepadProfile(profile).then((s) => { setGpAvail(s.available); setGpProfile(s.profile); }).catch(() => { });
+        applyGamepadProfile(profile)
+            .then((s) => { setGpAvail(s.available); picks.gamepad.value = s.profile; setGpProfile(s.profile); })
+            .catch(() => { })
+            .finally(() => { picks.gamepad.inFlight--; });
     };
     const refreshHardware = async () => {
         const [cpu, gpu, preset] = await Promise.all([getCpuInfo(), getGpuInfo(), getPreset(state.activePreset)]);
@@ -426,6 +464,25 @@ function Content() {
                         setSelectedPreset(a);
                     }
                 }).catch(() => { });
+            }
+            // Charging mode / gamepad profile: re-read every 20th tick (~20 s). The
+            // mount effect resolves ONCE and Steam keeps this panel mounted across
+            // openings, so without this the display never recovers from a lost race
+            // and never picks up a change made outside Steam (ES menus). Rate-limited
+            // because each read spawns a helper; skipped while a pick is resolving.
+            if (canonTick % 20 === 0) {
+                if (picks.charge.inFlight === 0) {
+                    getChargeMode().then((s) => {
+                        setChargeAvail(s.available);
+                        setChargeMode((prev) => (picks.charge.inFlight > 0 || prev === s.mode) ? prev : s.mode);
+                    }).catch(() => { });
+                }
+                if (picks.gamepad.inFlight === 0) {
+                    getGamepadProfile().then((s) => {
+                        setGpAvail(s.available);
+                        setGpProfile((prev) => (picks.gamepad.inFlight > 0 || prev === s.profile) ? prev : s.profile);
+                    }).catch(() => { });
+                }
             }
             getTemps().then((t) => {
                 setTemps((prev) => (prev.cpu === t.cpu && prev.gpu === t.gpu) ? prev : t);
