@@ -81,6 +81,16 @@ fail() {
 # (the store build of decky-steamgriddb ships it) -> infinite load/chown/reload
 # loop: the backend dies every second and the plugin's UI never works.
 # Diagnosed live on the Odin 3, 2026-07-13.
+#
+# KillMode=control-group (upstream ships "process"): the loader is an x86
+# PyInstaller bundle run through FEX, so the process systemd tracks is not the
+# one doing the work. With KillMode=process a restart SIGTERMs the MainPID only
+# and the real loader + its FEXServer survive as orphans -- a second Decky then
+# runs alongside the new one, spinning a full core forever on its now-dead CEF
+# socket (CLOSE_WAIT). Device-observed 2026-07-25: the watcher's repair restart
+# leaked the old instance, which pinned the SoC at 80 C for an entire session
+# and made every performance profile look like it did nothing. control-group
+# kills the whole cgroup, so a restart really replaces the loader.
 write_service() {
   mkdir -p "${SERVICE_DIR}"
   cat > "${SERVICE_UNIT}" <<EOF
@@ -91,7 +101,7 @@ After=network.target
 Type=simple
 User=root
 Restart=always
-KillMode=process
+KillMode=control-group
 TimeoutStopSec=15
 ExecStart=${LOADER}
 WorkingDirectory=${SERVICES}
@@ -210,6 +220,45 @@ MAX_TRIES=2
 cef_up() { curl -sf --max-time 2 "${CEF_URL}" >/dev/null 2>&1; }
 injected() { python3 "${VERIFY}" >/dev/null 2>&1; }   # 0=oui 1=non 2=CEF down
 
+# Tue les loaders ORPHELINS. Un restart laisse survivre l ancienne instance
+# quand l unite porte encore KillMode=process (le vrai loader tourne sous FEX,
+# ce n est pas le MainPID suivi par systemd): le rescape tourne alors a 100 %
+# d un coeur sur sa socket CEF morte (CLOSE_WAIT) et epingle le SoC a 80 C -
+# tous les profils de perf semblent ne plus rien faire (vecu 2026-07-25).
+# Critere sur: tout PluginLoader demarre AVANT le MainPID courant.
+#
+# starttime (champ 22 de /proc/PID/stat) NE PEUT PAS se lire avec $22: le comm
+# du loader est "(Decky Loader)" - avec une espace - donc awk decale tous les
+# champs et rend une valeur d un autre champ (0 en pratique). On coupe apres le
+# DERNIER ')' et on compte a partir de la (starttime = 20e champ restant).
+proc_starttime() {
+  awk '{ s=substr($0, index($0,")")+2); n=split(s,a," "); if (n>=20) print a[20] }' \
+      "/proc/${1}/stat" 2>/dev/null
+}
+
+reap_orphan_loaders() {
+  local main start_main p start_p n=0
+  main="$(systemctl show "${SERVICE}" -p MainPID --value 2>/dev/null)"
+  [ -n "${main}" ] && [ "${main}" != "0" ] || return 0
+  start_main="$(proc_starttime "${main}")"
+  [ -n "${start_main}" ] || return 0
+  for p in $(pgrep -f "services/PluginLoader" 2>/dev/null); do
+    [ "${p}" = "${main}" ] && continue
+    [ "${p}" = "$$" ] && continue
+    # Re-lire le cmdline: garde-fou anti auto-match (le pgrep lui-meme porte le
+    # motif dans ses arguments) et contre un PID recycle.
+    tr '\0' ' ' < "/proc/${p}/cmdline" 2>/dev/null | grep -q "services/PluginLoader" || continue
+    case "$(cat "/proc/${p}/comm" 2>/dev/null)" in pgrep|grep|tr) continue ;; esac
+    start_p="$(proc_starttime "${p}")"
+    [ -n "${start_p}" ] || continue
+    if [ "${start_p}" -lt "${start_main}" ]; then
+      kill -9 "${p}" 2>/dev/null && n=$((n+1))
+    fi
+  done
+  [ ${n} -gt 0 ] && logger -t decky-steam-fix "${n} loader(s) orphelin(s) tue(s) (fuite de restart)"
+  return 0
+}
+
 verify_ladder() {
   local why="${1}" n=1
   while [ ${n} -le ${MAX_TRIES} ]; do
@@ -219,6 +268,7 @@ verify_ladder() {
     logger -t decky-steam-fix "Decky absent (${why}, essai ${n}) -> restart ${SERVICE}"
     systemctl restart "${SERVICE}"
     sleep "${SETTLE}"
+    reap_orphan_loaders   # le restart peut avoir laisse l ancienne instance
     n=$((n+1))
   done
   injected && return 0
@@ -242,6 +292,10 @@ watch_loop() {
         if [ ${ticks} -ge ${RECHECK_POLLS} ]; then
           ticks=0
           verify_ladder "controle periodique"
+          # Filet: un orphelin peut venir d un restart fait hors watcher
+          # (decky-update, action utilisateur) sur une unite encore en
+          # KillMode=process. ~2 min de coeur brule au pire, pas une session.
+          reap_orphan_loaders
         fi
       fi
     else
