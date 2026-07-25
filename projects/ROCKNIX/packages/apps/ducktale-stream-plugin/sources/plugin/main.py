@@ -255,6 +255,13 @@ class Plugin:
         decky.logger.info(f"staged stream: {game_name} ({appid}) via '{app_name}' on {host}")
         return {"ok": True, "host": host, "app": app_name}
 
+    async def diag(self, message: str):
+        """Trace point for the frontend. The plugin UI runs in Steam's JS
+        context, whose console we cannot read from the build host, so the
+        route-patch steps report through here and land in the journal."""
+        decky.logger.info(f"[diag] {message}")
+        return True
+
     async def get_last_launch(self):
         return _read_json(LAUNCH_FILE, {})
 
