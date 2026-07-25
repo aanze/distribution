@@ -1,0 +1,6 @@
+#!/bin/sh
+# Boot hook: deploy DUCKTALE-STREAM into Decky if present (idempotent,
+# version-gated). Backgrounded so it never delays boot.
+
+[ -x /usr/bin/ducktale-stream-deploy ] && /usr/bin/ducktale-stream-deploy >/dev/null 2>&1 &
+exit 0
