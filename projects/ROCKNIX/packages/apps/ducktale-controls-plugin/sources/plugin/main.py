@@ -47,16 +47,38 @@ def _clean_env():
     return env
 
 
+# FEX does not just emulate x86 - it presents its own x86 ROOTFS, and that
+# rootfs SHADOWS /etc and /bin. A helper script we spawn therefore gets the
+# rootfs's x86 /bin/sh (that is where the libreadline above comes from) and,
+# worse, a /etc/profile.d that is NOT ROCKNIX's: get_setting/set_setting simply
+# do not exist there. Device-observed 2026-07-25: with only the environment
+# cleaned, charge-mode ran far enough to switch the hardware and then died on
+# "set_setting: command not found" - the mode applied but was never persisted,
+# so the QAM dropdown snapped back to the previous value.
+#
+# systemd-run hands the command to PID 1, which forks it NATIVELY: outside FEX,
+# real rootfs, clean environment. --pipe gives us stdout/stderr back and --wait
+# propagates the helper's exit status (verified on device: 0/1/3 all propagate,
+# ~10 ms overhead). Fall back to a direct call if systemd-run is ever absent.
+_SYSTEMD_RUN = "/usr/bin/systemd-run"
+
+
+def _native_cmd(cmd):
+    if os.path.exists(_SYSTEMD_RUN):
+        return [_SYSTEMD_RUN, "--quiet", "--wait", "--collect", "--pipe", "--"] + cmd
+    return cmd
+
+
 def _run(cmd, timeout=10, capture=True):
-    """Run a system helper with a clean environment; never raise.
+    """Run a system helper natively, with a clean environment; never raise.
 
     Returns the CompletedProcess, or None if it could not be run. A non-zero
     exit is LOGGED: the failures this fixes were invisible precisely because
     the old call sites passed check=False and ignored the return code.
     """
     try:
-        cp = subprocess.run(cmd, env=_clean_env(), check=False, timeout=timeout,
-                            capture_output=capture, text=True)
+        cp = subprocess.run(_native_cmd(cmd), env=_clean_env(), check=False,
+                            timeout=timeout, capture_output=capture, text=True)
     except Exception as e:
         decky.logger.error(f"{cmd[0]} {' '.join(cmd[1:])} failed: {e}")
         return None
