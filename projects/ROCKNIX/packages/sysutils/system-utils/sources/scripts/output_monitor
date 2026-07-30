@@ -129,12 +129,23 @@ EOF
 $(printf '%s\n' "$modes")
 EOF
 
+    [ -n "$best_w" ] || return 0
+
     # Always name the refresh. "--mode WxH" picks the highest one the sink
     # advertises, which on this ultrawide is 2560x1080@100 - over the link
     # budget, and back to a noisy scanout. No refresh-less fallback for that
     # reason: leaving the mode alone is safer than setting an unknown one.
-    [ -n "$best_w" ] &&
-        wlr-randr --output "$out" --mode "${best_w}x${best_h}@${best_hz}Hz" 2>/dev/null || true
+    wlr-randr --output "$out" --mode "${best_w}x${best_h}@${best_hz}Hz" 2>/dev/null || true
+
+    # A mode change can leave the sink displaying nothing at all while every
+    # kernel-side reading says the link is healthy - trained on its lanes, the
+    # right timings, connector "connected", the window mapped and visible.
+    # Cycling the output's power makes it resync and brings the picture back;
+    # without it the display stays black until the cable is physically
+    # replugged, which is what we wrongly believed was the only way out.
+    swaymsg "output ${out} power off" >/dev/null 2>&1 || true
+    sleep 1
+    swaymsg "output ${out} power on" >/dev/null 2>&1 || true
 }
 
 # EmulationStation resolves its render resolution once, at startup, and never
