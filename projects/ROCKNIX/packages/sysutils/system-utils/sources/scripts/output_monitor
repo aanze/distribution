@@ -61,6 +61,98 @@ _switch_audio() {
     [ -n "$card" ] && [ -n "$target" ] && wpctl set-profile "$card" "$target" 2>/dev/null || true
 }
 
+# Usable payload bits/s on a DP connector. A dock that carries USB 3 alongside
+# video only gets two of the four lanes, which is far less headroom than the
+# sink's preferred mode assumes: an Odin 3 on a 3440x1440 ultrawide negotiates
+# 2 lanes of HBR2 (8.64 Gbit/s usable) while the preferred 3440x1440@100 mode
+# needs about 16. Driving it anyway drops the link entirely or scans out noise.
+# msm exposes the negotiated link in debugfs; fall back to that same 2-lane
+# HBR2 elsewhere, which is the pessimistic case and therefore the safe guess.
+_link_budget_bps() {
+    local dbg rate lanes
+    dbg=$(cat /sys/kernel/debug/dri/*/"$1"/dp_debug 2>/dev/null)
+    rate=$(printf '%s\n' "$dbg" | awk '/rate =/ {print $3; exit}')
+    lanes=$(printf '%s\n' "$dbg" | awk '/num_lanes =/ {print $3; exit}')
+    case "${rate}${lanes}" in ''|*[!0-9]*) rate=540000; lanes=2 ;; esac
+    # rate is the per-lane symbol clock in kHz; 8b/10b puts 8 payload bits in
+    # each symbol, so the coding overhead is already accounted for here.
+    echo $(( rate * 1000 * 8 * lanes ))
+}
+
+# Bits/s a mode needs. Blanking is not in the mode list, so scale the active
+# pixel rate by the ~1.2 that real timings carry, and bill it at the link's
+# bits per pixel (msm reports 30 on this panel, not the 24 one would assume).
+_mode_cost_bps() {
+    local w="$1" h="$2" hz="$3" bpp="$4"
+    echo $(( w * h * hz * 12 / 10 * bpp ))
+}
+
+# Pick the largest mode that keeps the sink's own aspect ratio and still fits
+# the link. Matching the aspect is what stops the display stretching the
+# picture, and is why this cannot simply pin 1920x1080: on a 21:9 sink that is
+# a 16:9 signal, which its scaler then pulls across the full width.
+_set_best_mode() {
+    local out="$1" budget bpp modes pref_w pref_h pref_aspect
+    budget=$(_link_budget_bps "$out")
+    bpp=$(cat /sys/kernel/debug/dri/*/"$out"/dp_debug 2>/dev/null | awk '/bpp =/ {print $3; exit}')
+    case "$bpp" in ''|*[!0-9]*) bpp=30 ;; esac
+
+    modes=$(wlr-randr 2>/dev/null | awk -v o="$out" '
+        $1 == o { inout = 1; next }
+        /^[A-Za-z]/ { inout = 0 }
+        inout && /px,/ {
+            # "  2560x1080 px, 60.000000 Hz (preferred)" -> "2560 1080 60 pref"
+            gsub(/x/, " ", $1)
+            printf "%s %d %s\n", $1, $3, ($0 ~ /preferred/ ? "pref" : "-")
+        }')
+    [ -n "$modes" ] || return 0
+
+    read -r pref_w pref_h _ <<EOF
+$(printf '%s\n' "$modes" | awk '$4 == "pref" { print; exit }')
+EOF
+    [ -n "$pref_h" ] && [ "$pref_h" -gt 0 ] 2>/dev/null || return 0
+    pref_aspect=$(( pref_w * 1000 / pref_h ))
+
+    local best_w= best_h= best_hz= best_px=0 w h hz aspect cost
+    while read -r w h hz _; do
+        [ -n "$hz" ] && [ "$hz" -gt 0 ] 2>/dev/null || continue
+        aspect=$(( w * 1000 / h ))
+        # 2% tolerance: 2560x1080 is not exactly 3440x1440's ratio, but it is
+        # the mode a 21:9 sink expects and displays without stretching.
+        [ $(( (aspect - pref_aspect) * 100 / pref_aspect )) -le 2 ] &&
+        [ $(( (pref_aspect - aspect) * 100 / pref_aspect )) -le 2 ] || continue
+        cost=$(_mode_cost_bps "$w" "$h" "$hz" "$bpp")
+        [ "$cost" -le "$budget" ] || continue
+        [ $(( w * h )) -gt "$best_px" ] || { [ $(( w * h )) -eq "$best_px" ] && [ "$hz" -gt "${best_hz:-0}" ]; } || continue
+        best_w="$w"; best_h="$h"; best_hz="$hz"; best_px=$(( w * h ))
+    done <<EOF
+$(printf '%s\n' "$modes")
+EOF
+
+    if [ -n "$best_w" ]; then
+        wlr-randr --output "$out" --mode "${best_w}x${best_h}@${best_hz}Hz" 2>/dev/null ||
+            wlr-randr --output "$out" --mode "${best_w}x${best_h}" 2>/dev/null || true
+    fi
+}
+
+# EmulationStation resolves its render resolution once, at startup, and never
+# renegotiates it when the output it sits on changes size. A session that came
+# up on the internal panel keeps a 1920x1080 buffer and shows as a small
+# letterboxed window on a 3440x1440 dock; one that came up docked keeps the
+# ultrawide buffer, which the compositor then squashes back into the panel (the
+# "compressed" picture after leaving Steam while docked). Restarting the unit is
+# the only way to make it adopt the geometry it now sits on. essway.service runs
+# emulationstation alone -- sway.service, and therefore this monitor, survive it.
+#
+# Hide the old window first: until the new session paints, its stale buffer
+# would be scaled across the new geometry, which is exactly the stretched frame
+# we are getting rid of.
+_respawn_es() {
+    swaymsg "[app_id=\"emulationstation\"] fullscreen disable" 2>/dev/null || true
+    swaymsg "[app_id=\"emulationstation\"] move scratchpad" 2>/dev/null || true
+    systemctl restart essway 2>/dev/null || true
+}
+
 _apply() {
     local state="internal"
     [ -n "$(_get_active_externals)" ] && state="external"
@@ -75,24 +167,30 @@ _apply() {
             wlr-randr --output "$out" --off 2>/dev/null
         done < <(_get_all_internals)
         if [ -n "$ext_out" ]; then
-            wlr-randr --output "$ext_out" --mode 1920x1080@60 2>/dev/null \
-                || wlr-randr --output "$ext_out" --mode 1920x1080 2>/dev/null || true
+            _set_best_mode "$ext_out"
             swaymsg "[app_id=\"emulationstation\"] move output ${ext_out}" 2>/dev/null || true
         fi
+        # Picture before sound: _switch_audio can block for up to 10s waiting
+        # for the HDMI profile to appear, and every second of that is a second
+        # of stretched image on screen.
+        _respawn_es
         # Stop USB gadget: its data lanes conflict with DP Alt Mode on RK3576
         systemctl is-active --quiet usbgadget && systemctl stop usbgadget
         _switch_audio external
     else
-        # Only re-enable internal panels on actual disconnect, not first-boot
+        # Only on an actual disconnect: on a first-boot internal start nothing
+        # has changed yet, so the freshly started session is left alone.
+        # This is also the sole path that lights the panel back up when the
+        # external goes away -- without it a disconnect leaves no output
+        # enabled at all and the device looks dead.
         if [ "$prev" != "init" ]; then
             while IFS= read -r out; do
                 wlr-randr --output "$out" --preferred --on 2>/dev/null
             done < <(_get_all_internals)
+            _respawn_es
             _switch_audio internal
         fi
     fi
-
-
 }
 
 # Allow sway to finish initialising outputs before first check
