@@ -24,7 +24,15 @@ INTERVAL=10
 # early-boot capture gets a bogus wall-clock date; the trigger line is the
 # only reliable discriminator, hence the tight patterns. Real qsh boot crash
 # (no-sound bug) matches via "fatal error"/"err_qdi".
-PATTERN='remoteproc[0-9]*:.*fatal error|err_qdi|listener_hexagon.*Assertion|recovering remoteproc|remoteproc.*crash|watchdog bite|rproc.*boot failed|qcom_q6v5.*(fatal|watchdog)'
+#
+# The q6apm patterns cover the ADSP wedging WITHOUT crashing: remoteproc stays
+# "running", nothing here fired, and yet every audio graph setup timed out
+# (-110). Userspace paid for it far from the cause - each EmulationStation
+# start blocked ~60s in SDL audio init, which read on screen as a black panel
+# for a minute after every dock plug or unplug (2026-07-30). Diagnosing it
+# meant reconstructing the chain by hand because the black box, watching only
+# for crash signatures, had captured nothing.
+PATTERN='remoteproc[0-9]*:.*fatal error|err_qdi|listener_hexagon.*Assertion|recovering remoteproc|remoteproc.*crash|watchdog bite|rproc.*boot failed|qcom_q6v5.*(fatal|watchdog)|q6apm.*Failed to prepare Graph|q6apm.*ASoC error|q6apm.*failed to stop APM port|snd_soc_dai_prepare'
 MAX_SNAPSHOTS=20
 
 mkdir -p "${OUT}"
@@ -64,6 +72,21 @@ snapshot() {
     echo "--- typec:"; cat /sys/class/typec/port0/power_operation_mode 2>/dev/null
     echo "--- irqs:"; grep -E 'smp2p|q6v5|glink' /proc/interrupts 2>/dev/null
     echo "--- audio cards:"; cat /proc/asound/cards 2>/dev/null
+    # Audio path health. A wedged ADSP still reports "running", so the card
+    # list alone says nothing; what gives it away is that every ALSA setup
+    # times out. The probes MUST be bounded, because wpctl and pw-cli hang
+    # outright in that state - and a hang here would freeze the black box
+    # itself. That they time out at all is the most telling signal.
+    echo "--- audio services:"
+    for s in pipewire pipewire-pulse wireplumber; do
+      echo "$s: $(systemctl is-active $s 2>/dev/null)"
+    done
+    echo -n "--- pipewire answers: "
+    if timeout 5 wpctl status >/dev/null 2>&1; then echo "yes"; else echo "NO (hung or failed)"; fi
+    echo "--- pcm states:"
+    for f in /proc/asound/card*/pcm*/sub*/status; do
+      [ -f "$f" ] && echo "${f#/proc/asound/}: $(head -1 "$f" 2>/dev/null)"
+    done
     # Who was actually talking to the ADSP when it died. The 2026-07-30 fatal
     # was a firmware assertion inside the ADSP's own fastrpc listener
     # (listener_hexagon.c: "Assertion prevCtx == notify failed"), and with no
