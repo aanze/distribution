@@ -32,6 +32,31 @@
       <!-- 1x1 white pixel: tint with <color> for reliable solid fills/scrims
            (color-only <image> fills don't render dependably in this engine) -->
       <px>./_inc/px.png</px>
+
+      <!-- Aspect-dependent geometry. Everything below was previously written
+           as a constant that only holds on 16:9; on a 21:9 dock the shelf
+           cells came out 33% too wide, so every 2:3 cover sat in an oversized
+           cell with the tile background showing as bars beside it.
+
+           A cover is 2:3, so a cell only hugs it when its width is exactly two
+           thirds of the shelf height. Derive the shelf width from that and the
+           cells stay 2:3 at any aspect; centre it with the leftover. Both
+           expressions reproduce the old constants exactly on 16:9 (0.93 and
+           0.035), so nothing moves on the built-in panel.
+
+           The column count is written out rather than taken from ${shelfCols}:
+           the theme evaluator only converts screen.width and screen.height to
+           numbers, every other variable stays a string, and a string factor
+           makes the whole product evaluate to zero - which silently collapsed
+           the shelf to zero width and drew no covers at all. -->
+      <shelfW>8 * 0.31 * ${screen.height} * 2 / (3 * ${screen.width})</shelfW>
+      <shelfX>(1 - ${shelfW}) / 2</shelfX>
+
+      <!-- gridtile <padding> is a fraction of screen width (X) and height (Y),
+           so a constant X only gives equal pixel borders at one aspect ratio.
+           Derive it from the height instead: identical on 16:9, and still even
+           on a 21:9 dock where a fixed X was 36% too thick horizontally. -->
+      <tilePadX>0.0042 * ${screen.height} / ${screen.width}</tilePadX>
    </variables>
 
    <!--
@@ -411,7 +436,7 @@
            each cell ~2:3 == the cover aspect, so the cover fills the cell and
            the thin tile frame hugs it on all 4 sides (no side bars). -->
       <imagegrid name="gamegrid">
-         <pos>0.035 0.585</pos><size>0.93 0.31</size>
+         <pos>${shelfX} 0.585</pos><size>${shelfW} 0.31</size>
          <margin>0.009 0</margin>
          <scrollDirection>horizontal</scrollDirection>
          <autoLayout>${shelfCols} 1</autoLayout>
@@ -423,12 +448,12 @@
       <!-- unselected: slightly dimmed, no frame. selected: full bright + a
            thin uniform frame (padding ~equal px on all sides) + zoom. -->
       <gridtile name="default">
-         <padding>0.0024 0.0042</padding>
+         <padding>${tilePadX} 0.0042</padding>
          <imageColor>ffffffcc</imageColor>
          <backgroundColor>00000000</backgroundColor>
       </gridtile>
       <gridtile name="selected">
-         <padding>0.0024 0.0042</padding>
+         <padding>${tilePadX} 0.0042</padding>
          <imageColor>ffffffff</imageColor>
          <backgroundColor>${selFrame}</backgroundColor>
       </gridtile>
