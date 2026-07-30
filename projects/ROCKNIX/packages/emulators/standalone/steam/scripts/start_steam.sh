@@ -127,17 +127,36 @@ steam_arm64_binfmt_and_proton_prep() {
   cp -f "/usr/share/steam/toolmanifest.vdf" "/storage/.local/share/Steam/steamapps/common/Proton 11.0 (ARM64)/"
 }
 
+# gamescope only ever consults --force-orientation for an internal screen:
+#
+#   if ( GetScreenType() == GAMESCOPE_SCREEN_TYPE_INTERNAL &&
+#        g_DesiredInternalOrientation != GAMESCOPE_PANEL_ORIENTATION_AUTO )
+#
+# so the value has to describe the built-in panel, not whichever output happens
+# to be focused when Steam is launched. Taking it from the focused output meant
+# that starting Steam while docked passed the external's "normal"; unplugging
+# mid-session dropped gamescope back onto a portrait panel it had been told was
+# upright, and the picture came back rotated 90 degrees until the next reboot.
+# Passing the panel's own orientation is a no-op while docked and is already
+# correct if the external goes away.
+#
+# fbcon/rotate is the same source 111-sway-init reads to derive the panel's
+# sway transform, and unlike the sway output it stays readable while the panel
+# is disabled - which is exactly the docked case.
+steam_internal_panel_orientation() {
+  case "$(cat /sys/class/graphics/fbcon/rotate 2>/dev/null)" in
+    1) echo "right" ;;
+    2) echo "upsidedown" ;;
+    3) echo "left" ;;
+    *) echo "normal" ;;
+  esac
+}
+
 steam_launch_bigpicture() {
   local game_uri=""
-  local force_orientation="left"
+  local force_orientation
   local gamescope_mode_file="/storage/.config/gamescope/modes.cfg"
-  if [ "${TRANSFORM}" = "90" ]; then
-    force_orientation="right"
-  elif [ "${TRANSFORM}" = "270" ]; then
-    force_orientation="left"
-  elif [ "${TRANSFORM}" = "normal" ]; then
-    force_orientation="normal"
-  fi
+  force_orientation=$(steam_internal_panel_orientation)
 
   if [[ "$1" == *.desktop && -f "$1" && "$(basename "$1")" != "Steam.desktop" ]]; then
     local exec_line
