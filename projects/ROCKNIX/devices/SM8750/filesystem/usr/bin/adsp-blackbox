@@ -41,6 +41,19 @@ snapshot() {
   dmesg > "${d}/dmesg.txt" 2>/dev/null
   {
     date; echo "uptime_s: ${up}"
+    # printk timestamps come from local_clock(), which does NOT advance across
+    # suspend, while /proc/uptime above DOES. After a long deep-suspend dmesg
+    # therefore looks "frozen" a few seconds after boot (incident 2026-07-30:
+    # uptime 86612s, last dmesg line at 33s - which reads as a wedged printk
+    # and sent the first analysis down the wrong path). Record the monotonic
+    # clock as well so any dmesg timestamp can be mapped back to wall-clock,
+    # and dump the suspend counters so a resume-triggered incident is
+    # recognisable as one without having to infer it.
+    echo "monotonic_ns: $(grep -m1 '^now at' /proc/timer_list 2>/dev/null | tr -dc '0-9')"
+    echo "--- suspend stats:"
+    for f in /sys/power/suspend_stats/*; do
+      [ -f "$f" ] && echo "${f##*/}: $(cat "$f" 2>/dev/null)"
+    done
     echo "--- trigger line:"; echo "$1"
     echo "--- remoteproc states:"
     for r in /sys/class/remoteproc/remoteproc*; do
@@ -51,11 +64,27 @@ snapshot() {
     echo "--- typec:"; cat /sys/class/typec/port0/power_operation_mode 2>/dev/null
     echo "--- irqs:"; grep -E 'smp2p|q6v5|glink' /proc/interrupts 2>/dev/null
     echo "--- audio cards:"; cat /proc/asound/cards 2>/dev/null
+    # Who was actually talking to the ADSP when it died. The 2026-07-30 fatal
+    # was a firmware assertion inside the ADSP's own fastrpc listener
+    # (listener_hexagon.c: "Assertion prevCtx == notify failed"), and with no
+    # client inventory there was no way to tell which fastrpc user provoked it
+    # - the audio PD, the sensor PD (odin3-sensors' adsprpcd), or something
+    # else entirely. Cheap: one readlink pass over open fds.
+    echo "--- adsp clients (open fastrpc/rpmsg fds):"
+    for p in /proc/[0-9]*; do
+      fds="$(ls -l "$p"/fd 2>/dev/null | grep -oE '/dev/(fastrpc|rpmsg)[^ ]*' | sort -u | tr '\n' ' ')"
+      [ -n "${fds}" ] && echo "${p#/proc/} $(cat "$p/comm" 2>/dev/null): ${fds}"
+    done
     echo "--- services:"; for s in odin3-sensors charge-care charge-guard; do
       echo "$s: $(systemctl is-active $s 2>/dev/null)"
     done
   } > "${d}/context.txt" 2>/dev/null
-  journalctl -b --no-pager > "${d}/journal.txt" 2>/dev/null
+  # short-precise: microsecond timestamps. The default second granularity made
+  # the 2026-07-30 incident undecidable - the userspace sensor client and the
+  # ADSP fatal both landed in the same "13:27:56" bucket, so cause could not be
+  # separated from consequence. Sub-second ordering is the whole point of a
+  # black box.
+  journalctl -b --no-pager -o short-precise > "${d}/journal.txt" 2>/dev/null
   logger -t adsp-blackbox "ADSP incident captured -> ${d}"
   # rotation: keep the newest MAX_SNAPSHOTS (name sorts by uptime prefix)
   ls -1d "${OUT}"/up*s-* 2>/dev/null | head -n -"${MAX_SNAPSHOTS}" | while read -r old; do
