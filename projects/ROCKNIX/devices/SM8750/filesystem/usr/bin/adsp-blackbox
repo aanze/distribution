@@ -33,6 +33,19 @@ INTERVAL=10
 # meant reconstructing the chain by hand because the black box, watching only
 # for crash signatures, had captured nothing.
 PATTERN='remoteproc[0-9]*:.*fatal error|err_qdi|listener_hexagon.*Assertion|recovering remoteproc|remoteproc.*crash|watchdog bite|rproc.*boot failed|qcom_q6v5.*(fatal|watchdog)|q6apm.*Failed to prepare Graph|q6apm.*ASoC error|q6apm.*failed to stop APM port|snd_soc_dai_prepare'
+# GLINK transport distress, separately rate-limited. "unhandled rx cmd" means
+# the shared FIFO is being read as garbage - during the 2026-07-31 incident it
+# came with an smp2p "ready" interrupt storm (2691 fires) and 141k glink-smem
+# interrupts, and everything ADSP-side starved at once: audio graphs -110,
+# battmgr empty (0% battery while plugged), and the dock dead since DP altmode
+# rides pmic_glink. The storm floods the volatile journal in minutes, so only
+# the FIRST capture of a burst has the onset - and with the plain dedup every
+# new timestamped line is a new "hit", which would snapshot every poll and
+# rotate that first capture away. Hence the cooldown, long enough for a burst
+# to be one capture, short enough that a fresh incident hours later is caught.
+GLINK_PATTERN='glink.*unhandled rx cmd|glink.*intent request timed out'
+GLINK_COOLDOWN=600
+glink_last=0
 MAX_SNAPSHOTS=20
 
 mkdir -p "${OUT}"
@@ -120,6 +133,13 @@ while :; do
   if [ -n "${hit}" ] && [ "${hit}" != "${last}" ]; then
     snapshot "${hit}"
     last="${hit}"
+  fi
+  ghit="$(dmesg 2>/dev/null | grep -iE "${GLINK_PATTERN}" | grep -v adsp-blackbox | tail -1)"
+  now="$(cut -d. -f1 /proc/uptime)"
+  if [ -n "${ghit}" ] && [ "${ghit}" != "${glast}" ] && [ $((now - glink_last)) -ge ${GLINK_COOLDOWN} ]; then
+    snapshot "${ghit}"
+    glast="${ghit}"
+    glink_last=${now}
   fi
   sleep "${INTERVAL}"
 done
