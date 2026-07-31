@@ -52,9 +52,11 @@ function GenIcon(data) {
 }
 function IconBase(props) {
   var elem = conf => {
-    var attr = props.attr,
-      size = props.size,
-      title = props.title,
+    var {
+        attr,
+        size,
+        title
+      } = props,
       svgProps = _objectWithoutProperties(props, _excluded);
     var computedSize = size || conf.size || "1em";
     var className;
@@ -107,8 +109,6 @@ const getCurrentSettings = callable("get_current_settings");
 const getFanCurve = callable("get_fan_curve");
 const saveFanCurve = callable("set_fan_curve");
 callable("set_fan_profile");
-const getGameProfile = callable("get_game_profile");
-const setGameProfile = callable("set_game_profile");
 const getChargeMode = callable("get_charge_mode");
 const applyChargeMode = callable("set_charge_mode");
 const getGamepadProfile = callable("get_gamepad_profile");
@@ -547,11 +547,7 @@ function Content() {
             // second pick (device-observed). Hardware apply comes after.
             await setActiveProfile(name);
             await applyPreset(name);
-            await Promise.all([
-                state.runningAppId > 0 ? setGameProfile(String(state.runningAppId), name) : Promise.resolve(),
-                refreshHardware(),
-                refreshFanCurve(),
-            ]);
+            await Promise.all([refreshHardware(), refreshFanCurve()]);
         }
         finally {
             switching = false;
@@ -699,11 +695,6 @@ var index = definePlugin(() => {
             state.runningAppId = e.unAppID;
             const app = appStore.GetAppOverviewByAppID(e.unAppID);
             state.runningGameName = app?.display_name ?? String(e.unAppID);
-            const preset = await getGameProfile(String(e.unAppID));
-            if (preset) {
-                state.activePreset = preset;
-                applyPreset(preset);
-            }
         }
         else {
             state.runningAppId = 0;
