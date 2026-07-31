@@ -166,6 +166,28 @@ _respawn_es() {
     systemctl restart essway 2>/dev/null || true
 }
 
+# Bringing a panel back with --preferred --on restores its mode but not its
+# rotation: the output returns at the driver's default orientation, not the one
+# 111-sway-init worked out at boot. On a portrait panel driven at transform 90
+# that means the whole UI comes back rotated a quarter turn, and it stays that
+# way until someone sets it by hand. Re-apply what sway was configured with,
+# per output, so dual-screen boards keep their own per-panel values; fall back
+# to fbcon/rotate, the source 111-sway-init itself derives the angle from.
+_restore_transform() {
+    local out="$1" xf
+    xf=$(awk -v o="$out" '$1 == "output" && $2 == o && $3 == "transform" { print $4; exit }' \
+         /storage/.config/sway/config 2>/dev/null)
+    if [ -z "$xf" ]; then
+        case "$(cat /sys/class/graphics/fbcon/rotate 2>/dev/null)" in
+            1) xf=90 ;;
+            2) xf=180 ;;
+            3) xf=270 ;;
+            *) xf=normal ;;
+        esac
+    fi
+    swaymsg "output ${out} transform ${xf}" >/dev/null 2>&1 || true
+}
+
 _apply() {
     local state="internal"
     [ -n "$(_get_active_externals)" ] && state="external"
@@ -199,6 +221,7 @@ _apply() {
         if [ "$prev" != "init" ]; then
             while IFS= read -r out; do
                 wlr-randr --output "$out" --preferred --on 2>/dev/null
+                _restore_transform "$out"
             done < <(_get_all_internals)
             _respawn_es
             _switch_audio internal
