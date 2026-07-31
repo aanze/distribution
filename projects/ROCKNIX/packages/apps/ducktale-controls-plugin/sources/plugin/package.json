@@ -1,6 +1,6 @@
 {
   "name": "ducktale-controls",
-  "version": "0.4.0-aanze",
+  "version": "0.4.1-aanze",
   "description": "CPU/GPU/Fan control for ROCKNIX (DUCKTALE-CONTROLS)",
   "type": "module",
   "scripts": {
