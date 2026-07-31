@@ -110,7 +110,16 @@ steam_scope_reexec_if_needed() {
 steam_dual_screen_begin() {
   if [ "${DEVICE_HAS_DUAL_SCREEN}" = "true" ]; then
     swaymsg 'seat seat1 fallback true'
-    PREFER_OUTPUT="--prefer-output $SDL_VIDEO_DISPLAY_PRIORITY"
+    PREFER_OUTPUT=(--prefer-output "$SDL_VIDEO_DISPLAY_PRIORITY")
+  fi
+  # With no priority list at all, gamescope treats every connected connector
+  # as equal and takes whichever an unordered map iterates first - docked, it
+  # would sometimes pick the external and sometimes the internal panel, run to
+  # run. Prefer any external and fall back to the panel, like SteamOS's
+  # session does with "*,eDP-1". Array, not string: "*" must reach gamescope
+  # unexpanded, and an unquoted string would glob against the cwd.
+  if [ ${#PREFER_OUTPUT[@]} -eq 0 ]; then
+    PREFER_OUTPUT=(--prefer-output "*,${WLR_CON:-DSI-1}")
   fi
 }
 
@@ -177,7 +186,7 @@ steam_launch_bigpicture() {
     else
       systemctl stop sway
       GAMESCOPE_MODE_SAVE_FILE="${gamescope_mode_file}" GAMESCOPE_FAKE_OUTPUT_MM=508x286 env -u WAYLAND_DISPLAY LD_LIBRARY_PATH=/storage/.local/share/Steam/lib/aarch64-linux-gnu/ ${EMUPERF} \
-        gamescope $PREFER_OUTPUT -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
+        gamescope "${PREFER_OUTPUT[@]}" -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
         /storage/.local/share/Steam/steamrtarm64/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       systemctl start essway
       exit 0
@@ -190,7 +199,7 @@ steam_launch_bigpicture() {
     else
       systemctl stop sway
       GAMESCOPE_MODE_SAVE_FILE="${gamescope_mode_file}" GAMESCOPE_FAKE_OUTPUT_MM=508x286 env -u WAYLAND_DISPLAY ${EMUPERF} \
-        gamescope $PREFER_OUTPUT -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
+        gamescope "${PREFER_OUTPUT[@]}" -W "$W" -H "$H" -r "$REFRESH_HZ" --xwayland-count 2 --mangoapp --backend drm --force-orientation "${force_orientation}" --use-rotation-shader -e -- \
         FEX /usr/bin/steam -steamdeck -steamos3 -gamepadui -noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles -noshaders ${game_uri:+"$game_uri"}
       systemctl start essway
       exit 0
