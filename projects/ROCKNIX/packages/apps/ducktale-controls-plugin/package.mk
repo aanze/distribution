@@ -2,7 +2,7 @@
 # Copyright (C) 2026 ROCKNIX (https://github.com/ROCKNIX)
 
 PKG_NAME="ducktale-controls-plugin"
-PKG_VERSION="0.7.6-aanze"
+PKG_VERSION="0.7.7-aanze"
 PKG_LICENSE="custom"
 PKG_SITE="https://github.com/thefiqs/rocknix-control"
 PKG_URL=""
