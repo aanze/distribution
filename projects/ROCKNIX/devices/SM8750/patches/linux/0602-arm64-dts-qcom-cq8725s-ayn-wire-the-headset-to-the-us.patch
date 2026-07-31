@@ -1,0 +1,58 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] arm64: dts: qcom: cq8725s-ayn: wire the headset to the USBSS
+
+The board's headphone lines run through the WCD9395 USB-SS analog
+switch, but nothing said so: the codec had no port graph at all, and the
+switch's own headset endpoint was declared and left dangling.
+
+wcd939x decides whether the headset is muxed by looking for exactly that
+link:
+
+	np = of_graph_get_remote_node(dev->of_node, 0, 0);
+	if (np) {
+		wcd939x->typec_analog_mux = true;
+		cfg->typec_analog_mux = true;
+		cfg->swap_gnd_mic = wcd939x_swap_gnd_mic;
+	}
+
+With no remote node it never sets typec_analog_mux, never acquires the
+switch through fwnode_typec_switch_get(), and so never has the USBSS
+route the headset lines. On an Odin 3 that means plugging headphones in
+does nothing audible: MBHC's mechanical interrupt fires, but "Elect
+Insert" never does, "Headphone Jack" stays off, and userspace is never
+told to move away from the speaker.
+
+Wire both ends the way sm8750-mtp does - the codec node here is
+otherwise identical to the MTP's, down to the micbias levels, the MBHC
+thresholds and the reset GPIO - and add the mode-switch and
+orientation-switch properties that go with being part of the Type-C mux
+chain.
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+--- a/arch/arm64/boot/dts/qcom/cq8725s-ayn-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/cq8725s-ayn-common.dtsi
+@@ -49,6 +49,15 @@
+ 		vdd-px-supply = <&vreg_l2i_1p2>;
+
+ 		#sound-dai-cells = <1>;
++
++		mode-switch;
++		orientation-switch;
++
++		port {
++			wcd_codec_headset_in: endpoint {
++				remote-endpoint = <&wcd_usbss_headset_out>;
++			};
++		};
+ 	};
+
+ 	chosen {
+@@ -861,6 +870,7 @@
+ 				reg = <1>;
+
+ 				wcd_usbss_headset_out: endpoint {
++					remote-endpoint = <&wcd_codec_headset_in>;
+ 				};
+ 			};
+ 		};
