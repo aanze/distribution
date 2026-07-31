@@ -52,4 +52,11 @@ makeinstall_target() {
       chmod 0755 ${INSTALL}/usr/lib/autostart/quirks/platforms/${DEVICE}/sleep.d/post/095-perfcontrol
     fi
   done
+
+  # Third re-apply point: every EmulationStation session start. Covers the case
+  # boot and resume cannot - a Steam session killed outright, where the plugin
+  # never gets the notification it needs to undo the game's profile.
+  mkdir -p ${INSTALL}/usr/lib/systemd/system/essway.service.d
+  cp -f ${PKG_DIR}/sources/systemd/essway.service.d/10-perfcontrol-reapply.conf \
+    ${INSTALL}/usr/lib/systemd/system/essway.service.d/10-perfcontrol-reapply.conf
 }
