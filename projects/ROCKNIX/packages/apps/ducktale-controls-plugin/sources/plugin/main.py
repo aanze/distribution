@@ -152,7 +152,6 @@ async def _awrite(path, value):
 
 
 _presets_cache = None
-_game_profiles_cache = None
 
 
 def _presets_path():
@@ -202,34 +201,6 @@ def _save_presets(data):
     with open(_presets_path(), "w") as f:
         json.dump(data, f, indent=2)
     _presets_cache = data
-
-
-def _game_profiles_path():
-    return os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "game_profiles.json")
-
-
-def _load_game_profiles():
-    global _game_profiles_cache
-    if _game_profiles_cache is not None:
-        return _game_profiles_cache
-    path = _game_profiles_path()
-    if os.path.exists(path):
-        try:
-            with open(path, "r") as f:
-                _game_profiles_cache = json.load(f)
-                return _game_profiles_cache
-        except Exception:
-            pass
-    _game_profiles_cache = {}
-    return _game_profiles_cache
-
-
-def _save_game_profiles(data):
-    global _game_profiles_cache
-    os.makedirs(decky.DECKY_PLUGIN_SETTINGS_DIR, exist_ok=True)
-    with open(_game_profiles_path(), "w") as f:
-        json.dump(data, f, indent=2)
-    _game_profiles_cache = data
 
 
 def _parse_fan_conf():
@@ -343,14 +314,6 @@ async def _aload_presets():
 
 async def _asave_presets(data):
     return await asyncio.to_thread(_save_presets, data)
-
-
-async def _aload_game_profiles():
-    return await asyncio.to_thread(_load_game_profiles)
-
-
-async def _asave_game_profiles(data):
-    return await asyncio.to_thread(_save_game_profiles, data)
 
 
 async def _awrite_fan_conf(speeds, temps):
@@ -768,29 +731,6 @@ class Plugin:
         curve = _parse_fan_conf()
         settings["fan_curve"] = curve if curve else DEFAULT_FAN_CURVE
         return settings
-
-
-    async def get_game_profile(self, game_id: str):
-        data = await _aload_game_profiles()
-        result = data.get(game_id)
-        decky.logger.info(f"get_game_profile({game_id}) = {result}")
-        return result
-
-    async def set_game_profile(self, game_id: str, preset_name: str):
-        decky.logger.info(f"set_game_profile({game_id}, {preset_name})")
-        data = await _aload_game_profiles()
-        data[game_id] = preset_name
-        await _asave_game_profiles(data)
-        return True
-
-    async def delete_game_profile(self, game_id: str):
-        data = await _aload_game_profiles()
-        data.pop(game_id, None)
-        await _asave_game_profiles(data)
-        return True
-
-    async def get_all_game_profiles(self):
-        return await _aload_game_profiles()
 
 
     # --- Canonical active profile (shared with the ROCKNIX Perf Control tool) - #

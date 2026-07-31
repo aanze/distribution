@@ -59,8 +59,6 @@ const getCurrentSettings = callable<[], Preset>("get_current_settings");
 const getFanCurve = callable<[], FanCurve>("get_fan_curve");
 const saveFanCurve = callable<[speeds: string, temps: string], boolean>("set_fan_curve");
 const setFanProfile = callable<[profile: string], boolean>("set_fan_profile");
-const getGameProfile = callable<[gameId: string], string | null>("get_game_profile");
-const setGameProfile = callable<[gameId: string, presetName: string], boolean>("set_game_profile");
 const getChargeMode = callable<[], { available: boolean; mode: string }>("get_charge_mode");
 const applyChargeMode = callable<[mode: string], { available: boolean; mode: string }>("set_charge_mode");
 const getGamepadProfile = callable<[], { available: boolean; profile: string }>("get_gamepad_profile");
@@ -582,11 +580,7 @@ function Content() {
       // second pick (device-observed). Hardware apply comes after.
       await setActiveProfile(name);
       await applyPreset(name);
-      await Promise.all([
-        state.runningAppId > 0 ? setGameProfile(String(state.runningAppId), name) : Promise.resolve(),
-        refreshHardware(),
-        refreshFanCurve(),
-      ]);
+      await Promise.all([refreshHardware(), refreshFanCurve()]);
     } finally {
       switching = false;
     }
@@ -909,11 +903,6 @@ export default definePlugin(() => {
       state.runningAppId = e.unAppID;
       const app = appStore.GetAppOverviewByAppID(e.unAppID);
       state.runningGameName = app?.display_name ?? String(e.unAppID);
-      const preset = await getGameProfile(String(e.unAppID));
-      if (preset) {
-        state.activePreset = preset;
-        applyPreset(preset);
-      }
     } else {
       state.runningAppId = 0;
       state.runningGameName = "";
