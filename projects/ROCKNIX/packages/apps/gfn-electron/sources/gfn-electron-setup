@@ -23,6 +23,7 @@ source /etc/profile
 MODE="${1:-install}"
 GFN_DIR="/storage/roms/geforcenow"
 LAUNCHER="${GFN_DIR}/GeForce NOW.sh"
+LAUNCHER_RSM="${GFN_DIR}/GeForce NOW (Right Stick Mouse).sh"
 GAMELIST="${GFN_DIR}/gamelist.xml"
 MARK="/storage/.config/gfn-electron/.disabled"
 
@@ -35,7 +36,15 @@ create_section() {
 #!/bin/bash
 exec /usr/bin/start_gfn-electron.sh
 EOF
-  chmod +x "${LAUNCHER}"
+  # Alternate entry: same client, with the right stick rerouted to a real
+  # mouse cursor for the session (back paddles M1/M2 = left/right click).
+  # For games whose pointer is broken/unreachable with a controller over GFN,
+  # e.g. the frozen inventory cursor in Diablo II: Resurrected.
+  cat > "${LAUNCHER_RSM}" <<'EOF'
+#!/bin/bash
+exec /usr/bin/start_gfn-electron.sh --stick-mouse
+EOF
+  chmod +x "${LAUNCHER}" "${LAUNCHER_RSM}"
   if [ ! -f "${GAMELIST}" ]; then
     cat > "${GAMELIST}" <<'EOF'
 <?xml version="1.0"?>
@@ -44,6 +53,32 @@ EOF
         <path>./GeForce NOW.sh</path>
         <name>GeForce NOW</name>
         <desc>Stream PC games from the cloud with NVIDIA GeForce NOW. First login: NVIDIA account or Discord. On-screen keyboard: hold the left Home button + tap the screen. Exit with L1 + START + SELECT.</desc>
+        <developer>NVIDIA</developer>
+        <publisher>hmlendea</publisher>
+        <genre>Cloud Gaming</genre>
+        <players>1</players>
+    </game>
+    <game>
+        <path>./GeForce NOW (Right Stick Mouse).sh</path>
+        <name>GeForce NOW (Right Stick Mouse)</name>
+        <desc>GeForce NOW with the right stick driving a real mouse cursor; back paddles: M1 = left click, M2 = right click. The rest of the controller stays a normal gamepad. Use for games whose pointer is broken or unreachable with a controller over GFN - e.g. the frozen inventory cursor in Diablo II: Resurrected.</desc>
+        <developer>NVIDIA</developer>
+        <publisher>hmlendea</publisher>
+        <genre>Cloud Gaming</genre>
+        <players>1</players>
+    </game>
+</gameList>
+EOF
+  fi
+  # Upgrades: a gamelist seeded before the Right Stick Mouse entry existed
+  # gets it appended in place (ES-written metadata in the file is kept).
+  if ! grep -q "Right Stick Mouse" "${GAMELIST}"; then
+    sed -i '/<\/gameList>/d' "${GAMELIST}"
+    cat >> "${GAMELIST}" <<'EOF'
+    <game>
+        <path>./GeForce NOW (Right Stick Mouse).sh</path>
+        <name>GeForce NOW (Right Stick Mouse)</name>
+        <desc>GeForce NOW with the right stick driving a real mouse cursor; back paddles: M1 = left click, M2 = right click. The rest of the controller stays a normal gamepad. Use for games whose pointer is broken or unreachable with a controller over GFN - e.g. the frozen inventory cursor in Diablo II: Resurrected.</desc>
         <developer>NVIDIA</developer>
         <publisher>hmlendea</publisher>
         <genre>Cloud Gaming</genre>
@@ -72,7 +107,7 @@ case "${MODE}" in
     ;;
   uninstall)
     echo "=== Remove GeForce NOW ==="
-    rm -f "${LAUNCHER}" "${GAMELIST}"
+    rm -f "${LAUNCHER}" "${LAUNCHER_RSM}" "${GAMELIST}"
     rmdir "${GFN_DIR}" 2>/dev/null || true
     mkdir -p "$(dirname "${MARK}")"
     : > "${MARK}"     # keep the section hidden across reboots (no auto re-add)
@@ -86,7 +121,10 @@ case "${MODE}" in
     # Auto-preinstall on boot so a fresh flash already shows the section, unless
     # the user explicitly removed it. Silent + fast (runs before ES).
     [ -f "${MARK}" ] && exit 0
-    [ -x "${LAUNCHER}" ] && exit 0
+    # Re-run when anything is missing so an update that brings a new entry
+    # (e.g. Right Stick Mouse) adds it to an existing install on next boot.
+    [ -x "${LAUNCHER}" ] && [ -x "${LAUNCHER_RSM}" ] && \
+      grep -qs "Right Stick Mouse" "${GAMELIST}" && exit 0
     create_section >/dev/null 2>&1 || true
     ;;
   *)
