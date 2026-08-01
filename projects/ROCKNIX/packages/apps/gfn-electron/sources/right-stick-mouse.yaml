@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/device_profile_v1.json
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Session profile for the "GeForce NOW (Right Stick Mouse)" launch entry:
+# reroute the right stick to a virtual mouse and the back paddles to mouse
+# buttons. Everything not mapped here passes through unchanged, so the rest
+# of the controller stays a normal gamepad (device-verified 2026-08-01).
+#
+# Why: GFN streams gamepads fine, but some games need real MOUSE input for
+# their pointer - Diablo II: Resurrected's controller inventory reticule
+# sits frozen mid-screen over GFN (Blizzard forum bug reports since 2023)
+# and actual mouse motion is what unfreezes/drives it. The paddles cost
+# nothing: GFN's host-side virtual pad is plain XInput, so paddles never
+# reach the stream anyway.
+#
+# Requires a 'mouse' entry in the composite's target_devices - the launcher
+# (start_gfn-electron.sh --stick-mouse) grafts one for the session.
+version: 1
+kind: DeviceProfile
+name: Right Stick Mouse
+description: Right stick drives a virtual mouse, back paddles M1/M2 = left/right click; everything else stays gamepad.
+
+mapping:
+  - name: Right Stick Mouse
+    source_event:
+      gamepad:
+        axis:
+          name: RightStick
+    target_events:
+      - mouse:
+          motion:
+            speed_pps: 800
+
+  # Both paddle capability variants are mapped so the profile works under
+  # either gamepad profile: the xbox-elite composite maps the paddles to
+  # Paddle1, the stock ds5-edge composite to Paddle2.
+  - name: M1 Left Click (elite)
+    source_event:
+      gamepad:
+        button: LeftPaddle1
+    target_events:
+      - mouse:
+          button: Left
+
+  - name: M2 Right Click (elite)
+    source_event:
+      gamepad:
+        button: RightPaddle1
+    target_events:
+      - mouse:
+          button: Right
+
+  - name: M1 Left Click (ds5)
+    source_event:
+      gamepad:
+        button: LeftPaddle2
+    target_events:
+      - mouse:
+          button: Left
+
+  - name: M2 Right Click (ds5)
+    source_event:
+      gamepad:
+        button: RightPaddle2
+    target_events:
+      - mouse:
+          button: Right
