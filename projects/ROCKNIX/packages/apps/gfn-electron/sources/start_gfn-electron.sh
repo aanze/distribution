@@ -19,8 +19,20 @@
 # keyboard is hidden by default - summon/hide it with: hold left-Home + tap screen.
 #
 # Exit any time with the global combo L1 + START + SELECT.
+#
+# Optional flag: --stick-mouse (used by the "GeForce NOW (Right Stick Mouse)"
+# entry) grafts a virtual mouse onto the InputPlumber composite for this
+# session: right stick = mouse cursor, back paddles M1/M2 = left/right click,
+# everything else stays gamepad. Real mouse motion unfreezes games whose
+# controller cursor is dead over GFN (e.g. the Diablo II: Resurrected
+# inventory reticule, frozen mid-screen - a known GFN bug since 2023).
 
 source /etc/profile
+
+STICK_MOUSE=0
+[ "${1}" = "--stick-mouse" ] && STICK_MOUSE=1
+IP_DEV_YAML=""
+IP_RUN_YAML="/run/gfn-stick-mouse-composite.yaml"
 
 APP_DIR="/usr/share/gfn-electron"
 APPBIN="${APP_DIR}/geforcenow-electron"
@@ -61,9 +73,47 @@ swaymsg 'for_window [app_id="GeForce NOW"] fullscreen enable' >/dev/null 2>&1 ||
 cleanup() {
   kill "${WVKBD_PID}" 2>/dev/null || true
   [ "${TOUCHKB_WAS_ACTIVE}" = "1" ] && systemctl start touchkeyboard.service >/dev/null 2>&1 || true
+  if [ "${STICK_MOUSE}" = "1" ] && [ -n "${IP_DEV_YAML}" ]; then
+    # Tear the session mouse graft down: drop the override and regenerate the
+    # canonical composite for the persisted gamepad profile (restarts
+    # InputPlumber - a ~2 s pad reset right after the app closed).
+    umount "${IP_DEV_YAML}" 2>/dev/null || true
+    rm -f "${IP_RUN_YAML}"
+    gamepad-profile apply >/dev/null 2>&1 || systemctl restart inputplumber
+  fi
   set_kill stop
 }
 trap cleanup EXIT
+
+# --- Right Stick Mouse session graft (see header) -----------------------------
+if [ "${STICK_MOUSE}" = "1" ]; then
+  MODEL="$(tr -d '\0' < /sys/firmware/devicetree/base/model 2>/dev/null || \
+           cat /sys/class/dmi/id/product_name 2>/dev/null)"
+  [ -n "${MODEL}" ] && \
+    IP_DEV_YAML="$(grep -rl "value: ${MODEL}" /usr/share/inputplumber/devices/ 2>/dev/null | head -1)"
+  if [ -n "${IP_DEV_YAML}" ]; then
+    # Rebuild the composite override from whatever is live (the stock ds5-edge
+    # config, or the xbox-elite override mounted by gamepad-profile) with a
+    # mouse target appended, then reroute right stick + paddles via the
+    # session profile. The InputPlumber restart happens pre-stream, so the
+    # ~2 s pad reset is invisible.
+    cat "${IP_DEV_YAML}" > "${IP_RUN_YAML}"
+    grep -q "^  - mouse" "${IP_RUN_YAML}" || \
+      sed -i "/^target_devices:/a\\  - mouse" "${IP_RUN_YAML}"
+    umount "${IP_DEV_YAML}" 2>/dev/null || true
+    mount --bind "${IP_RUN_YAML}" "${IP_DEV_YAML}"
+    systemctl restart inputplumber
+    for _ in $(seq 1 20); do
+      busctl call org.shadowblip.InputPlumber \
+        /org/shadowblip/InputPlumber/CompositeDevice0 \
+        org.shadowblip.Input.CompositeDevice LoadProfilePath s \
+        /usr/share/inputplumber/profiles/right-stick-mouse.yaml \
+        >/dev/null 2>&1 && break
+      sleep 0.5
+    done
+    systemctl try-restart input.service >/dev/null 2>&1 || true
+  fi
+fi
 
 # The NVIDIA OAuth/login opens https, so the clock must be correct or the TLS
 # cert looks invalid. Right after a cold boot NTP may not have synced yet.
