@@ -34,6 +34,20 @@ tarball + bump the hosted release, then a normal ROCKNIX rebuild refreshes it.
 - Suspend: AppRun wrapped in `systemd-inhibit --what=sleep:idle:...`.
 - `for_window [app_id="GeForce NOW"] fullscreen enable` keeps OAuth popups fullscreen.
 
+## Right Stick Mouse entry (2026-08-01)
+Second launcher in the section: "GeForce NOW (Right Stick Mouse)" =
+`start_gfn-electron.sh --stick-mouse`. The launcher brackets the session with
+an InputPlumber graft: composite override (+`mouse` target) + IP restart +
+`LoadProfilePath` of `profiles/right-stick-mouse.yaml` (right stick -> mouse
+motion 800pps, paddles M1/M2 -> left/right click, everything else passes
+through); exit restores via `gamepad-profile apply`. Why: D2R's controller
+inventory reticule is frozen mid-screen over GFN (known GFN bug, Blizzard
+forum reports since 2023) and real mouse motion is what unfreezes/drives it.
+Paddles are free in streaming (host-side pad is plain XInput, no paddle
+channel). Device-validated 2026-08-01: ES bench + in-stream D2R inventory —
+cursor via right stick, native pad A drag/drop works, no UI flip needed;
+profile passthrough confirmed (unmapped inputs unaffected).
+
 ## OPEN DECISIONS (need Anze)
 1. Replace OpenNOW or ship alongside? Currently shipped ALONGSIDE (non-destructive;
    both sections appear). Flip to replace = drop the opennow wiring.

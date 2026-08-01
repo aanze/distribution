@@ -38,6 +38,13 @@ makeinstall_target() {
   chmod 0755 ${INSTALL}/usr/bin/start_gfn-electron.sh \
              ${INSTALL}/usr/bin/gfn-electron-setup
 
+  # InputPlumber session profile for the "GeForce NOW (Right Stick Mouse)"
+  # entry (right stick -> mouse motion, back paddles -> clicks). Loaded by
+  # start_gfn-electron.sh --stick-mouse.
+  mkdir -p ${INSTALL}/usr/share/inputplumber/profiles
+  cp ${PKG_DIR}/sources/right-stick-mouse.yaml \
+     ${INSTALL}/usr/share/inputplumber/profiles/right-stick-mouse.yaml
+
   # Preinstall the section on boot (so a fresh flash shows GeForce NOW without
   # running "Install GeForce NOW"); respects an explicit Uninstall.
   mkdir -p ${INSTALL}/usr/lib/autostart/common
