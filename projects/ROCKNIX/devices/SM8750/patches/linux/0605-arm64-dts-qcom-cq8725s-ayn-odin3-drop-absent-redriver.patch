@@ -1,0 +1,63 @@
+From: Anze <aanzdev@gmail.com>
+Subject: [PATCH] arm64: dts: qcom: cq8725s-ayn-odin3: drop the absent redriver
+
+The CQ8725S common dtsi routes the Type-C SuperSpeed lanes through an
+NB7VPQ904M redriver at i2c5 0x1c. The AYN Odin 3 does not populate that
+part. Every register of the chip reads back as an I/O error, while the
+two aw88166 amplifiers sharing the same bus at 0x34 and 0x35 read their
+real contents, so the bus is healthy and 0x1c simply does not answer:
+
+  /sys/kernel/debug/regmap/4-001c/registers   00: XX    01: XX
+  /sys/kernel/debug/regmap/4-0034/registers   00: 2066  01: 0311
+  /sys/kernel/debug/regmap/4-0035/registers   00: 2066  01: 0311
+
+This went unnoticed while pmic_glink_altmode still bound without a
+mode-switch: the phantom retimer was described but never driven. Once
+altmode started deferring until the switch registers, the connector came
+up with that retimer as its mode- and orientation-switch, and every
+Type-C attach began writing to a chip that is not there:
+
+  gpi a00000.dma-controller: Error in Transaction
+  geni_i2c a94000.i2c: DMA txn failed:3
+  geni_i2c a94000.i2c: GPI transfer failed: -5
+
+The burst runs for the whole attach and takes the audio DSPs down about
+a second later - TZ sends a fatal notification to the cDSP and then the
+aDSP, pmic_glink dies with them, subsystem recovery times out and the
+board wedges hard on every dock.
+
+Disable the redriver on this board and restore the direct connector to
+combo-PHY path.
+
+Signed-off-by: Anze <aanzdev@gmail.com>
+---
+ arch/arm64/boot/dts/qcom/cq8725s-ayn-odin3.dts | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+--- a/arch/arm64/boot/dts/qcom/cq8725s-ayn-odin3.dts
++++ b/arch/arm64/boot/dts/qcom/cq8725s-ayn-odin3.dts
+@@ -350,3 +350,20 @@
+ 		};
+ 	};
+ };
++
++/*
++ * No NB7VPQ904M on this board. The common dtsi routes the Type-C
++ * SuperSpeed lanes through a redriver at i2c5 0x1c which the Odin 3 does
++ * not populate, so keep the connector wired straight to the combo PHY.
++ */
++&typec_mux_redriver {
++	status = "disabled";
++};
++
++&pmic_glink_ss_in {
++	remote-endpoint = <&usb_dp_qmpphy_out>;
++};
++
++&usb_dp_qmpphy_out {
++	remote-endpoint = <&pmic_glink_ss_in>;
++};
+
+-- 
+2.43.0
+
