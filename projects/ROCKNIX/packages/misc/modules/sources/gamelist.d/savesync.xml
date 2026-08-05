@@ -1,0 +1,12 @@
+    <game>
+        <path>./SaveSync.sh</path>
+        <name>SaveSync</name>
+        <desc>Sync RPCS3 saves with your backup server over SSH. Shows each game as in sync, ahead, behind or in conflict, pushes and pulls on demand, and archives every save it overwrites. The DUCKTALE-SAVESYNC Decky panel offers the same controls inside Steam.</desc>
+        <developer>aanze</developer>
+        <publisher>aanze</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>tool</genre>
+        <players>1</players>
+        <image>./images/savesync.svg</image>
+    </game>
