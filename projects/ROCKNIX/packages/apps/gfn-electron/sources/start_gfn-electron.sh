@@ -125,6 +125,50 @@ if command -v timedatectl >/dev/null 2>&1; then
   done
 fi
 
+# Display backend selection. In the EmulationStation session the inherited
+# sway WAYLAND_DISPLAY is alive and wayland is the right backend. Launched
+# from inside the Steam gamescope session (steam-shortcuts non-Steam
+# entries) that socket is gone; gamescope maps X11 clients reliably while
+# its wayland toplevels can sit unmapped forever (observed: app runs,
+# Steam spinner never resolves) - so prefer X11 there, with a last-resort
+# probe for any live wayland socket when there is no X server either.
+OZONE_PLATFORM="wayland"
+if [ ! -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]; then
+  if [ -n "${DISPLAY}" ]; then
+    OZONE_PLATFORM="x11"
+    # main.js appends wayland-targeted GL switches (use-gl=egl, no Vulkan)
+    # whenever WAYLAND_DISPLAY is set - even pointing at a dead socket, as
+    # /etc/profile always re-exports the ES session value. That broken-GL
+    # combo on an X11 window is what painted the window white under Steam.
+    unset WAYLAND_DISPLAY
+  else
+    WL_FOUND=""
+    for _s in wayland-1 wayland-0 gamescope-0 gamescope-1; do
+      if [ -S "${XDG_RUNTIME_DIR}/${_s}" ]; then
+        export WAYLAND_DISPLAY="${_s}"
+        WL_FOUND=1
+        break
+      fi
+    done
+    [ -z "${WL_FOUND}" ] && OZONE_PLATFORM="x11"
+  fi
+fi
+
+EXTRA_FLAGS=""
+if [ "${OZONE_PLATFORM}" = "x11" ]; then
+  # DOM text tiles GPU-rasterize to nothing on this build's X11/EGL path
+  # (canvas + images fine, glyphs absent); CPU raster paints them correctly.
+  EXTRA_FLAGS="--disable-gpu-rasterization"
+fi
+if [ "${OZONE_PLATFORM}" = "x11" ]; then
+  # Steam-session specifics: the gamescope WSI Vulkan layer is meant for a
+  # game's own fullscreen swapchain - attached to Chromium's GPU process it
+  # leaves the window white - and the window must start fullscreen to give
+  # gamescope a properly sized surface instead of a small centered box.
+  export ENABLE_GAMESCOPE_WSI=0
+
+fi
+
 # Inhibit suspend/idle for the whole streaming session: a stream has long stretches
 # with no local input, and an auto-suspend re-enumerates the gamepad and wedges
 # input on resume. exec so the inhibitor lives exactly as long as the app.
@@ -132,7 +176,8 @@ exec systemd-inhibit \
   --what=sleep:idle:handle-suspend-key:handle-lid-switch \
   --who="gfn-electron" --why="GeForce NOW streaming" \
   "${APPBIN}" --no-sandbox \
-    --ozone-platform=wayland \
+    --ozone-platform="${OZONE_PLATFORM}" \
     --enable-features=UseOzonePlatform,VaapiVideoDecoder \
     --enable-wayland-ime \
+    ${EXTRA_FLAGS} \
   2>&1 | tee "${LOG}"
