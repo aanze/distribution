@@ -1,0 +1,12 @@
+    <game>
+        <path>./Add PS3 Games To Steam.sh</path>
+        <name>Add PS3 Games To Steam</name>
+        <desc>Mirror your PS3 games (native RPCS3) and the GeForce NOW / OpenNOW launchers into Steam as non-Steam shortcuts, with the artwork scraped in EmulationStation installed as Steam grid images. Re-run it after adding or removing a game (scrape it in ES first so the art follows). Close Steam before running.</desc>
+        <developer>aanze</developer>
+        <publisher>aanze</publisher>
+        <rating>5.0</rating>
+        <releasedate>2026</releasedate>
+        <genre>tool</genre>
+        <players>1</players>
+        <image>./images/steam-shortcuts.svg</image>
+    </game>
