@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg width="100%" height="100%" viewBox="0 0 1200 1080" version="1.1" xmlns="http://www.w3.org/2000/svg" style="fill-rule:evenodd;clip-rule:evenodd;">
+  <!-- Background -->
+  <rect x="0" y="0" width="1200" height="1080" style="fill:rgb(46,46,46);"/>
+
+  <!-- Steam-like piston circle -->
+  <circle cx="560" cy="470" r="270" style="fill:none;stroke:rgb(225,225,225);stroke-width:56;"/>
+  <circle cx="560" cy="470" r="86" style="fill:rgb(225,225,225);"/>
+  <path d="M 320 690 L 500 545 L 560 615 L 380 760 Z" style="fill:rgb(225,225,225);"/>
+
+  <!-- Plus badge (add games) -->
+  <circle cx="880" cy="770" r="150" style="fill:rgb(96,210,130);"/>
+  <rect x="850" y="660" width="60" height="220" rx="18" style="fill:rgb(46,46,46);"/>
+  <rect x="770" y="740" width="220" height="60" rx="18" style="fill:rgb(46,46,46);"/>
+</svg>
