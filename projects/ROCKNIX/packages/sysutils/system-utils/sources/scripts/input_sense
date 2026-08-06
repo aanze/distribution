@@ -533,13 +533,18 @@ set +e
       ;;
      (${FUNCTION_HOTKEY_BTN_WEST_EVENT})
         if [ "${HOME_LEFT_PRESSED}" = true ]; then
-          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_WEST_EVENT}: Screen record toggle (left home + Y)"
-          # System-wide screen recording via DPU CWB + Iris encoder (works in
-          # emulators AND gamescope/Steam); start/stop with one toggle.
-          # Bound to left-home + Y (on this device's InputPlumber map the
-          # physical Y button reports as BTN_WEST) so it can't collide with the
-          # in-menu L1 (tab switch) / A (confirm) hotkeys.
-          /usr/bin/rocknix-screenrecord toggle
+          ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_WEST_EVENT}: On-screen keyboard (left home + north)"
+          # Screen record moved to the left-paddle combos only (the face
+          # button fired recordings by accident in cloud clients). The freed
+          # left-home + north face button summons the on-screen keyboard:
+          # Steam's own OSK inside the gamescope session (wvkbd is a sway
+          # layer-shell client and cannot exist there), wvkbd in ES - the
+          # same toggle as left-home + touch.
+          if [ -p /storage/.steam/steam.pipe ] && pgrep -f steamrtarm64 >/dev/null 2>&1; then
+            HOME=/storage /usr/bin/steam steam://open/keyboard >/dev/null 2>&1 &
+          else
+            kill -34 $(pidof wvkbd-mobintl) 2>/dev/null
+          fi
         elif [ "${HOTKEY_A_PRESSED}" = true ]; then
           ${DEBUG} && log $0 "${FUNCTION_HOTKEY_BTN_WEST_EVENT}: Config MangoHud"
           /usr/bin/mangohud_set toggle
