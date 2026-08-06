@@ -72,6 +72,7 @@ swaymsg 'for_window [app_id="GeForce NOW"] fullscreen enable' >/dev/null 2>&1 ||
 
 cleanup() {
   kill "${WVKBD_PID}" 2>/dev/null || true
+  [ -n "${TOUCHMOUSE_PID:-}" ] && kill "${TOUCHMOUSE_PID}" 2>/dev/null || true
   [ "${TOUCHKB_WAS_ACTIVE}" = "1" ] && systemctl start touchkeyboard.service >/dev/null 2>&1 || true
   if [ "${STICK_MOUSE}" = "1" ] && [ -n "${IP_DEV_YAML}" ]; then
     # Tear the session mouse graft down: drop the override and regenerate the
@@ -159,6 +160,15 @@ if [ "${OZONE_PLATFORM}" = "x11" ]; then
   # DOM text tiles GPU-rasterize to nothing on this build's X11/EGL path
   # (canvas + images fine, glyphs absent); CPU raster paints them correctly.
   EXTRA_FLAGS="--disable-gpu-rasterization"
+  # Touch -> virtual-mouse daemon (the OpenNOW helper): gamescope does not
+  # deliver the panel's touch to this X11 client, and the cloud session's
+  # Steam popups need a pointer. The uinput mouse reaches the focused app
+  # (tap = left click, drag = cursor). Killed with the app via cleanup().
+  # ES-session launches keep the app's native wayland touch instead.
+  if [ -x /usr/bin/opennow-touchmouse-daemon ]; then
+    /usr/bin/opennow-touchmouse-daemon >/dev/null 2>&1 &
+    TOUCHMOUSE_PID=$!
+  fi
 fi
 if [ "${OZONE_PLATFORM}" = "x11" ]; then
   # Steam-session specifics: the gamescope WSI Vulkan layer is meant for a
