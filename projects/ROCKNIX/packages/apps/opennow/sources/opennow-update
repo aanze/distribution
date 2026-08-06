@@ -95,17 +95,27 @@ EOF
 # (e.g. the GeForce NOW default launcher).
 merge_gamelist_entry() {
   ensure_section
-  # Strip a previously-inserted OpenNOW block.
-  awk -v b="${BEGIN_MARK}" -v e="${END_MARK}" '
-    index($0, b) { skip=1 }
-    !skip { print }
-    index($0, e) { skip=0 }
-  ' "${GAMELIST}" > "${GAMELIST}.tmp" && mv -f "${GAMELIST}.tmp" "${GAMELIST}"
-
-  # Insert the fresh block before the closing tag.
-  local block
-  block="${BEGIN_MARK}
-    <game>
+  # EmulationStation rewrites gamelist.xml (favorites, scraped metadata) and
+  # its writer DROPS XML comments - so the old marker-delimited strip stopped
+  # matching after the first ES rewrite and every update APPENDED another
+  # entry (seen x5 on device). Merge by the entry's <path> instead: keep the
+  # richest existing OpenNOW block (preserves ES scrape data), drop the
+  # duplicates and any leftover markers, insert a fresh block only if none
+  # exists. Idempotent by construction.
+  python3 - "${GAMELIST}" <<'PYMERGE'
+import re, sys
+path = sys.argv[1]
+s = open(path).read()
+s = s.replace("<!-- opennow-entry-begin -->", "").replace("<!-- opennow-entry-end -->", "")
+blocks = re.findall(r"[ \t]*<game>.*?</game>[^\n]*\n?", s, re.S)
+ours = [b for b in blocks if "<path>./OpenNOW.sh</path>" in b]
+keep = None
+if ours:
+    keep = max(ours, key=lambda b: ("<image>" in b, len(b)))
+    for b in ours:
+        s = s.replace(b, "", 1)
+if keep is None:
+    keep = """    <game>
         <path>./OpenNOW.sh</path>
         <name>OpenNOW</name>
         <desc>OpenNOW - an open-source GeForce NOW client (alternative to the default GeForce NOW app in this section). Streams PC games from NVIDIA's cloud. First login: NVIDIA account or Discord. On-screen keyboard: hold the left Home button + tap the screen. The touchscreen also acts as a mouse for game screens the controller cannot navigate. Exit with L1 + START + SELECT.</desc>
@@ -114,12 +124,14 @@ merge_gamelist_entry() {
         <genre>Cloud Gaming</genre>
         <players>1</players>
     </game>
-    ${END_MARK}"
-  awk -v blk="${block}" '
-    /<\/gameList>/ && !done { print blk; done=1 }
-    { print }
-  ' "${GAMELIST}" > "${GAMELIST}.tmp" && mv -f "${GAMELIST}.tmp" "${GAMELIST}"
+"""
+if not keep.endswith("\n"):
+    keep += "\n"
+s = s.replace("</gameList>", keep + "</gameList>", 1)
+open(path, "w").write(s)
+PYMERGE
 }
+
 
 # Remove the OpenNOW launcher + its gamelist entry, leaving the rest of the
 # geforcenow section (the default GeForce NOW launcher) intact.
