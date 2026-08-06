@@ -2,7 +2,7 @@
 # Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
 
 PKG_NAME="gfn-electron"
-PKG_VERSION="3.0.1"
+PKG_VERSION="3.0.2"
 PKG_ARCH="aarch64"
 PKG_LICENSE="GPL-3.0"
 PKG_SITE="https://github.com/hmlendea/gfn-electron"
@@ -30,6 +30,12 @@ makeinstall_target() {
   # Prebuilt arm64 Electron app tree -> read-only rootfs
   mkdir -p ${INSTALL}/usr/share/gfn-electron
   cp -rf ${PKG_BUILD}/* ${INSTALL}/usr/share/gfn-electron/
+
+  # Steam-session window sizing: BrowserWindow reads GFN_WINDOW_W/H from the
+  # environment (exported by the steam-shortcuts wrapper) so the window fills
+  # the gamescope output deterministically; stock 800x600 in the ES session.
+  patch -d ${INSTALL}/usr/share/gfn-electron -p1 \
+    < ${PKG_DIR}/sources/gfn-window-size.patch
 
   # Launcher + the (instant, offline) install/uninstall helper
   mkdir -p ${INSTALL}/usr/bin
