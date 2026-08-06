@@ -1,0 +1,15 @@
+--- a/resources/app/scripts/main.js
++++ b/resources/app/scripts/main.js
+@@ -79,6 +79,12 @@
+ 
+ async function createWindow() {
+   const mainWindow = new BrowserWindow({
++    // Window size can be forced from the launcher (steam-shortcuts): under
++    // gamescope the create-time fullscreen request races and can leave the
++    // default 800x600 window; an output-sized window fills the screen
++    // deterministically. Unset in the ES session -> stock behaviour.
++    width: parseInt(process.env.GFN_WINDOW_W, 10) || 800,
++    height: parseInt(process.env.GFN_WINDOW_H, 10) || 600,
+     fullscreenable: true,
+     fullscreen: isSteamDeck,
+     webPreferences: {
